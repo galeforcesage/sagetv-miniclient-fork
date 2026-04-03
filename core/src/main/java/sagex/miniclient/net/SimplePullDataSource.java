@@ -3,6 +3,7 @@ package sagex.miniclient.net;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -55,7 +56,7 @@ public class SimplePullDataSource implements ISageTVDataSource {
             remoteServer = new Socket();
             remoteServer.connect(new java.net.InetSocketAddress(host, 7818), 2000);
             this.remoteReader = new DataInputStream(remoteServer.getInputStream());
-            this.remoteWriter = remoteServer.getOutputStream();
+            this.remoteWriter = new BufferedOutputStream(remoteServer.getOutputStream());
 
             sendStringCommandWithReply("OPEN " + getPath(uri));
             String strSize = sendStringCommandWithReply("SIZE");

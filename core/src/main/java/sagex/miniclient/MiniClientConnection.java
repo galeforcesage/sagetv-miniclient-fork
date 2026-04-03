@@ -556,10 +556,12 @@ public class MiniClientConnection implements SageTVInputCallback
         client.prepareCodecs(videoCodecs, audioCodecs, pushFormats, pullFormats);
     }
 
+    private static final java.util.regex.Pattern COMMA_SPLIT = java.util.regex.Pattern.compile("\\s*,\\s*");
+
     private List<String> stringToList(String str) {
         ArrayList<String> list = new ArrayList<String>();
         if (str==null) return list;
-        for (String s: str.split("\\s*,\\s*")) {
+        for (String s: COMMA_SPLIT.split(str)) {
             list.add(s.trim());
         }
         return list;
@@ -2229,6 +2231,28 @@ public class MiniClientConnection implements SageTVInputCallback
         }
     }
 
+    /**
+     * Validates a filesystem path from the server to prevent path traversal attacks.
+     * Rejects paths containing ".." sequences that could escape intended directories.
+     */
+    private static boolean isValidFsPath(String path) {
+        if (path == null) return false;
+        return !path.contains("..");
+    }
+
+    /**
+     * Gets a filesystem path from a command, with path traversal validation.
+     * Returns null if the path contains traversal sequences.
+     */
+    private String getSafeFsPath(byte[] cmdData, int offset) {
+        String path = getCmdString(cmdData, offset);
+        if (!isValidFsPath(path)) {
+            log.logWarning("Rejected filesystem path with traversal sequence: " + path);
+            return null;
+        }
+        return path;
+    }
+
     private void processFSCmd(int cmdType, int len, byte[] cmdData) throws java.io.IOException {
         if (encryptEvents && evtEncryptCipher != null) {
             // can't do this while encrypted'
@@ -2246,7 +2270,9 @@ public class MiniClientConnection implements SageTVInputCallback
         java.io.File theFile;
         switch (cmdType) {
             case FSCMD_CREATE_DIRECTORY:
-                theFile = new java.io.File(getCmdString(cmdData, 4));
+                pathName = getSafeFsPath(cmdData, 4);
+                if (pathName == null) { intRv = FS_RV_NO_PERMISSIONS; break; }
+                theFile = new java.io.File(pathName);
                 // Check security
                 if (fsSecurity == MED_SECURITY_FS && !theFile.isDirectory()) {
 //				if (javax.swing.JOptionPane.showConfirmDialog(null,
@@ -2261,10 +2287,13 @@ public class MiniClientConnection implements SageTVInputCallback
                 break;
             case FSCMD_GET_FILE_SIZE:
                 isLongRv = true;
-                longRv = new java.io.File(getCmdString(cmdData, 4)).length();
+                pathName = getSafeFsPath(cmdData, 4);
+                if (pathName != null) longRv = new java.io.File(pathName).length();
                 break;
             case FSCMD_DELETE_FILE:
-                theFile = new java.io.File(getCmdString(cmdData, 4));
+                pathName = getSafeFsPath(cmdData, 4);
+                if (pathName == null) { intRv = FS_RV_NO_PERMISSIONS; break; }
+                theFile = new java.io.File(pathName);
                 if (!theFile.exists())
                     intRv = FS_RV_PATH_DOES_NOT_EXIST;
                 else {
@@ -2282,7 +2311,9 @@ public class MiniClientConnection implements SageTVInputCallback
                 }
                 break;
             case FSCMD_GET_PATH_ATTRIBUTES:
-                theFile = new java.io.File(getCmdString(cmdData, 4));
+                pathName = getSafeFsPath(cmdData, 4);
+                if (pathName == null) { break; }
+                theFile = new java.io.File(pathName);
                 if (theFile.isHidden())
                     intRv = intRv | FS_PATH_HIDDEN;
                 if (theFile.isFile())
@@ -2292,10 +2323,13 @@ public class MiniClientConnection implements SageTVInputCallback
                 break;
             case FSCMD_GET_PATH_MODIFIED_TIME:
                 isLongRv = true;
-                longRv = new java.io.File(getCmdString(cmdData, 4)).lastModified();
+                pathName = getSafeFsPath(cmdData, 4);
+                if (pathName != null) longRv = new java.io.File(pathName).lastModified();
                 break;
             case FSCMD_DIR_LIST:
-                theFile = new java.io.File(getCmdString(cmdData, 4));
+                pathName = getSafeFsPath(cmdData, 4);
+                if (pathName == null) { intRv = FS_RV_NO_PERMISSIONS; break; }
+                theFile = new java.io.File(pathName);
                 String[] list = theFile.list();
                 strRv = new byte[(list == null) ? 0 : list.length][];
                 for (int i = 0; i < strRv.length; i++)
@@ -2313,7 +2347,8 @@ public class MiniClientConnection implements SageTVInputCallback
                         | (cmdData[7] & 0xFF);
                 long fileOffset = getCmdLong(cmdData, 8);
                 long fileSize = getCmdLong(cmdData, 16);
-                pathName = getCmdString(cmdData, 24);
+                pathName = getSafeFsPath(cmdData, 24);
+                if (pathName == null) { intRv = FS_RV_NO_PERMISSIONS; break; }
                 theFile = new java.io.File(pathName);
                 if (cmdType == FSCMD_DOWNLOAD_FILE) {
                     // Make sure we're downloading to a valid file that we can write

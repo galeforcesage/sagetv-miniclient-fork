@@ -46,9 +46,8 @@ public class CodecSelector implements IjkMediaPlayer.OnMediaCodecSelectListener 
 
         // Log.i(TAG, String.format(Locale.US, "onSelectCodec: mime=%s, profile=%d, level=%d", mimeType, profile, level));
         ArrayList<IjkMediaCodecInfo> candidateCodecList = new ArrayList<IjkMediaCodecInfo>();
-        int numCodecs = MediaCodecList.getCodecCount();
-        for (int i = 0; i < numCodecs; i++) {
-            MediaCodecInfo codecInfo = MediaCodecList.getCodecInfoAt(i);
+        MediaCodecList codecList = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
+        for (MediaCodecInfo codecInfo : codecList.getCodecInfos()) {
             Log.d(TAG, String.format(Locale.US, "  found codec: %s", codecInfo.getName()));
             if (codecInfo.isEncoder())
                 continue;
@@ -107,7 +106,11 @@ public class CodecSelector implements IjkMediaPlayer.OnMediaCodecSelectListener 
             }
         }
 
-        Log.i(TAG, String.format(Locale.US, "selected codec: %s rank=%d", bestCodec.mCodecInfo.getName(), bestCodec.mRank));
+        boolean isHardware = !bestCodec.mCodecInfo.getName().startsWith("OMX.google.") && !bestCodec.mCodecInfo.getName().startsWith("c2.android.");
+        Log.w(TAG, String.format(Locale.US, "Codec selection for %s: %s (%shw, rank=%d)",
+                mimeType, bestCodec.mCodecInfo.getName(),
+                isHardware ? "" : "NOT ",
+                bestCodec.mRank));
         return bestCodec.mCodecInfo.getName();
     }
 

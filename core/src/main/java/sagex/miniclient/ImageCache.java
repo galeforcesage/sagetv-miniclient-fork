@@ -18,7 +18,7 @@ public class ImageCache
     private File cacheDir;
     private final MiniClient client;
     private long imageCacheSize;
-    private java.util.Map<Integer, Long> lruImageMap = new java.util.HashMap<Integer, Long>();
+    private java.util.Map<Integer, Long> lruImageMap = new java.util.LinkedHashMap<Integer, Long>(16, 0.75f, true);
     private java.util.Map<Integer, sagex.miniclient.uibridge.ImageHolder> imageMap = new java.util.HashMap<Integer, sagex.miniclient.uibridge.ImageHolder>();
     private ILogger log;
 
@@ -281,23 +281,12 @@ public class ImageCache
 
     public int getOldestImage()
     {
-        java.util.Iterator walker = lruImageMap.entrySet().iterator();
-        Integer oldestHandle = null;
-        long oldestTime = Long.MAX_VALUE;
-
-        while (walker.hasNext())
+        java.util.Iterator<java.util.Map.Entry<Integer, Long>> walker = lruImageMap.entrySet().iterator();
+        if (walker.hasNext())
         {
-            java.util.Map.Entry ent = (java.util.Map.Entry) walker.next();
-            long currTime = ((Long) ent.getValue()).longValue();
-
-            if (currTime < oldestTime)
-            {
-                oldestTime = currTime;
-                oldestHandle = (Integer) ent.getKey();
-            }
+            return walker.next().getKey();
         }
-
-        return (oldestHandle == null) ? 0 : oldestHandle;
+        return 0;
     }
 
     public void reloadSettings()

@@ -17,6 +17,9 @@ import com.google.android.exoplayer2.C;
 import com.google.android.exoplayer2.DefaultRenderersFactory;
 import com.google.android.exoplayer2.MediaItem;
 import com.google.android.exoplayer2.PlaybackException;
+import com.google.android.exoplayer2.audio.AudioCapabilities;
+import com.google.android.exoplayer2.audio.AudioSink;
+import com.google.android.exoplayer2.audio.DefaultAudioSink;
 import com.google.android.exoplayer2.Player;
 import com.google.android.exoplayer2.RendererCapabilities;
 import com.google.android.exoplayer2.Timeline;
@@ -47,7 +50,6 @@ import sagex.miniclient.util.Utils;
 import sagex.miniclient.util.VerboseLogging;
 
 import java.util.Set;
-import java.util.concurrent.locks.ReentrantLock;
 import android.support.v4.media.session.MediaSessionCompat;
 
 /**
@@ -62,8 +64,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     private MediaSource mediaSource;
     private long playbackStartPosition = -1;
     private int initialAudioTrackIndex = -1;
-    private long currentPlaybackPosition = 0;
-    private ReentrantLock playbackPositionLock;
+    private volatile long currentPlaybackPosition = 0;
     private DefaultTrackSelector trackSelector;
     private int selectedSubtitleTrack = DISABLE_TRACK;
 
@@ -82,56 +83,16 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     public Exo2MediaPlayerImpl(AndroidUIController activity)
     {
         super(activity, true, false);
-        playbackPositionLock = new ReentrantLock();
     }
 
     public long getPlaybackPosition()
     {
-        long position = 0;
-
-        try
-        {
-            playbackPositionLock.lock();
-            position = this.currentPlaybackPosition;
-        }
-        catch (Exception ex)
-        {
-            log.logError("Unexpected error getting playback position", ex);
-        }
-        finally
-        {
-            playbackPositionLock.unlock();
-        }
-
-        return position;
+        return this.currentPlaybackPosition;
     }
 
     public void setPlaybackPosition(long position)
     {
-        try
-        {
-            playbackPositionLock.lock();
-
-            if (position > 0)
-            {
-                currentPlaybackPosition = position;
-            }
-            else
-            {
-                //Set to zero if less than zero;
-                currentPlaybackPosition = 0;
-            }
-
-        }
-        catch (Exception ex)
-        {
-            log.logError("Unexpected error setting playback position", ex);
-
-        }
-        finally
-        {
-            playbackPositionLock.unlock();
-        }
+        currentPlaybackPosition = Math.max(position, 0);
     }
 
     boolean ExoIsPlaying()
@@ -380,8 +341,6 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     {
         try
         {
-            playbackPositionLock.lock();
-
 
             //currentPlaybackPosition = 0; //Set this to zero during seek.  Lock will hopefully keep it at zero unti we are completed
 
@@ -424,10 +383,6 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
         {
             log.logError("Unexpected error during seek", ex);
             ex.printStackTrace();
-        }
-        finally
-        {
-            playbackPositionLock.unlock();
         }
     }
 
@@ -489,8 +444,6 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             {
                 try
                 {
-                    playbackPositionLock.lock();
-
                     if (player == null)
                     {
                         return;
@@ -504,10 +457,6 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 }
                 catch (Exception ex)
                 {
-                }
-                finally
-                {
-                    playbackPositionLock.unlock();
                 }
 
 
@@ -551,7 +500,17 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             }
         }
 
-        DefaultRenderersFactory renderersFactory = new DefaultRenderersFactory(context.getContext());
+        DefaultRenderersFactory renderersFactory = new DefaultRenderersFactory(context.getContext()) {
+            @Override
+            protected AudioSink buildAudioSink(android.content.Context ctx, boolean enableFloatOutput, boolean enableAudioTrackPlaybackParams, boolean enableOffload) {
+                return new DefaultAudioSink.Builder()
+                        .setAudioCapabilities(AudioCapabilities.DEFAULT_AUDIO_CAPABILITIES)
+                        .setEnableFloatOutput(enableFloatOutput)
+                        .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                        .setOffloadMode(enableOffload ? DefaultAudioSink.OFFLOAD_MODE_ENABLED_GAPLESS_REQUIRED : DefaultAudioSink.OFFLOAD_MODE_DISABLED)
+                        .build();
+            }
+        };
 
         if (FfmpegLibrary.isAvailable())
         {
@@ -581,7 +540,6 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
         renderersFactory.setMediaCodecSelector(mediaCodecSelector);
 
         trackSelector = new DefaultTrackSelector(context.getContext());
-
 
         ExoPlayer.Builder builder = new ExoPlayer.Builder(context.getContext(), renderersFactory);
 
@@ -665,7 +623,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                     //Live TV has push: with a lot of other data in it
 
                     setMediaSessionMetadata(sageTVurl, duration);
-                    mediaSession.setActive(true);
+                    if (mediaSession != null) mediaSession.setActive(true);
                     updateMediaSessionPlaybackState(Exo2MediaPlayerImpl.this.getPlaybackPosition());
                 }
                 if (playbackState == Player.STATE_IDLE)
@@ -704,6 +662,8 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 int width = videoSize.width;
                 int height = videoSize.height;
                 float pixelWidthHeightRatio = videoSize.pixelWidthHeightRatio;
+
+                log.logWarning("Video decoder active: " + width + "x" + height);
 
                 if (VerboseLogging.DETAILED_PLAYER_LOGGING)
                 {
@@ -777,10 +737,14 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
         player.setPlayWhenReady(true);
 
         //Create Media Session
-        mediaSession = new MediaSessionCompat(this.context.getContext(), "SageTV Android TV Client");
-        mediaSession.setCallback(new MediaSessionCallbackHandler(this, context.getClient(), context.getContext()));
-
-        mediaSession.setFlags(MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS | MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS | MediaSessionCompat.FLAG_HANDLES_QUEUE_COMMANDS);
+        try {
+            mediaSession = new MediaSessionCompat(this.context.getContext(), "SageTV Android TV Client");
+            mediaSession.setCallback(new MediaSessionCallbackHandler(this, context.getClient(), context.getContext()));
+            mediaSession.setFlags(MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS | MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS | MediaSessionCompat.FLAG_HANDLES_QUEUE_COMMANDS);
+        } catch (Exception e) {
+            log.logError("Failed to create MediaSession", e);
+            mediaSession = null;
+        }
 
         if (VerboseLogging.DETAILED_PLAYER_LOGGING)
         {
@@ -1192,6 +1156,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
     private void setMediaSessionMetadata(String displayTitle, long duration)
     {
+        if (mediaSession == null) return;
         MediaMetadataCompat.Builder metaDataBuilder = new MediaMetadataCompat.Builder();
 
         metaDataBuilder.putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_TITLE, displayTitle);

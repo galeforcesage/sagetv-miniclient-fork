@@ -21,15 +21,22 @@ public class CustomMediaCodecSelector implements MediaCodecSelector
     @Override
     public List<MediaCodecInfo> getDecoderInfos(String mimeType, boolean requiresSecureDecoder, boolean requiresTunnelingDecoder) throws MediaCodecUtil.DecoderQueryException
     {
-        //List<MediaCodecInfo> codecs = MediaCodecSelector.DEFAULT.getDecoderInfos(mimeType, requiresSecureDecoder);
         List<MediaCodecInfo> codecs =  MediaCodecSelector.DEFAULT.getDecoderInfos(mimeType, requiresSecureDecoder, requiresTunnelingDecoder);
-            
-                log.debug("JVL - getDecoderInfos called MimeType={} ", mimeType);
-        for(int i = 0; i < codecs.size(); i++)
-        {
-            log.debug("JVL - DecoderIndex {}, Decoder Name = {}", i, codecs.get(i).name);
+
+        if (codecs.size() > 0) {
+            MediaCodecInfo selected = codecs.get(0);
+            boolean isHardware = !selected.name.startsWith("OMX.google.") && !selected.name.startsWith("c2.android.");
+            log.warn("Codec selection for {}: {} ({}hw, tunneling={})",
+                mimeType, selected.name,
+                isHardware ? "" : "NOT ",
+                requiresTunnelingDecoder);
+            for (int i = 1; i < codecs.size(); i++) {
+                log.debug("  fallback[{}]: {}", i, codecs.get(i).name);
+            }
+        } else {
+            log.warn("No decoders found for {}", mimeType);
         }
-    
+
         return codecs;
     }
        /*

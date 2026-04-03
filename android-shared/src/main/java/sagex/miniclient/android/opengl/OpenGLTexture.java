@@ -32,6 +32,10 @@ public class OpenGLTexture implements Texture {
     float[] uvData = new float[8];
     FloatBuffer uvDataBuff = ByteBuffer.allocateDirect(uvData.length * FLOAT_SIZE).order(ByteOrder.nativeOrder()).asFloatBuffer();
 
+    // Cached source rect for UV dirty checking
+    private int cachedSx = -1, cachedSy = -1, cachedSw = -1, cachedSh = -1;
+    private boolean uvDirty = true;
+
     private static ShortBuffer drawListBuffer;
     protected static short drawOrder[] = {0, 1, 2, 0, 2, 3}; // order to draw vertices
 
@@ -176,21 +180,25 @@ public class OpenGLTexture implements Texture {
         GLES20.glEnableVertexAttribArray(OpenGLUtils.textureShader.a_myVertex);
 
 //  // top left
-        uvData[0] = (float) sx / (float) width;
-        uvData[1] = (float) sy / (float) height;
-//  // bottom left
-        uvData[2] = (float) sx / (float) width;
-        uvData[3] = (float) (sy + sh) / (float) height;
-//  // bottom right
-        uvData[4] = (float) (sx + sw) / (float) width;
-        uvData[5] = (float) (sy + sh) / (float) height;
-//  // top right
-        uvData[6] = (float) (sx + sw) / (float) width;
-        uvData[7] = (float) sy / (float) height;
+        if (sx != cachedSx || sy != cachedSy || sw != cachedSw || sh != cachedSh) {
+            cachedSx = sx; cachedSy = sy; cachedSw = sw; cachedSh = sh;
+            uvData[0] = (float) sx / (float) width;
+            uvData[1] = (float) sy / (float) height;
+            uvData[2] = (float) sx / (float) width;
+            uvData[3] = (float) (sy + sh) / (float) height;
+            uvData[4] = (float) (sx + sw) / (float) width;
+            uvData[5] = (float) (sy + sh) / (float) height;
+            uvData[6] = (float) (sx + sw) / (float) width;
+            uvData[7] = (float) sy / (float) height;
+            uvDirty = true;
+        }
 
         // Again, a FloatBuffer will be used to pass the values
-        uvDataBuff.put(uvData);
-        uvDataBuff.position(0);
+        if (uvDirty) {
+            uvDataBuff.put(uvData);
+            uvDataBuff.position(0);
+            uvDirty = false;
+        }
         GLES20.glVertexAttribPointer(OpenGLUtils.textureShader.a_myUV, 2,
                 GLES20.GL_FLOAT, false, 0, uvDataBuff);
         GLES20.glEnableVertexAttribArray(OpenGLUtils.textureShader.a_myUV);

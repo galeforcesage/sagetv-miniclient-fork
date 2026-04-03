@@ -2,23 +2,16 @@ apply plugin: 'com.android.library'
 
 
 android {
+    namespace 'sagex.miniclient.android'
     buildToolsVersion androidBuildToolsVersion
     compileSdkVersion androidCompileSdkVersion
 
-    android {
-        compileOptions {
-            sourceCompatibility 1.8
-            targetCompatibility 1.8
-        }
-        ndkVersion = "21.0.6113669"
-    }
     compileOptions {
-        //sourceCompatibility defJavaVesionConst
-        //targetCompatibility defJavaVesionConst
-        sourceCompatibility 1.8
-        targetCompatibility 1.8
-
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
+
+    ndkVersion = "21.0.6113669"
 
     sourceSets {
         main {
@@ -33,8 +26,14 @@ android {
 
         //instrumentTest.setRoot('tests')
     }
-    lintOptions {
+    lint {
         abortOnError false
+    }
+
+    packaging {
+        resources {
+            excludes += ['META-INF/INDEX.LIST', 'META-INF/DEPENDENCIES']
+        }
     }
 
     defaultConfig {
@@ -62,6 +61,7 @@ dependencies {
 
     api project(":core")
 
+    implementation "androidx.media:media:1.7.0"
     implementation "androidx.preference:preference:1.1.1"
     implementation "androidx.legacy:legacy-support-v4:1.0.0"
     implementation "androidx.cardview:cardview:1.0.0"
@@ -83,19 +83,19 @@ dependencies {
     natives "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-x86_64"
 
     // ExoPlayer
-    api "com.google.android.exoplayer:exoplayer-common:${exoVersion}@aar"
-    api "com.google.android.exoplayer:exoplayer-extractor:${exoVersion}@aar"
-    api "com.google.android.exoplayer:exoplayer-core:${exoVersion}@aar"
-    api "com.google.android.exoplayer:exoplayer-ui:${exoVersion}@aar"
-    api "com.google.android.exoplayer:exoplayer-datasource:${exoVersion}@aar"
-    api "com.google.android.exoplayer:exoplayer-decoder:${exoVersion}@aar"
-    api "com.google.android.exoplayer:exoplayer-dash:${exoVersion}@aar"
-    api "com.google.android.exoplayer:exoplayer-rtsp:${exoVersion}@aar"
-    api "com.google.android.exoplayer:exoplayer-transformer:${exoVersion}@aar"
-    api "com.google.android.exoplayer:exoplayer-smoothstreaming:${exoVersion}@aar"
-    api "com.google.android.exoplayer:exoplayer-hls:${exoVersion}@aar"
-    api "com.google.android.exoplayer:exoplayer-testutils:${exoVersion}@aar"
-    //api "com.google.android.exoplayer:extension-mediasession:${exoVersion}@aar"
+    api "com.google.android.exoplayer:exoplayer-common:${exoVersion}"
+    api "com.google.android.exoplayer:exoplayer-extractor:${exoVersion}"
+    api "com.google.android.exoplayer:exoplayer-core:${exoVersion}"
+    api "com.google.android.exoplayer:exoplayer-ui:${exoVersion}"
+    api "com.google.android.exoplayer:exoplayer-datasource:${exoVersion}"
+    api "com.google.android.exoplayer:exoplayer-decoder:${exoVersion}"
+    api "com.google.android.exoplayer:exoplayer-dash:${exoVersion}"
+    api "com.google.android.exoplayer:exoplayer-rtsp:${exoVersion}"
+    api "com.google.android.exoplayer:exoplayer-transformer:${exoVersion}"
+    api "com.google.android.exoplayer:exoplayer-smoothstreaming:${exoVersion}"
+    api "com.google.android.exoplayer:exoplayer-hls:${exoVersion}"
+    api "com.google.android.exoplayer:exoplayer-testutils:${exoVersion}"
+    //api "com.google.android.exoplayer:extension-mediasession:${exoVersion}"
     api 'com.google.guava:guava:31.0-jre' //This appears to be required for Exoplayer
 
     api(name: "extension-ffmpeg-${exoVersionCustomExt}", ext: 'aar') // yourLib.aar is put in libs folder

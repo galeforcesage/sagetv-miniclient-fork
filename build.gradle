@@ -7,16 +7,14 @@ buildscript {
         flatDir {
             dirs 'libs'
         }
-        jcenter()
     }
 
     dependencies {
-        classpath 'com.android.tools.build:gradle:4.0.2'
-        classpath 'org.robovm:robovm-gradle-plugin:1.6.0'
-        classpath 'com.google.gms:google-services:4.3.10'
+        classpath 'com.android.tools.build:gradle:8.3.2'
+        classpath 'com.google.gms:google-services:4.4.1'
 
         // Add the Crashlytics Gradle plugin
-        classpath 'com.google.firebase:firebase-crashlytics-gradle:2.8.1'
+        classpath 'com.google.firebase:firebase-crashlytics-gradle:2.9.9'
     }
 }
 
@@ -37,14 +35,14 @@ allprojects {
         // NOTE: using regular exoplayer for core stuff
         exoVersion = '2.18.1'
         ijkVersionDev = '0.8.8-SNAPSHOT'
-        androidBuildToolsVersion = "29.0.2"
+        androidBuildToolsVersion = "34.0.0"
         androidMinSdkVersion = 21
-        androidCompileSdkVersion = 29
-        androidTargetSdkVersion = 30
+        androidCompileSdkVersion = 34
+        androidTargetSdkVersion = 34
         // tell every project where to find the local project maven files
         mavenInProject = file('../mavenlocal').absoluteFile.toURI()
-        defJavaVesionNum = 1.8
-        defJavaVesionConst = JavaVersion.VERSION_1_8
+        defJavaVesionNum = 17
+        defJavaVesionConst = JavaVersion.VERSION_17
     }
 
     repositories {
@@ -56,7 +54,6 @@ allprojects {
         flatDir {
             dirs '../libs'
         }
-        jcenter()
     }
 }
 

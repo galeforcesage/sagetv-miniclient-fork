@@ -22,14 +22,13 @@ else
 }
 
 android {
+    namespace 'sagex.miniclient.android.tv'
     compileSdkVersion androidCompileSdkVersion
     buildToolsVersion androidBuildToolsVersion
 
-    android {
     compileOptions {
-            sourceCompatibility 1.8
-            targetCompatibility 1.8
-        }
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
 
 
@@ -103,6 +102,12 @@ android {
                 }
                 catch (Exception ex){}
             }
+        }
+    }
+
+    packaging {
+        resources {
+            excludes += ['META-INF/INDEX.LIST', 'META-INF/DEPENDENCIES']
         }
     }
 

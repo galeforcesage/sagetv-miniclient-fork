@@ -19,7 +19,7 @@ public class PushBufferDataSource implements ISageTVDataSource, HasPushBuffer
 {
     public enum State {Idle, Opened, Closed}
 
-    public static final int PIPE_SIZE = 4 * 1024 * 1024;
+    public static final int PIPE_SIZE = 8 * 1024 * 1024;
     private static final Logger log = LoggerFactory.getLogger(PushBufferDataSource.class);
 
     CircularByteBuffer circularByteBuffer = null;
@@ -183,8 +183,6 @@ public class PushBufferDataSource implements ISageTVDataSource, HasPushBuffer
     @Override
     public int read(long readOffset, byte[] bytes, int offset, int len) throws IOException
     {
-        int read = 0;
-
         if (state != State.Opened)
         {
             throw new IOException("read() called on DataSource that is not opened: " + uri);
@@ -196,10 +194,24 @@ public class PushBufferDataSource implements ISageTVDataSource, HasPushBuffer
             return 0;
         }
 
-        if(in.available() > 0)
+        int avail = in.available();
+        if(avail > 0)
         {
-            //NONTE: It appears that even though a length of zero is passed to this call, it will still block.
-            read = in.read(bytes, offset, Math.min(len, in.available())); // never read more than what we have
+            int toRead = Math.min(len, avail);
+            if (toRead == 0) return 0;
+            int read = in.read(bytes, offset, toRead);
+
+            if(eos)
+            {
+                log.debug("ServerIsEOS: Read returned: " + read);
+            }
+
+            if (read >= 0)
+            {
+                bytesRead += read;
+            }
+
+            return read;
         }
         else if(eos)
         {
@@ -208,20 +220,10 @@ public class PushBufferDataSource implements ISageTVDataSource, HasPushBuffer
         }
         else
         {
+            // Brief sleep to avoid spin-polling the buffer and starving the push thread of CPU
+            try { Thread.sleep(1); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             return 0;
         }
-
-        if(eos)
-        {
-            log.debug("ServerIsEOS: Read returned: " + read);
-        }
-
-        if (read >= 0)
-        {
-            bytesRead += read;
-        }
-
-        return read;
     }
 
     @Override

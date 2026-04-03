@@ -218,10 +218,9 @@ public class AndroidMiniClientOptions implements MiniClientOptions {
         AudioCapabilities capabilities = AudioCapabilities.getCapabilities(context);
 
         //Get all supported video mime types that exoplayer is reporting
-        for (int i = 0; i < MediaCodecList.getCodecCount(); i++)
+        MediaCodecList codecList = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
+        for (MediaCodecInfo info : codecList.getCodecInfos())
         {
-            MediaCodecInfo info = MediaCodecList.getCodecInfoAt(i);
-
             if (!info.isEncoder())
             {
                 exoplayerCodecsMimeType.addAll(getAudioCodecs(info));
@@ -307,10 +306,9 @@ public class AndroidMiniClientOptions implements MiniClientOptions {
         List<String> exoplayerCodecsMimeType = new ArrayList<>();
 
         //Get all supported video mime types that exoplayer is reporting
-        for (int i = 0; i < MediaCodecList.getCodecCount(); i++)
+        MediaCodecList codecList = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
+        for (MediaCodecInfo info : codecList.getCodecInfos())
         {
-            MediaCodecInfo info = MediaCodecList.getCodecInfoAt(i);
-
             if (!info.isEncoder())
             {
                 exoplayerCodecsMimeType.addAll(getVideoCodecs(info));

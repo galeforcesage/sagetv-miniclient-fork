@@ -59,8 +59,15 @@ public class MiniclientApplication extends Application
         MiniclientApplication.INSTANCE = this;
         AndroidMiniClientOptions options = new AndroidMiniClientOptions(this);
 
-        FirebaseCrashlytics.getInstance().setCrashlyticsCollectionEnabled(options.getPrefs().getFirebaseCrashlyticsEnabled());
-        FirebaseCrashlytics.getInstance().setUserId(options.getPrefs().getFirebaseCrashlyticsUser());
+        try
+        {
+            FirebaseCrashlytics.getInstance().setCrashlyticsCollectionEnabled(options.getPrefs().getFirebaseCrashlyticsEnabled());
+            FirebaseCrashlytics.getInstance().setUserId(options.getPrefs().getFirebaseCrashlyticsUser());
+        }
+        catch (Throwable t)
+        {
+            // Firebase may not be initialized (e.g. placeholder google-services.json)
+        }
 
         PackageManager manager = this.getPackageManager();
 
@@ -133,7 +140,7 @@ public class MiniclientApplication extends Application
     private String getInfo()
     {
         StringBuffer sb = new StringBuffer();
-        sb.append("abi: ").append(Build.CPU_ABI).append("\n");
+        sb.append("abi: ").append(Build.SUPPORTED_ABIS[0]).append("\n");
         if (new File("/proc/cpuinfo").exists()) {
             try {
                 BufferedReader br = new BufferedReader(new FileReader(new File("/proc/cpuinfo")));
