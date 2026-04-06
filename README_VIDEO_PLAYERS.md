@@ -78,3 +78,39 @@ httpls_bandwidth_options=160,320,864,64
 Lastly, the Sage transcoding resolution for this is stuck at `480x272`.  At some point we should make this configurable in the SageTV `FFMpegTranscoder.java`, and use a property check with default of `480x272`.
 
 In testing I've manually updated FFMpegTranscoder.java to use 1280x720 and then used bit rates of 4000 (ie, httpls_bandwidth_options) and I've gotten very good video results coming back on a desktop.
+
+## Recommended Settings for NVIDIA Shield TV
+
+The Shield TV (Tegra X1/X1+) works best with ExoPlayer and server-side remuxing to Matroska. This avoids ExoPlayer's issues with MPEG-PS containers while preserving full HD quality through codec copy (no re-encoding).
+
+### Client Settings (MiniClient App)
+
+| Setting | Value | Location |
+|---------|-------|----------|
+| Default Player | **ExoPlayer** | Media Player Preferences |
+| Streaming Mode | **Fixed** | Media Player Preferences |
+| Fixed Remuxing | **Always** | Fixed Remuxing Settings |
+| Remux Format | **Matroska (MKV)** | Fixed Remuxing Settings |
+| FFmpeg Extension | **Enabled** | ExoPlayer Settings |
+
+### Server Settings (Sage.properties)
+
+The following property must be set on the SageTV server (v9.2.5+):
+
+```properties
+xcode_auto_deinterlace=false
+```
+
+**Why**: The server's auto-deinterlace feature adds `-deinterlace` to the ffmpeg command line. This flag is incompatible with codec copy mode (used during remux) and was removed from ffmpeg 4.x. Without this fix, remux operations will fail immediately.
+
+### How It Works
+
+With these settings, the server remuxes MPEG-PS recordings into Matroska containers using `ffmpeg -vcodec copy -acodec copy`. This preserves the original HD video and audio quality (no re-encoding) while providing a container that ExoPlayer handles reliably. The remux runs at many times realtime speed, so there is no noticeable startup delay.
+
+### Alternative: IJKPlayer + Dynamic Mode
+
+If you prefer IJKPlayer, use **Dynamic** streaming mode. This streams MPEG-PS directly to the client, which IJKPlayer handles natively. However, note that:
+
+- IJKPlayer does not support audio pass-through (no 5.1 surround)
+- IJKPlayer is no longer actively developed
+- Dynamic mode may result in lower quality for some content (server may transcode to MPEG-4 Part 2 for non-LAN connections)
