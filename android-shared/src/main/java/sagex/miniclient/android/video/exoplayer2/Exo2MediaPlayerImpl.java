@@ -28,6 +28,7 @@ import com.google.android.exoplayer2.source.MediaSource;
 import com.google.android.exoplayer2.source.ProgressiveMediaSource;
 import com.google.android.exoplayer2.source.TrackGroupArray;
 import com.google.android.exoplayer2.text.Cue;
+
 import com.google.android.exoplayer2.trackselection.DefaultTrackSelector;
 import com.google.android.exoplayer2.trackselection.MappingTrackSelector;
 import com.google.android.exoplayer2.ui.SubtitleView;
@@ -389,9 +390,11 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     @Override
     public void setSubtitleTrack(int streamPos)
     {
-        log.logDebug("Set Subtitle Track Called: " + streamPos);
+        // Map MPEG PES stream IDs to zero-based index (same as audio)
+        int mappedIndex = (streamPos == Exo2MediaPlayerImpl.DISABLE_TRACK) ? streamPos : mapStreamPosToTrackIndex(streamPos);
+        log.logDebug("Set Subtitle Track Called: " + streamPos + " mapped to: " + mappedIndex);
 
-        if (streamPos == Exo2MediaPlayerImpl.DISABLE_TRACK)
+        if (mappedIndex == Exo2MediaPlayerImpl.DISABLE_TRACK)
         {
             this.showCaptions = false;
             this.RemoveSubTitleView();
@@ -402,7 +405,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             this.AddSubTitleView();
         }
 
-        changeTrack(C.TRACK_TYPE_TEXT, streamPos, 0);
+        changeTrack(C.TRACK_TYPE_TEXT, mappedIndex, 0);
     }
 
     @Override
@@ -420,15 +423,56 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     @Override
     public void setAudioTrack(int streamPos)
     {
-        if (!ExoIsPlaying())
+        // SageTV server sends MPEG PES stream IDs (e.g. 0xC000 for first audio)
+        // rather than zero-based track indices. Map to zero-based index.
+        int mappedIndex = mapStreamPosToTrackIndex(streamPos);
+        log.logDebug("setAudioTrack: streamPos=" + streamPos + " (0x" + Integer.toHexString(streamPos) + ") mapped to trackIndex=" + mappedIndex);
+
+        if (!playerReady)
         {
-            initialAudioTrackIndex = streamPos;
+            initialAudioTrackIndex = mappedIndex;
+            return;
         }
-        else
+
+        // Always marshal to main thread since ExoPlayer requires it
+        final int trackIndex = mappedIndex;
+        context.runOnUiThread(new Runnable()
         {
-            initialAudioTrackIndex = -1;
-            changeTrack(C.TRACK_TYPE_AUDIO, streamPos, 0);
+            @Override
+            public void run()
+            {
+                if (!ExoIsPlaying())
+                {
+                    initialAudioTrackIndex = trackIndex;
+                }
+                else
+                {
+                    initialAudioTrackIndex = -1;
+                    changeTrack(C.TRACK_TYPE_AUDIO, trackIndex, 0);
+                }
+            }
+        });
+    }
+
+    /**
+     * Maps SageTV MPEG PES stream IDs to zero-based ExoPlayer track group indices.
+     * SageTV sends raw MPEG PES stream IDs: audio 0xC000-0xDFFF, subtitle 0x2000-0x3FFF.
+     * ExoPlayer uses zero-based group indices for its track arrays.
+     */
+    private int mapStreamPosToTrackIndex(int streamPos)
+    {
+        // MPEG audio PES stream IDs: 0xC000-0xDFFF → zero-based index
+        if (streamPos >= 0xC000 && streamPos < 0xE000)
+        {
+            return streamPos - 0xC000;
         }
+        // MPEG subtitle/private stream IDs: 0x2000-0x3FFF → zero-based index
+        if (streamPos >= 0x2000 && streamPos < 0x4000)
+        {
+            return streamPos - 0x2000;
+        }
+        // Already a zero-based index
+        return streamPos;
     }
 
     @Override
@@ -663,8 +707,6 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 int height = videoSize.height;
                 float pixelWidthHeightRatio = videoSize.pixelWidthHeightRatio;
 
-                log.logWarning("Video decoder active: " + width + "x" + height);
-
                 if (VerboseLogging.DETAILED_PLAYER_LOGGING)
                 {
                     log.logDebug("ExoPlayer.onVideoSizeChanged: " + width + "x" + height + ", pixel ratio: " + pixelWidthHeightRatio);
@@ -746,12 +788,8 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             mediaSession = null;
         }
 
-        if (VerboseLogging.DETAILED_PLAYER_LOGGING)
-        {
-            log.logDebug("Video Player is online");
-        }
-
         this.playerReady = true;
+
         super.play();
 
         log.logDebug("Creating handler");

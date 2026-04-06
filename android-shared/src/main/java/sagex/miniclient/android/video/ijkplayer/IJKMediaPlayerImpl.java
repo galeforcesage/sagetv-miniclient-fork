@@ -171,6 +171,13 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     {
         super.play();
 
+        if (!playerReady)
+        {
+            log.debug("Player not ready, deferring play");
+            pendingPlay = true;
+            return;
+        }
+
         if (player != null && !player.isPlaying())
         {
             player.start();
@@ -181,6 +188,13 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     @Override
     public void flush()
     {
+        if (!playerReady)
+        {
+            log.debug("Player not ready, deferring flush");
+            pendingFlush = true;
+            return;
+        }
+
         super.flush();
 
         if (player != null)
@@ -326,6 +340,19 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                 public void onPrepared(IMediaPlayer mp)
                 {
                     playerReady = true;
+
+                    if (pendingFlush)
+                    {
+                        log.debug("Clearing deferred flush - player just prepared, no flush needed");
+                        pendingFlush = false;
+                    }
+
+                    if (pendingPlay)
+                    {
+                        log.debug("Clearing deferred play - onPrepared will start player");
+                        pendingPlay = false;
+                    }
+
                     player.start();
                     state = PLAY_STATE;
 

@@ -151,7 +151,7 @@ public class KeyMapProcessor {
         if(uiHandler.isKeyboardVisible())
         {
             log.debug("KEYBOARD IS VISIBLE");
-            if(keyCode == KeyEvent.KEYCODE_ENTER)
+            if(keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_BACK)
             {
                 uiHandler.showHideKeyboard(false);
                 return;
