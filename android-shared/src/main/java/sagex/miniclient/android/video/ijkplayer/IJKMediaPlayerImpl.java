@@ -197,13 +197,23 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
 
         super.flush();
 
-        if (player != null)
+        // Reset resume tracking so time reporting starts fresh after seek.
+        // The server will push new data from the new position and
+        // getPlayerMediaTimeMillis will recalculate based on the new serverStartTime.
+        resumeTimeOffset = -1;
+        resumeMode = false;
+        logTime = -1;
+
+        if (player != null && pushMode)
+        {
+            log.debug("Flush in push mode: reset resume state, new data will arrive at new position");
+        }
+        else if (player != null)
         {
             if (VerboseLogging.DETAILED_PLAYER_LOGGING)
             {
-                log.debug("Flush Will force a seek to clear buffers");
+                log.debug("Flush in pull mode: force seek to clear buffers");
             }
-
             seekToImpl(Long.MAX_VALUE);
         }
     }
@@ -460,6 +470,17 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
             {
                 log.info("We Missed a Seek for {}: player.isPlaying {}; State: {}; playerReader: {}", timeInMS, player.isPlaying(), state, playerReady);
             }
+        }
+        else
+        {
+            // In push mode, don't call player.seekTo() — the data source is a pipe
+            // that can't seek. The server handles seeking by flushing the old data
+            // and pushing new data from the seek position. Reset resume tracking
+            // so getPlayerMediaTimeMillis() picks up the new serverStartTime correctly.
+            log.debug("Push mode seek to {}: reset resume state, server will push new data", timeInMS);
+            resumeTimeOffset = -1;
+            resumeMode = false;
+            logTime = -1;
         }
     }
 

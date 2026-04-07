@@ -367,10 +367,13 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 }
                 else
                 {
-                    if (player != null)
-                    {
-                        seekToImpl(timeInMS);
-                    }
+                    // In push mode, don't call player.seekTo() — the data source is a pipe
+                    // with no seekable index. The server handles seeking by flushing the buffer
+                    // and pushing new data from the new position. We just reset our position
+                    // counter to 0 so getPlayerMediaTimeMillis() returns lastServerStartTime + 0
+                    // until new data arrives and the position starts incrementing again.
+                    log.logDebug("Push mode seek: resetting position to 0, server will push new data from " + timeInMS);
+                    currentPlaybackPosition = 0;
                 }
             }
             else
@@ -481,6 +484,10 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
         log.logDebug("Flush called");
         super.flush();
 
+        // Reset position immediately so getMediaTimeMillis returns 0 during the flush/seek window.
+        // The server will set lastServerStartTime via the next PUSHBUFFER's serverMuxTime.
+        currentPlaybackPosition = 0;
+
         context.runOnUiThread(new Runnable()
         {
             @Override
@@ -493,17 +500,18 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                         return;
                     }
 
+                    // Reset ExoPlayer's media source so it starts fresh with new pushed data.
+                    // The resetPosition=true flag resets ExoPlayer's internal position to 0.
                     player.setMediaSource(mediaSource, true);
                     player.prepare();
 
-                    log.logDebug("After Flush was called Current Playback Position: " + Utils.toHHMMSS(player.getCurrentPosition()));
-                    Exo2MediaPlayerImpl.this.currentPlaybackPosition = player.getCurrentPosition();
+                    log.logDebug("After Flush: ExoPlayer position reset to " + Utils.toHHMMSS(player.getCurrentPosition()));
+                    Exo2MediaPlayerImpl.this.currentPlaybackPosition = 0;
                 }
                 catch (Exception ex)
                 {
+                    log.logError("Error during flush", ex);
                 }
-
-
             }
         });
     }
