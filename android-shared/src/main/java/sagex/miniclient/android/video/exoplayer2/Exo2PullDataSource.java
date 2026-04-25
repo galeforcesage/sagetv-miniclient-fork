@@ -64,7 +64,15 @@ public class Exo2PullDataSource implements DataSource, HasClose
             throw ds;
         }
 
-        return size;
+        // ExoPlayer contract: return the number of bytes available from the
+        // requested position, not the total file size. Returning total size
+        // causes ExoPlayer to miscalculate stream boundaries on subsequent
+        // opens, leading to position > size on the next open.
+        long bytesRemaining = size - dataSpec.position;
+        if (dataSpec.length != C.LENGTH_UNSET) {
+            bytesRemaining = Math.min(bytesRemaining, dataSpec.length);
+        }
+        return bytesRemaining;
     }
 
     @Override

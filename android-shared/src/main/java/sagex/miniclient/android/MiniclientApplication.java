@@ -13,7 +13,7 @@ import android.os.Build;
 //import org.slf4j.LoggerFactory;
 
 
-import com.google.firebase.crashlytics.FirebaseCrashlytics;
+//import com.google.firebase.crashlytics.FirebaseCrashlytics;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -59,8 +59,8 @@ public class MiniclientApplication extends Application
         MiniclientApplication.INSTANCE = this;
         AndroidMiniClientOptions options = new AndroidMiniClientOptions(this);
 
-        FirebaseCrashlytics.getInstance().setCrashlyticsCollectionEnabled(options.getPrefs().getFirebaseCrashlyticsEnabled());
-        FirebaseCrashlytics.getInstance().setUserId(options.getPrefs().getFirebaseCrashlyticsUser());
+        //FirebaseCrashlytics.getInstance().setCrashlyticsCollectionEnabled(options.getPrefs().getFirebaseCrashlyticsEnabled());
+        //FirebaseCrashlytics.getInstance().setUserId(options.getPrefs().getFirebaseCrashlyticsUser());
 
         PackageManager manager = this.getPackageManager();
 

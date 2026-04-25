@@ -185,12 +185,31 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
 
         if (player != null)
         {
-            if (VerboseLogging.DETAILED_PLAYER_LOGGING)
+            if (pushMode)
             {
-                log.debug("Flush Will force a seek to clear buffers");
-            }
+                // Push mode: server will re-push data from new position.
+                // Seek to MAX_VALUE forces IJK to discard its internal buffers.
+                if (VerboseLogging.DETAILED_PLAYER_LOGGING)
+                {
+                    log.debug("Push flush: forcing buffer clear via max-seek");
+                }
+                seekToImpl(Long.MAX_VALUE);
 
-            seekToImpl(Long.MAX_VALUE);
+                // Reset resume tracking so time sync recalibrates with new data
+                resumeTimeOffset = -1;
+                resumeMode = false;
+            }
+            else
+            {
+                // Pull/HTTPLS mode: the subsequent MEDIACMD_SEEK handles repositioning.
+                // Don't force a max-seek which can confuse the decoder.
+                // Clear flushed flag since no pushData() call will do it.
+                flushed = false;
+                if (VerboseLogging.DETAILED_PLAYER_LOGGING)
+                {
+                    log.debug("Pull flush: no-op, will seek next");
+                }
+            }
         }
     }
 
@@ -234,8 +253,8 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
             ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-mpeg2", 1); // enable hardware acceleration
             ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 1);
 
-            ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "packet-buffering", 0);
-            ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "fflags", "nobuffer");
+            ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "packet-buffering", 1);
+            ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-buffer-size", 15 * 1024 * 1024); // 15MB internal buffer
 
             // setting this to 0 removes the pixelization for mpeg2 videos
             ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 0);

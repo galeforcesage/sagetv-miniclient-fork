@@ -328,6 +328,9 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
             log.debug("SEEK: {}", timeInMS);
         }
         seekPending = true;
+        // Clear flushed flag on seek — in pull mode there's no pushData() to clear it,
+        // and the server expects getMediaTimeMillis() to return a real time after seeking.
+        flushed = false;
     }
 
     @Override

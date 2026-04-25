@@ -629,6 +629,47 @@ public class MiniClientConnection implements SageTVInputCallback
             log.logWarning("Failed pull mode media test....only use push mode for server: " + msi.address);
         }
 
+        // Smart streaming fallback: compute the effective streaming mode based on
+        // what's actually available, to prevent black screen from broken transcoders.
+        //
+        // Priority chain (least server CPU first):
+        //   1. Pull mode  - client decodes locally, zero server CPU, always works
+        //   2. Dynamic push - server pushes raw if codecs match, no FFmpeg needed
+        //   3. Fixed remux  - container change only, needs working FFmpeg on server
+        //   4. Fixed transcode - full re-encode, needs working FFmpeg on server
+        //
+        // If pull is available (port 7818 reachable), always use it.
+        // If push-only (remote/Placeshifter), use dynamic to avoid FFmpeg dependency.
+        final String userStreamingMode = client.properties().getStreamingMode();
+        final String effectiveStreamingMode;
+
+        if (canDoPullStreaming) {
+            // Pull mode always works with any server, uses zero server CPU
+            effectiveStreamingMode = "pull";
+            if (!"pull".equalsIgnoreCase(userStreamingMode)) {
+                log.logInfo("STREAMING OVERRIDE: '" + userStreamingMode + "' -> 'pull' "
+                        + "(port 7818 reachable, using pull mode for reliability and zero server CPU)");
+            }
+        } else if ("fixed".equalsIgnoreCase(userStreamingMode)) {
+            // Push-only: fixed mode requests transcode/remux which needs FFmpeg.
+            // Fall back to dynamic so server can try raw push first.
+            effectiveStreamingMode = "dynamic";
+            log.logWarning("STREAMING OVERRIDE: 'fixed' -> 'dynamic' "
+                    + "(port 7818 unreachable, falling back to dynamic push to avoid server FFmpeg dependency)");
+        } else if ("pull".equalsIgnoreCase(userStreamingMode)) {
+            // User wanted pull but port 7818 is unreachable
+            effectiveStreamingMode = "dynamic";
+            log.logWarning("STREAMING OVERRIDE: 'pull' -> 'dynamic' "
+                    + "(port 7818 unreachable, falling back to dynamic push mode)");
+        } else {
+            // User chose dynamic, keep it
+            effectiveStreamingMode = userStreamingMode;
+        }
+
+        log.logInfo("Effective streaming mode: '" + effectiveStreamingMode
+                + "' (user configured: '" + userStreamingMode
+                + "', pull available: " + canDoPullStreaming + ")");
+
         try
         {
             // create the event router thread to handle routing of event on a separate thread
@@ -1066,7 +1107,7 @@ public class MiniClientConnection implements SageTVInputCallback
                     else if ("VIDEO_CODECS".equals(propName))
                     {
                         if (client.properties().getFixedEncodingPreference().equalsIgnoreCase("always")
-                                && (client.properties().getStreamingMode()).equalsIgnoreCase("fixed"))
+                                && effectiveStreamingMode.equalsIgnoreCase("fixed"))
                         {
                             propVal = "NONE";
                         }
@@ -1081,7 +1122,7 @@ public class MiniClientConnection implements SageTVInputCallback
                     else if ("AUDIO_CODECS".equals(propName))
                     {
                         if (client.properties().getFixedEncodingPreference().equalsIgnoreCase("always")
-                                && (client.properties().getStreamingMode()).equalsIgnoreCase("fixed"))
+                                && effectiveStreamingMode.equalsIgnoreCase("fixed"))
                         {
                             propVal = "NONE";
                         }
@@ -1099,13 +1140,13 @@ public class MiniClientConnection implements SageTVInputCallback
                     {
                         if (((client.properties().getFixedEncodingPreference().equalsIgnoreCase("always")
                             || client.properties().getFixedRemuxingPreference().equalsIgnoreCase("always"))
-                                && (client.properties().getStreamingMode()).equalsIgnoreCase("fixed")))
+                                && effectiveStreamingMode.equalsIgnoreCase("fixed")))
                         {
                             // If we are using fixed transcode always, do not allow transcode/remux to mpeg-ps/ts.
                             // pushing
                             propVal = "NONE";
                         }
-                        else if (canDoPullStreaming && "pull".equalsIgnoreCase(client.properties().getStreamingMode()))
+                        else if (canDoPullStreaming && "pull".equalsIgnoreCase(effectiveStreamingMode))
                         {
                             // If we are forced into pull mode then we don't support
                             // pushing
@@ -1134,14 +1175,14 @@ public class MiniClientConnection implements SageTVInputCallback
                         if (!canDoPullStreaming
                                 || ((client.properties().getFixedEncodingPreference().equalsIgnoreCase("always")
                                 || client.properties().getFixedRemuxingPreference().equalsIgnoreCase("always"))
-                                && "fixed".equalsIgnoreCase(client.properties().getStreamingMode())))
+                                && "fixed".equalsIgnoreCase(effectiveStreamingMode)))
                         {
                             propVal = "";
                         }
                         else
                         {
                             // if we are being forced into PULL mode, then add the push containers to our PULL containers
-                            if ("pull".equalsIgnoreCase(client.properties().getStreamingMode()))
+                            if ("pull".equalsIgnoreCase(effectiveStreamingMode))
                             {
                                 propVal = toStringList(pushFormats) + "," + toStringList(pullFormats);
                             }
@@ -1162,7 +1203,7 @@ public class MiniClientConnection implements SageTVInputCallback
                     }
                     else if ("FIXED_PUSH_MEDIA_FORMAT".equals(propName))
                     {
-                        if ("fixed".equalsIgnoreCase(client.properties().getStreamingMode()))
+                        if ("fixed".equalsIgnoreCase(effectiveStreamingMode))
                         {
                             String format = client.properties().getFixedEncodingContainerFormat();
                             
@@ -1237,7 +1278,7 @@ public class MiniClientConnection implements SageTVInputCallback
                     else if ("FIXED_PUSH_REMUX_FORMAT".equals(propName))
                     {
                         //If we are using fixed streaming mode and
-                        if ("fixed".equalsIgnoreCase(client.properties().getStreamingMode()))
+                        if ("fixed".equalsIgnoreCase(effectiveStreamingMode))
                         {
                             if(!client.properties().getFixedRemuxingPreference().equalsIgnoreCase("off"))
                             {

@@ -13,7 +13,7 @@ import sagex.miniclient.util.VerboseLogging;
  * byte reads would be sent directly to the sagetv server and is very inefficient.
  */
 public class BufferedPullDataSource extends SimplePullDataSource {
-    static final int MAX_BUFFER = 32768;
+    static final int MAX_BUFFER = 262144;
     byte _buffer[];
 
     int bytesRead = 0; // how many bytes have we read into our buffer

@@ -351,20 +351,12 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 {
                     try
                     {
+                        if (player == null) return;
+
                         log.logDebug("Seek Called - Current Position: " + player.getContentPosition() + "  Seek Request: " + timeInMillis + " Difference: " + (player.getContentPosition() - timeInMillis));
 
-                        int wait = 0;
                         player.seekTo(timeInMillis);
-
-                        //Wait up to a second for the seek to complete
-                        while (player.getCurrentPosition() < timeInMillis && wait < 10)
-                        {
-                            log.logDebug("Seek Called -  Waiting for current position to match Seek request.  Current Position: " + player.getContentPosition() + "  Seek Request: " + timeInMillis);
-                            Thread.sleep(100);
-                            wait++;
-                        }
-
-                        Exo2MediaPlayerImpl.this.currentPlaybackPosition = player.getCurrentPosition();
+                        // Position update handled by onPositionDiscontinuity and progress runnable
                     }
                     catch (Exception ex)
                     {
@@ -479,7 +471,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     @Override
     public synchronized void flush()
     {
-        log.logDebug("Flush called");
+        log.logDebug("Flush called, pushMode=" + pushMode);
         super.flush();
 
         context.runOnUiThread(new Runnable()
@@ -496,21 +488,33 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                         return;
                     }
 
-                    player.setMediaSource(mediaSource, true);
-                    player.prepare();
+                    if (pushMode)
+                    {
+                        // Push mode: server will re-push data from new position.
+                        // Must reset the media source so the push data source starts fresh.
+                        player.setMediaSource(mediaSource, true);
+                        player.prepare();
+                        log.logDebug("Push flush: reset media source, position: " + Utils.toHHMMSS(player.getCurrentPosition()));
+                    }
+                    else
+                    {
+                        // Pull/HTTPLS mode: the subsequent MEDIACMD_SEEK will reposition.
+                        // Don't destroy the pipeline — just let ExoPlayer handle it via seekTo().
+                        // Clearing flushed flag here since no pushData() call will do it.
+                        flushed = false;
+                        log.logDebug("Pull flush: no-op, will seek next");
+                    }
 
-                    log.logDebug("After Flush was called Current Playback Position: " + Utils.toHHMMSS(player.getCurrentPosition()));
                     Exo2MediaPlayerImpl.this.currentPlaybackPosition = player.getCurrentPosition();
                 }
                 catch (Exception ex)
                 {
+                    log.logError("Error during flush", ex);
                 }
                 finally
                 {
                     playbackPositionLock.unlock();
                 }
-
-
             }
         });
     }
@@ -584,6 +588,18 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
 
         ExoPlayer.Builder builder = new ExoPlayer.Builder(context.getContext(), renderersFactory);
+
+        // Tune buffer sizes for streams over slow/variable connections (e.g. Tailscale).
+        // Keep default min/max buffer, but reduce rebuffer threshold so playback
+        // resumes quickly after a stall rather than waiting to refill a large buffer.
+        builder.setLoadControl(
+                new com.google.android.exoplayer2.DefaultLoadControl.Builder()
+                        .setBufferDurationsMs(
+                                /* minBufferMs= */ 15_000,
+                                /* maxBufferMs= */ 50_000,
+                                /* bufferForPlaybackMs= */ 2_500,
+                                /* bufferForPlaybackAfterRebufferMs= */ 2_500)
+                        .build());
 
         builder.setTrackSelector(trackSelector);
         player = builder.build();
@@ -750,7 +766,9 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
             //mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(Uri.parse(sageTVurl));
 
-            mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(MediaItem.fromUri(Uri.parse(sageTVurl)));
+            // Use SageExtractorsFactory which provides our patched PsExtractor
+            // that properly demuxes MPEG-PS private_stream_1 sub-streams (AC3/EAC3)
+            mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory, new SageExtractorsFactory()).createMediaSource(MediaItem.fromUri(Uri.parse(sageTVurl)));
 
 
             boolean haveStartPosition = (playbackStartPosition >= 0);

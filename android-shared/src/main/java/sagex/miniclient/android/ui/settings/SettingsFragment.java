@@ -15,7 +15,7 @@ import android.view.WindowManager;
 import android.widget.Toast;
 
 
-import com.google.firebase.crashlytics.FirebaseCrashlytics;
+//import com.google.firebase.crashlytics.FirebaseCrashlytics;
 
 import java.io.File;
 import java.io.FilenameFilter;
