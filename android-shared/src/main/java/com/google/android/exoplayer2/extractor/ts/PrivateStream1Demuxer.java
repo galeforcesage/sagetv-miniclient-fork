@@ -50,11 +50,7 @@ import com.google.android.exoplayer2.util.ParsableByteArray;
     private static final int MAX_SUBSTREAMS = 4;
 
     /**
-     * Sub-stream ID ranges in MPEG-PS private_stream_1:
-     * 0x20-0x3F: Subtitles
-     * 0x80-0x87: AC3
-     * 0x88-0x8F: DTS
-     * 0xA0-0xA7: LPCM
+     * Sub-stream ID ranges: 0x80-0x87 AC3, 0x88-0x8F DTS.
      */
     private static final int AC3_SUBSTREAM_MIN = 0x80;
     private static final int AC3_SUBSTREAM_MAX = 0x87;
@@ -65,54 +61,29 @@ import com.google.android.exoplayer2.util.ParsableByteArray;
 
     @Nullable private ExtractorOutput extractorOutput;
 
-    // Saved from packetStarted() for forwarding to the sub-stream reader
     private long activeTimeUs;
     private int activeFlags;
-
-    // Primary reader: pre-created in createTracks() so its track is registered
-    // before endTracks() is called. Handles the first sub-stream found, or
-    // all data if no sub-stream headers are present.
     @Nullable private Ac3Reader primaryReader;
-
-    // The sub-stream ID assigned to the primary reader, or -1 if not yet assigned
     private int primarySubStreamId;
-
-    // Whether we've detected MPEG-PS private_stream_1 sub-stream headers
     private boolean detectedSubStreamHeaders;
 
-    // Timestamp seeding: each PES packet carries a timestamp for its first frame,
-    // but Ac3Reader parses ALL syncframes in the packet and accumulates timeUs
-    // by sampleDurationUs per frame. If we forward PES timestamps on every packet,
-    // the next PES timestamp resets Ac3Reader's accumulated timeUs back, creating
-    // a constant discontinuity (256000us for 8-frame EAC3 packets).
-    // Fix: seed with the first valid PES timestamp, then pass C.TIME_UNSET
-    // for subsequent packets so Ac3Reader keeps its own smooth accumulation.
-    // Ac3Reader.packetStarted() safely ignores C.TIME_UNSET timestamps.
+    // Seed first valid PES timestamp per reader, then pass C.TIME_UNSET so
+    // Ac3Reader accumulates smoothly (prevents 256000us discontinuity).
     // On seek, Ac3Reader.seek() resets timeUs to C.TIME_UNSET, so we reset
     // our flags to allow re-seeding from the next valid PES timestamp.
     private boolean primaryTimestampSeeded;
     private final SparseArray<Boolean> secondaryTimestampSeeded;
 
-    // Diagnostic counters
-    private int primaryPacketCount;
-    private int secondaryPacketCount;
-
     public PrivateStream1Demuxer() {
         secondaryReaders = new SparseArray<>();
         secondaryTimestampSeeded = new SparseArray<>();
         primarySubStreamId = -1;
-        detectedSubStreamHeaders = false;
-        primaryTimestampSeeded = false;
-        primaryPacketCount = 0;
-        secondaryPacketCount = 0;
     }
 
     @Override
     public void seek() {
         primaryTimestampSeeded = false;
         secondaryTimestampSeeded.clear();
-        primaryPacketCount = 0;
-        secondaryPacketCount = 0;
         if (primaryReader != null) {
             primaryReader.seek();
         }
@@ -124,10 +95,6 @@ import com.google.android.exoplayer2.util.ParsableByteArray;
     @Override
     public void createTracks(ExtractorOutput output, TrackIdGenerator idGenerator) {
         this.extractorOutput = output;
-        // Pre-create the primary reader so its track is registered BEFORE
-        // endTracks() is called. This reader handles either:
-        // - The first AC3 sub-stream found (if sub-stream headers are present)
-        // - All data directly (if no sub-stream headers, i.e. raw AC3 sync frames)
         primaryReader = new Ac3Reader();
         primaryReader.createTracks(output, new TrackIdGenerator(
                 PsExtractor.PRIVATE_STREAM_1, 0x100));
@@ -152,10 +119,9 @@ import com.google.android.exoplayer2.util.ParsableByteArray;
         if (isAc3SubStreamId(firstByte)) {
             detectedSubStreamHeaders = true;
 
-            // AC3/EAC3 sub-stream header: 1 byte sub-stream ID + 3 bytes
-            // (number_of_frame_headers + first_access_unit_pointer)
+            // AC3 sub-stream header: 1 byte ID + 3 bytes header
             if (data.bytesLeft() < 3) {
-                return; // Truncated sub-stream header
+                return;
             }
             data.skipBytes(3);
 
@@ -166,52 +132,18 @@ import com.google.android.exoplayer2.util.ParsableByteArray;
             }
 
             if (firstByte == primarySubStreamId) {
-                // Route to the pre-created primary reader (track registered before endTracks)
-                primaryPacketCount++;
-                // Only forward the PES timestamp until Ac3Reader has been seeded.
-                // After that, pass C.TIME_UNSET so Ac3Reader keeps its own
-                // smoothly-accumulated timeUs (prevents 256000us discontinuity).
-                long forwardTimeUs;
-                if (!primaryTimestampSeeded) {
-                    forwardTimeUs = activeTimeUs;
-                    if (activeTimeUs != C.TIME_UNSET) {
-                        primaryTimestampSeeded = true;
-                    }
-                } else {
-                    forwardTimeUs = C.TIME_UNSET;
-                }
-                if (primaryPacketCount <= 5 || primaryPacketCount % 500 == 0) {
-                    Log.i(TAG, "Primary 0x" + Integer.toHexString(firstByte)
-                            + " pkt#" + primaryPacketCount
-                            + " pesTimeUs=" + activeTimeUs
-                            + " fwdTimeUs=" + forwardTimeUs
-                            + " dataBytes=" + data.bytesLeft());
+                long forwardTimeUs = seedTimestamp(primaryTimestampSeeded, activeTimeUs);
+                if (!primaryTimestampSeeded && activeTimeUs != C.TIME_UNSET) {
+                    primaryTimestampSeeded = true;
                 }
                 primaryReader.packetStarted(forwardTimeUs, activeFlags);
                 primaryReader.consume(data);
                 primaryReader.packetFinished();
             } else {
-                // Secondary sub-stream — try to create a reader.
-                // The track may be created after endTracks(), in which case
-                // ExoPlayer silently discards the samples (no crash).
-                secondaryPacketCount++;
-                // Same timestamp seeding logic for secondary readers
-                long forwardTimeUs;
                 Boolean seeded = secondaryTimestampSeeded.get(firstByte);
-                if (seeded == null || !seeded) {
-                    forwardTimeUs = activeTimeUs;
-                    if (activeTimeUs != C.TIME_UNSET) {
-                        secondaryTimestampSeeded.put(firstByte, true);
-                    }
-                } else {
-                    forwardTimeUs = C.TIME_UNSET;
-                }
-                if (secondaryPacketCount <= 5 || secondaryPacketCount % 500 == 0) {
-                    Log.i(TAG, "Secondary 0x" + Integer.toHexString(firstByte)
-                            + " pkt#" + secondaryPacketCount
-                            + " pesTimeUs=" + activeTimeUs
-                            + " fwdTimeUs=" + forwardTimeUs
-                            + " dataBytes=" + data.bytesLeft());
+                long forwardTimeUs = seedTimestamp(seeded != null && seeded, activeTimeUs);
+                if ((seeded == null || !seeded) && activeTimeUs != C.TIME_UNSET) {
+                    secondaryTimestampSeeded.put(firstByte, true);
                 }
                 Ac3Reader reader = getOrCreateSecondaryReader(firstByte);
                 if (reader != null) {
@@ -224,29 +156,17 @@ import com.google.android.exoplayer2.util.ParsableByteArray;
             // DTS sub-stream — skip for now (no DTS reader in base ExoPlayer)
             detectedSubStreamHeaders = true;
         } else {
-            // Not a recognized sub-stream ID. This could mean:
-            // 1. The muxer doesn't use sub-stream headers (data starts with AC3 sync words)
-            // 2. This is a subtitle or other type we don't handle
-            //
-            // If we haven't detected sub-stream headers yet, fall back to
-            // the original behavior (single Ac3Reader for all data).
+            // No sub-stream header — fall back to single-reader mode
             if (!detectedSubStreamHeaders) {
-                data.setPosition(startPosition); // Rewind to include the byte we read
-                long forwardTimeUs;
-                if (!primaryTimestampSeeded) {
-                    forwardTimeUs = activeTimeUs;
-                    if (activeTimeUs != C.TIME_UNSET) {
-                        primaryTimestampSeeded = true;
-                    }
-                } else {
-                    forwardTimeUs = C.TIME_UNSET;
+                data.setPosition(startPosition);
+                long forwardTimeUs = seedTimestamp(primaryTimestampSeeded, activeTimeUs);
+                if (!primaryTimestampSeeded && activeTimeUs != C.TIME_UNSET) {
+                    primaryTimestampSeeded = true;
                 }
                 primaryReader.packetStarted(forwardTimeUs, activeFlags);
                 primaryReader.consume(data);
                 primaryReader.packetFinished();
             }
-            // If we HAVE detected sub-stream headers, this packet has an
-            // unrecognized sub-stream type — just skip it.
         }
     }
 
@@ -263,11 +183,12 @@ import com.google.android.exoplayer2.util.ParsableByteArray;
         return id >= DTS_SUBSTREAM_MIN && id <= DTS_SUBSTREAM_MAX;
     }
 
-    /**
-     * Gets or creates an Ac3Reader for a secondary sub-stream ID.
-     * These tracks may be created after endTracks(), in which case ExoPlayer
-     * will silently discard their samples. Returns null if max reached.
-     */
+    /** Returns pesTimeUs for the first valid timestamp (seeding), C.TIME_UNSET after. */
+    private static long seedTimestamp(boolean alreadySeeded, long pesTimeUs) {
+        return alreadySeeded ? C.TIME_UNSET : pesTimeUs;
+    }
+
+    /** Gets or creates an Ac3Reader for a secondary sub-stream ID. */
     @Nullable
     private Ac3Reader getOrCreateSecondaryReader(int subStreamId) {
         Ac3Reader reader = secondaryReaders.get(subStreamId);
@@ -285,19 +206,10 @@ import com.google.android.exoplayer2.util.ParsableByteArray;
             return null;
         }
 
-        // Create a new Ac3Reader for this secondary sub-stream.
-        // Note: this track may be created after endTracks() was called,
-        // which means ExoPlayer may not include it in the track selector.
-        // That's OK — at minimum we prevent the crash by not feeding
-        // this sub-stream's data to the primary reader.
         reader = new Ac3Reader();
-        TrackIdGenerator subIdGenerator = new TrackIdGenerator(subStreamId, 0x100);
-        reader.createTracks(extractorOutput, subIdGenerator);
-
+        reader.createTracks(extractorOutput, new TrackIdGenerator(subStreamId, 0x100));
         secondaryReaders.put(subStreamId, reader);
-
-        Log.i(TAG, "Created secondary Ac3Reader for sub-stream 0x"
-                + Integer.toHexString(subStreamId));
+        Log.i(TAG, "Created secondary reader for sub-stream 0x" + Integer.toHexString(subStreamId));
 
         return reader;
     }
