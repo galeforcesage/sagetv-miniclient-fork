@@ -40,7 +40,9 @@
     <!--<uses-feature android:name="android.hardware.opengles.aep" android:required="false" />-->
 
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
+        tools:replace="android:allowBackup"
+        android:usesCleartextTraffic="true"
         android:icon="@mipmap/ic_launcher_v2"
         android:label="@string/app_name"
         android:supportsRtl="true"
@@ -78,6 +80,13 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <!-- Disable Firebase auto-init to prevent crash with placeholder google-services.json -->
+        <provider
+            android:name="com.google.firebase.provider.FirebaseInitProvider"
+            android:authorities="${applicationId}.firebaseinitprovider"
+            tools:node="remove" />
+
     </application>
 
 </manifest>

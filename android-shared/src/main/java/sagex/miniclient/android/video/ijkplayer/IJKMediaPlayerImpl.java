@@ -179,6 +179,13 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     {
         super.play();
 
+        if (!playerReady)
+        {
+            log.debug("Player not ready, deferring play");
+            pendingPlay = true;
+            return;
+        }
+
         if (player != null && !player.isPlaying())
         {
             player.start();
@@ -189,35 +196,33 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     @Override
     public void flush()
     {
+        if (!playerReady)
+        {
+            log.debug("Player not ready, deferring flush");
+            pendingFlush = true;
+            return;
+        }
+
         super.flush();
 
-        if (player != null)
+        // Reset resume tracking so time reporting starts fresh after seek.
+        // The server will push new data from the new position and
+        // getPlayerMediaTimeMillis will recalculate based on the new serverStartTime.
+        resumeTimeOffset = -1;
+        resumeMode = false;
+        logTime = -1;
+
+        if (player != null && pushMode)
+        {
+            log.debug("Flush in push mode: reset resume state, new data will arrive at new position");
+        }
+        else if (player != null)
         {
             if (pushMode)
             {
-                // Push mode: server will re-push data from new position.
-                // Seek to MAX_VALUE forces IJK to discard its internal buffers.
-                if (VerboseLogging.DETAILED_PLAYER_LOGGING)
-                {
-                    log.debug("Push flush: forcing buffer clear via max-seek");
-                }
-                seekToImpl(Long.MAX_VALUE);
-
-                // Reset resume tracking so time sync recalibrates with new data
-                resumeTimeOffset = -1;
-                resumeMode = false;
+                log.debug("Flush in pull mode: force seek to clear buffers");
             }
-            else
-            {
-                // Pull/HTTPLS mode: the subsequent MEDIACMD_SEEK handles repositioning.
-                // Don't force a max-seek which can confuse the decoder.
-                // Clear flushed flag since no pushData() call will do it.
-                flushed = false;
-                if (VerboseLogging.DETAILED_PLAYER_LOGGING)
-                {
-                    log.debug("Pull flush: no-op, will seek next");
-                }
-            }
+            seekToImpl(Long.MAX_VALUE);
         }
     }
 
@@ -259,6 +264,9 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
             ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-avc", 1); // enable hardware acceleration
             ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-hevc", 1); // enable hardware acceleration
             ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-mpeg2", 1); // enable hardware acceleration
+            ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-all-videos", 1); // enable HW decode for all video codecs (MPEG4, VP8/VP9, etc.)
+            ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 1); // let HW decoder handle rotation instead of software
+            ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 1); // handle resolution changes in HW decoder without fallback to software
             ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 1);
 
             ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "packet-buffering", 1);
@@ -390,6 +398,19 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                 public void onPrepared(IMediaPlayer mp)
                 {
                     playerReady = true;
+
+                    if (pendingFlush)
+                    {
+                        log.debug("Clearing deferred flush - player just prepared, no flush needed");
+                        pendingFlush = false;
+                    }
+
+                    if (pendingPlay)
+                    {
+                        log.debug("Clearing deferred play - onPrepared will start player");
+                        pendingPlay = false;
+                    }
+
                     player.start();
                     state = PLAY_STATE;
 
@@ -497,6 +518,17 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
             {
                 log.info("We Missed a Seek for {}: player.isPlaying {}; State: {}; playerReader: {}", timeInMS, player.isPlaying(), state, playerReady);
             }
+        }
+        else
+        {
+            // In push mode, don't call player.seekTo() — the data source is a pipe
+            // that can't seek. The server handles seeking by flushing the old data
+            // and pushing new data from the seek position. Reset resume tracking
+            // so getPlayerMediaTimeMillis() picks up the new serverStartTime correctly.
+            log.debug("Push mode seek to {}: reset resume state, server will push new data", timeInMS);
+            resumeTimeOffset = -1;
+            resumeMode = false;
+            logTime = -1;
         }
     }
 

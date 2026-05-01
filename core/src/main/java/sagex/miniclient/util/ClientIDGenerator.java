@@ -1,6 +1,6 @@
 package sagex.miniclient.util;
 
-import java.util.Random;
+import java.security.SecureRandom;
 
 /**
  * Created by seans on 05/03/16.
@@ -11,7 +11,7 @@ public class ClientIDGenerator {
     }
 
     public String generateId() {
-        Random r = new Random();
+        SecureRandom r = new SecureRandom();
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < 6; i++) {
             sb.append((char) (r.nextInt(26) + 'A'));

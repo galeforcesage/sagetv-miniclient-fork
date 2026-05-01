@@ -253,9 +253,8 @@ public class AppUtil {
 
     public static Set<String> getVideoDecoders() {
         Set<String> all = new TreeSet<>();
-        int count = MediaCodecList.getCodecCount();
-        for (int i = 0; i < count; i++) {
-            MediaCodecInfo info = MediaCodecList.getCodecInfoAt(i);
+        MediaCodecList codecList = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
+        for (MediaCodecInfo info : codecList.getCodecInfos()) {
             if (!info.isEncoder()) {
                 if (info.getSupportedTypes() != null) {
                     for (String s : info.getSupportedTypes()) {
@@ -271,9 +270,8 @@ public class AppUtil {
 
     public static List<MediaCodecInfo> getDecoders() {
         List<MediaCodecInfo> all = new ArrayList<>();
-        int count = MediaCodecList.getCodecCount();
-        for (int i = 0; i < count; i++) {
-            MediaCodecInfo info = MediaCodecList.getCodecInfoAt(i);
+        MediaCodecList codecList = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
+        for (MediaCodecInfo info : codecList.getCodecInfos()) {
             if (info.isEncoder()) continue;
             if (info.getSupportedTypes() == null) continue;
             all.add(info);
@@ -284,9 +282,8 @@ public class AppUtil {
 
     public static Set<String> getAudioDecoders() {
         Set<String> all = new TreeSet<>();
-        int count = MediaCodecList.getCodecCount();
-        for (int i = 0; i < count; i++) {
-            MediaCodecInfo info = MediaCodecList.getCodecInfoAt(i);
+        MediaCodecList codecList = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
+        for (MediaCodecInfo info : codecList.getCodecInfos()) {
             if (!info.isEncoder()) {
                 if (info.getSupportedTypes() != null) {
                     for (String s : info.getSupportedTypes()) {

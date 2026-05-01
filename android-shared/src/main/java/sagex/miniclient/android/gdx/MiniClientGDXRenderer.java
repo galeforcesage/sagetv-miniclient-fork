@@ -216,34 +216,38 @@ public class MiniClientGDXRenderer implements ApplicationListener, UIRenderer<Gd
     @Override
     public void render() {
         if (batch==null) return;
-        int size=renderQueue.size();
-        if (size==0) return;
 
+        List<Runnable> snapshot;
+        synchronized (renderQueue) {
+            int size = renderQueue.size();
+            if (size == 0) return;
+            snapshot = new ArrayList<>(renderQueue);
+            renderQueue.clear();
+        }
+
+        int size = snapshot.size();
         long st = System.currentTimeMillis();
 
-        synchronized (renderQueue) {
-            try {
-                batch.begin();
-                batch.setColor(Color.BLACK);
-                for (int i=0;i<size;i++) {
-                    try {
-                        renderQueue.get(i).run();
-                    } catch (Throwable t) {
-                        log.error("Failed to Render Instruction", t);
-                    }
+        try {
+            batch.begin();
+            batch.setColor(Color.BLACK);
+            for (int i=0;i<size;i++) {
+                try {
+                    snapshot.get(i).run();
+                } catch (Throwable t) {
+                    log.error("Failed to Render Instruction", t);
                 }
-            } catch (Throwable t) {
-                log.error("Render Failed.  This should never happen.  Developer should figure out why", t);
-                // TODO: How should we manage this.. request a re-render??
-            } finally {
-                batch.end();
-                renderQueue.clear();
             }
+        } catch (Throwable t) {
+            log.error("Render Failed.  This should never happen.  Developer should figure out why", t);
+            // TODO: How should we manage this.. request a re-render??
+        } finally {
+            batch.end();
         }
 
         long et = System.currentTimeMillis();
         if (logFrameTime) {
-            log.debug("RENDER: Time: " + (et - st) + "ms; Ops: " + size);
+            log.debug("RENDER: Time: {}ms; Ops: {}", (et - st), size);
         }
     }
 
@@ -710,10 +714,10 @@ public class MiniClientGDXRenderer implements ApplicationListener, UIRenderer<Gd
         }
         Gdx.graphics.requestRendering();
         if (logFrameTime) {
-            log.debug("FRAME: " + (frame) + "; Time: " + (System.currentTimeMillis() - frameTime) + "ms");
+            log.debug("FRAME: {}; Time: {}ms", frame, (System.currentTimeMillis() - frameTime));
         }
         if (logTextureTime) {
-            log.debug("FRAME: " + (frame) + "; Texture Load Time: " + totalTextureTime + "ms; Longest Single: " + longestTextureTime + "ms");
+            log.debug("FRAME: {}; Texture Load Time: {}ms; Longest Single: {}ms", frame, totalTextureTime, longestTextureTime);
         }
         frame++;
         inFrame=false;

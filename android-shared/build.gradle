@@ -6,25 +6,17 @@ android {
     buildToolsVersion androidBuildToolsVersion
     compileSdkVersion androidCompileSdkVersion
 
-    android {
-        compileOptions {
-            sourceCompatibility 1.8
-            targetCompatibility 1.8
-        }
-        ndkVersion = "21.0.6113669"
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
+
+    ndkVersion = "21.0.6113669"
 
     externalNativeBuild {
         cmake {
             path "src/main/jni/CMakeLists.txt"
         }
-    }
-    compileOptions {
-        //sourceCompatibility defJavaVesionConst
-        //targetCompatibility defJavaVesionConst
-        sourceCompatibility 1.8
-        targetCompatibility 1.8
-
     }
 
     sourceSets {
@@ -40,8 +32,14 @@ android {
 
         //instrumentTest.setRoot('tests')
     }
-    lintOptions {
+    lint {
         abortOnError false
+    }
+
+    packaging {
+        resources {
+            excludes += ['META-INF/INDEX.LIST', 'META-INF/DEPENDENCIES']
+        }
     }
 
     defaultConfig {
@@ -69,6 +67,7 @@ dependencies {
 
     api project(":core")
 
+    implementation "androidx.media:media:1.7.0"
     implementation "androidx.preference:preference:1.1.1"
     implementation "androidx.legacy:legacy-support-v4:1.0.0"
     implementation "androidx.cardview:cardview:1.0.0"
@@ -82,7 +81,7 @@ dependencies {
     }
 
     api "com.badlogicgames.gdx:gdx-backend-android:$gdxVersion"
-    //implementation 'com.google.firebase:firebase-crashlytics:18.2.10'
+    implementation 'com.google.firebase:firebase-crashlytics:18.2.10'
     natives "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-armeabi"
     natives "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-armeabi-v7a"
     natives "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-arm64-v8a"
@@ -102,7 +101,7 @@ dependencies {
     api "com.google.android.exoplayer:exoplayer-smoothstreaming:${exoVersion}"
     api "com.google.android.exoplayer:exoplayer-hls:${exoVersion}"
     api "com.google.android.exoplayer:exoplayer-testutils:${exoVersion}"
-    //api "com.google.android.exoplayer:extension-mediasession:${exoVersion}@aar"
+    //api "com.google.android.exoplayer:extension-mediasession:${exoVersion}"
     api 'com.google.guava:guava:31.0-jre' //This appears to be required for Exoplayer
 
     api(name: "extension-ffmpeg-${exoVersionCustomExt}", ext: 'aar') // yourLib.aar is put in libs folder

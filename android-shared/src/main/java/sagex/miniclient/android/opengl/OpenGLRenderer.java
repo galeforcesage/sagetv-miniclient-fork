@@ -268,6 +268,7 @@ public class OpenGLRenderer implements UIRenderer<OpenGLTexture>, GLSurfaceView.
     }
 
     public void render() {
+        List<Runnable> snapshot;
         synchronized (renderQueue) {
             int size = renderQueue.size();
             if (size == 0) return;
@@ -278,32 +279,34 @@ public class OpenGLRenderer implements UIRenderer<OpenGLTexture>, GLSurfaceView.
                 return;
             }
 
-            long st = System.currentTimeMillis();
+            snapshot = new ArrayList<>(renderQueue);
+            renderQueue.clear();
+        }
 
-            if (logDetails)
-                log.debug("Begin Render Frame {}", frame);
+        int size = snapshot.size();
+        long st = System.currentTimeMillis();
 
-            try {
-                for (int i=0;i<size;i++) {
-                    try {
-                        renderQueue.get(i).run();
-                    } catch (Throwable t) {
-                        log.error("Failed TO Render Instruction", t);
-                    }
+        if (logDetails)
+            log.debug("Begin Render Frame {}", frame);
+
+        try {
+            for (int i=0;i<size;i++) {
+                try {
+                    snapshot.get(i).run();
+                } catch (Throwable t) {
+                    log.error("Failed TO Render Instruction", t);
                 }
-            } catch (Throwable t) {
-                log.error("Render Failed.  This should never happen.  Developer should figure out why", t);
-                // TODO: How should we manage this.. request a re-render??
-            } finally {
-                renderQueue.clear();
             }
-            if (logDetails)
-                log.debug("End Render Frame {}", frame);
+        } catch (Throwable t) {
+            log.error("Render Failed.  This should never happen.  Developer should figure out why", t);
+            // TODO: How should we manage this.. request a re-render??
+        }
+        if (logDetails)
+            log.debug("End Render Frame {}", frame);
 
-            long et = System.currentTimeMillis();
-            if (logFrameTime) {
-                log.debug("RENDER: Time: " + (et - st) + "ms; Ops: " + size);
-            }
+        long et = System.currentTimeMillis();
+        if (logFrameTime) {
+            log.debug("RENDER: Time: {}ms; Ops: {}", (et - st), size);
         }
     }
 
@@ -600,10 +603,10 @@ public class OpenGLRenderer implements UIRenderer<OpenGLTexture>, GLSurfaceView.
         glView.requestRender();
 
         if (logFrameTime) {
-            log.debug("FRAME: " + (frame) + "; Time: " + (System.currentTimeMillis() - frameTime) + "ms");
+            log.debug("FRAME: {}; Time: {}ms", frame, (System.currentTimeMillis() - frameTime));
         }
         if (logTextureTime) {
-            log.debug("FRAME: " + (frame) + "; Texture Load Time: " + totalTextureTime + "ms; Longest Single: " + longestTextureTime + "ms");
+            log.debug("FRAME: {}; Texture Load Time: {}ms; Longest Single: {}ms", frame, totalTextureTime, longestTextureTime);
         }
         frame++;
         inFrame=false;

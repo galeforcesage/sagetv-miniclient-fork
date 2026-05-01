@@ -46,12 +46,14 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     protected TDataSource dataSource;
     protected final AndroidUIController context;
     protected boolean pushMode;
-    protected boolean playerReady;
+    protected volatile boolean playerReady;
     protected boolean createPlayerOnUI = true;
     protected boolean waitForPlayer = true;
     protected int state;
     protected boolean eos = false;
     protected boolean seekPending = false;
+    protected volatile boolean pendingPlay = false;
+    protected volatile boolean pendingFlush = false;
     protected String lastUri;
     protected long lastMediaTime = -1;
     protected boolean flushed = false;
