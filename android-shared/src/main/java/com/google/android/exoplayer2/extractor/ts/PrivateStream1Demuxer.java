@@ -16,7 +16,6 @@
 package com.google.android.exoplayer2.extractor.ts;
 
 import android.util.Log;
-import android.util.SparseArray;
 
 import androidx.annotation.Nullable;
 
@@ -44,12 +43,6 @@ import com.google.android.exoplayer2.util.ParsableByteArray;
     private static final String TAG = "PS1Demuxer";
 
     /**
-     * Maximum number of audio sub-streams we'll handle from private_stream_1.
-     * Typical recordings have 1-3 audio tracks.
-     */
-    private static final int MAX_SUBSTREAMS = 4;
-
-    /**
      * Sub-stream ID ranges: 0x80-0x87 AC3, 0x88-0x8F DTS.
      */
     private static final int AC3_SUBSTREAM_MIN = 0x80;
@@ -57,65 +50,33 @@ import com.google.android.exoplayer2.util.ParsableByteArray;
     private static final int DTS_SUBSTREAM_MIN = 0x88;
     private static final int DTS_SUBSTREAM_MAX = 0x8F;
 
-    private final SparseArray<Ac3Reader> secondaryReaders;
-
-    @Nullable private ExtractorOutput extractorOutput;
-
     private long activeTimeUs;
     private int activeFlags;
     @Nullable private Ac3Reader primaryReader;
     private int primarySubStreamId;
     private boolean detectedSubStreamHeaders;
 
-    // Seed first valid PES timestamp per reader, then pass C.TIME_UNSET so
+    // Seed first valid PES timestamp, then pass C.TIME_UNSET so
     // Ac3Reader accumulates smoothly (prevents 256000us discontinuity).
-    // On seek, Ac3Reader.seek() resets timeUs to C.TIME_UNSET, so we reset
-    // our flags to allow re-seeding from the next valid PES timestamp.
     private boolean primaryTimestampSeeded;
-    private final SparseArray<Boolean> secondaryTimestampSeeded;
 
     public PrivateStream1Demuxer() {
-        secondaryReaders = new SparseArray<>();
-        secondaryTimestampSeeded = new SparseArray<>();
         primarySubStreamId = -1;
     }
 
     @Override
     public void seek() {
         primaryTimestampSeeded = false;
-        secondaryTimestampSeeded.clear();
         if (primaryReader != null) {
             primaryReader.seek();
         }
-        for (int i = 0; i < secondaryReaders.size(); i++) {
-            secondaryReaders.valueAt(i).seek();
-        }
     }
-
-    /**
-     * Pre-allocated secondary readers created at init time.
-     * ExoPlayer's ProgressiveMediaPeriod sizes its SampleQueue[] array at
-     * endTracks() and crashes with ArrayIndexOutOfBoundsException if new
-     * TrackOutputs appear afterwards. So we pre-create slots for all
-     * possible AC3 sub-stream IDs (0x80-0x87) up front.
-     */
-    private static final int[] PREALLOCATED_SUBSTREAM_IDS = {
-        0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87
-    };
 
     @Override
     public void createTracks(ExtractorOutput output, TrackIdGenerator idGenerator) {
-        this.extractorOutput = output;
         primaryReader = new Ac3Reader();
         primaryReader.createTracks(output, new TrackIdGenerator(
                 PsExtractor.PRIVATE_STREAM_1, 0x100));
-
-        // Pre-create secondary readers so all TrackOutputs exist before endTracks()
-        for (int subId : PREALLOCATED_SUBSTREAM_IDS) {
-            Ac3Reader reader = new Ac3Reader();
-            reader.createTracks(output, new TrackIdGenerator(subId, 0x100));
-            secondaryReaders.put(subId, reader);
-        }
     }
 
     @Override
@@ -158,17 +119,11 @@ import com.google.android.exoplayer2.util.ParsableByteArray;
                 primaryReader.consume(data);
                 primaryReader.packetFinished();
             } else {
-                Boolean seeded = secondaryTimestampSeeded.get(firstByte);
-                long forwardTimeUs = seedTimestamp(seeded != null && seeded, activeTimeUs);
-                if ((seeded == null || !seeded) && activeTimeUs != C.TIME_UNSET) {
-                    secondaryTimestampSeeded.put(firstByte, true);
-                }
-                Ac3Reader reader = getOrCreateSecondaryReader(firstByte);
-                if (reader != null) {
-                    reader.packetStarted(forwardTimeUs, activeFlags);
-                    reader.consume(data);
-                    reader.packetFinished();
-                }
+                // Drop secondary sub-stream data. Creating new TrackOutputs
+                // after endTracks() causes ArrayIndexOutOfBoundsException in
+                // ProgressiveMediaPeriod, and pre-allocating empty tracks
+                // causes "stuck buffering". SageTV selects the audio track
+                // server-side, so only the primary sub-stream matters.
             }
         } else if (isDtsSubStreamId(firstByte)) {
             // DTS sub-stream — skip for now (no DTS reader in base ExoPlayer)
@@ -204,16 +159,5 @@ import com.google.android.exoplayer2.util.ParsableByteArray;
     /** Returns pesTimeUs for the first valid timestamp (seeding), C.TIME_UNSET after. */
     private static long seedTimestamp(boolean alreadySeeded, long pesTimeUs) {
         return alreadySeeded ? C.TIME_UNSET : pesTimeUs;
-    }
-
-    /** Gets a pre-allocated Ac3Reader for a secondary sub-stream ID. */
-    @Nullable
-    private Ac3Reader getOrCreateSecondaryReader(int subStreamId) {
-        Ac3Reader reader = secondaryReaders.get(subStreamId);
-        if (reader == null) {
-            Log.w(TAG, "No pre-allocated reader for sub-stream 0x"
-                    + Integer.toHexString(subStreamId) + ", ignoring");
-        }
-        return reader;
     }
 }
