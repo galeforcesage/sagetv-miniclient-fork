@@ -22,6 +22,7 @@ else
 }
 
 android {
+    namespace 'sagex.miniclient.android.tv'
     compileSdkVersion androidCompileSdkVersion
     buildToolsVersion androidBuildToolsVersion
 
@@ -126,6 +127,12 @@ android {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-DEBUG"
             resValue "string", "app_name", "@string/app_name_debug"
+        }
+    }
+
+    packaging {
+        resources {
+            excludes += ['META-INF/INDEX.LIST', 'META-INF/DEPENDENCIES']
         }
     }
 }

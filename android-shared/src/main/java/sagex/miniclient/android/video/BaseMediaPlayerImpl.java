@@ -12,6 +12,7 @@ import java.io.IOException;
 import sagex.miniclient.MiniPlayerPlugin;
 import sagex.miniclient.android.AppUtil;
 import sagex.miniclient.android.R;
+import sagex.miniclient.android.middleware.TrickplayController;
 import sagex.miniclient.android.ui.AndroidUIController;
 import sagex.miniclient.events.VideoInfoRefresh;
 import sagex.miniclient.events.VideoInfoShow;
@@ -55,6 +56,7 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     protected long lastMediaTime = -1;
     protected boolean flushed = false;
     protected VideoInfo videoInfo = null;
+    protected TrickplayController trickplayController;
 
     // this is mainly for testing... when we force a different UI aspect than what we really have
     private boolean uiAspectChanged = true;
@@ -71,12 +73,18 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
         this.waitForPlayer = waitForPlayer;
         state = NO_STATE;
         videoInfo = new VideoInfo();
+        trickplayController = new TrickplayController();
         debug_ar = context.getClient().properties().getBoolean(PrefStore.Keys.debug_ar, false);
     }
 
     public TPlayer getPlayer()
     {
         return player;
+    }
+
+    public TrickplayController getTrickplayController()
+    {
+        return trickplayController;
     }
 
     @Override
@@ -204,6 +212,19 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     {
         if (lastMediaTime == -1) lastMediaTime = lastServerTime;
 
+        // Use native time truth if available
+        if (trickplayController != null && trickplayController.isNativeAvailable() && pushMode)
+        {
+            trickplayController.setServerStartTime(lastServerTime);
+            long reportedTime = trickplayController.getReportedTime();
+            if (reportedTime > 0)
+            {
+                lastMediaTime = reportedTime;
+                return reportedTime;
+            }
+            // Fall through to legacy path if native returns 0
+        }
+
         if (!playerReady || player == null)
         {
             if (VerboseLogging.DETAILED_PLAYER_LOGGING)
@@ -304,6 +325,10 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     public void pause()
     {
         state = PAUSE_STATE;
+        if (trickplayController != null && trickplayController.isNativeAvailable())
+        {
+            trickplayController.setPaused(true);
+        }
         if (VerboseLogging.DETAILED_PLAYER_LOGGING)
         {
             log.debug("Pause was called");
@@ -314,6 +339,10 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     public void play()
     {
         state = PLAY_STATE;
+        if (trickplayController != null && trickplayController.isNativeAvailable())
+        {
+            trickplayController.setPlaying();
+        }
         if (VerboseLogging.DETAILED_PLAYER_LOGGING)
         {
             log.debug("Play was called");
@@ -331,13 +360,22 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
         // Clear flushed flag on seek — in pull mode there's no pushData() to clear it,
         // and the server expects getMediaTimeMillis() to return a real time after seeking.
         flushed = false;
+
+        if (trickplayController != null && trickplayController.isNativeAvailable())
+        {
+            trickplayController.beginSeek(timeInMS);
+        }
     }
 
     @Override
     public void setServerEOS()
     {
         // tell the datasource that we have all the data
-        if (dataSource != null && dataSource instanceof HasPushBuffer)
+        if (trickplayController != null && trickplayController.isNativeAvailable())
+        {
+            trickplayController.setEOS();
+        }
+        else if (dataSource != null && dataSource instanceof HasPushBuffer)
         {
             ((HasPushBuffer) dataSource).setEOS();
         }
@@ -454,7 +492,11 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     public void pushData(byte[] cmddata, int bufDataOffset, int buffSize) throws IOException
     {
         //log.debug("pushData()");
-        if (dataSource instanceof HasPushBuffer)
+        if (trickplayController != null && trickplayController.isNativeAvailable())
+        {
+            trickplayController.pushData(cmddata, bufDataOffset, buffSize);
+        }
+        else if (dataSource instanceof HasPushBuffer)
         {
             ((HasPushBuffer) dataSource).pushBytes(cmddata, bufDataOffset, buffSize);
         }
@@ -470,7 +512,11 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
             log.debug("dispose()");
         }
 
-        if (dataSource instanceof HasPushBuffer)
+        if (trickplayController != null && trickplayController.isNativeAvailable())
+        {
+            trickplayController.flush();
+        }
+        else if (dataSource instanceof HasPushBuffer)
         {
             log.debug("JVL - HasPushBuffer flush called!");
             ((HasPushBuffer) dataSource).flush();
@@ -482,6 +528,16 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     @Override
     public int getBufferLeft()
     {
+        if (trickplayController != null && trickplayController.isNativeAvailable() && pushMode)
+        {
+            if (state == EOS_STATE || eos || trickplayController.isEOS())
+            {
+                log.debug("------------------------- Telling SageTV that EOS was reached in client --------------------------------");
+                return -1;
+            }
+            return trickplayController.bufferAvailable();
+        }
+
         if (dataSource instanceof HasPushBuffer)
         {
             if (state == EOS_STATE || eos)
@@ -524,6 +580,11 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
         videoInfo.reset();
         releaseDataSource();
         dataSource = null;
+        if (trickplayController != null)
+        {
+            trickplayController.destroy();
+            trickplayController = new TrickplayController();
+        }
         state = EOS_STATE;
         eos = true;
         uiAspectChanged = true;

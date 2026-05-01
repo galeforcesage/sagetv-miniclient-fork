@@ -9,6 +9,8 @@ import sagex.miniclient.android.ui.AndroidUIController;
 import sagex.miniclient.android.util.AudioUtil;
 import sagex.miniclient.android.video.BaseMediaPlayerImpl;
 import sagex.miniclient.android.video.MediaSessionCallbackHandler;
+import sagex.miniclient.android.middleware.TrickplayController;
+import sagex.miniclient.android.middleware.TransportIjkMediaSource;
 import sagex.miniclient.media.SubtitleTrack;
 import sagex.miniclient.prefs.PrefStore;
 import sagex.miniclient.uibridge.Dimension;
@@ -51,6 +53,12 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     public long getPlayerMediaTimeMillis(long serverStartTime)
     {
         long time = player.getCurrentPosition();
+
+        // Feed position to native trickplay controller for state machine transitions
+        if (trickplayController != null && trickplayController.isNativeAvailable() && time > 0)
+        {
+            trickplayController.onPlayerPosition(time);
+        }
 
         if (pushMode)
         {
@@ -290,8 +298,27 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
             if (pushMode)
             {
                 log.info("Playing URL {} PUSH mode", sageTVurl);
-                dataSource = new IJKPushMediaSource();
-                ((IJKPushMediaSource) dataSource).open(sageTVurl);
+                if (trickplayController != null && trickplayController.isNativeAvailable())
+                {
+                    log.debug("Using TransportIjkMediaSource (native ring buffer)");
+                    trickplayController.open(true);
+                    TransportIjkMediaSource transportDs = new TransportIjkMediaSource(trickplayController);
+                    dataSource = (IMediaDataSource) transportDs;
+
+                    trickplayController.setSeekCallback(new TrickplayController.PlayerSeekCallback()
+                    {
+                        @Override
+                        public void onSeekTo(long timeMs)
+                        {
+                            seekToImpl(timeMs);
+                        }
+                    });
+                }
+                else
+                {
+                    dataSource = new IJKPushMediaSource();
+                    ((IJKPushMediaSource) dataSource).open(sageTVurl);
+                }
                 player.setDataSource(dataSource);
             }
             else
@@ -329,10 +356,31 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                 public void onSeekComplete(IMediaPlayer iMediaPlayer)
                 {
                     seekPending = false;
+                    if (trickplayController != null && trickplayController.isNativeAvailable())
+                    {
+                        trickplayController.notifySeekComplete();
+                    }
                     if(player != null)
                     {
                         updateMediaSessionPlaybackState(player.getCurrentPosition());
                     }
+                }
+            });
+
+            player.setOnInfoListener(new IMediaPlayer.OnInfoListener()
+            {
+                @Override
+                public boolean onInfo(IMediaPlayer mp, int what, int extra)
+                {
+                    if (what == IMediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START
+                        || what == IMediaPlayer.MEDIA_INFO_AUDIO_RENDERING_START)
+                    {
+                        if (trickplayController != null && trickplayController.isNativeAvailable() && player != null)
+                        {
+                            trickplayController.onPlayerPosition(player.getCurrentPosition());
+                        }
+                    }
+                    return false;
                 }
             });
 

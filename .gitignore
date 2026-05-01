@@ -67,6 +67,10 @@ gradle-app.setting
 ## OS Specific
 .DS_Store
 
+## Build artifacts
+.cxx/
+.vscode/
+
 ## Sensitive
 keystore.properties
 jvlsagetvkeystore

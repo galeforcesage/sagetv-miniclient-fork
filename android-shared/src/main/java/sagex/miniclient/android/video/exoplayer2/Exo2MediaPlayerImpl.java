@@ -39,6 +39,8 @@ import sagex.miniclient.android.ui.AndroidUIController;
 import sagex.miniclient.android.util.Logger;
 import sagex.miniclient.android.video.BaseMediaPlayerImpl;
 import sagex.miniclient.android.video.MediaSessionCallbackHandler;
+import sagex.miniclient.android.middleware.TrickplayController;
+import sagex.miniclient.android.middleware.TransportDataSource;
 import sagex.miniclient.media.SubtitleCodec;
 import sagex.miniclient.media.SubtitleTrack;
 import sagex.miniclient.prefs.PrefStore;
@@ -538,8 +540,27 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
         if (pushMode)
         {
-            log.logDebug("Creating Exo2PushDataSource datasource");
-            dataSource = new Exo2PushDataSource();
+            if (trickplayController != null && trickplayController.isNativeAvailable())
+            {
+                log.logDebug("Creating TransportDataSource (native ring buffer)");
+                trickplayController.open(true);
+                TransportDataSource transportDs = new TransportDataSource(trickplayController);
+                dataSource = (DataSource) transportDs;
+
+                trickplayController.setSeekCallback(new TrickplayController.PlayerSeekCallback()
+                {
+                    @Override
+                    public void onSeekTo(long timeMs)
+                    {
+                        seekToImpl(timeMs);
+                    }
+                });
+            }
+            else
+            {
+                log.logDebug("Creating Exo2PushDataSource datasource");
+                dataSource = new Exo2PushDataSource();
+            }
         }
         else
         {
@@ -709,6 +730,11 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                     case Player.DISCONTINUITY_REASON_SEEK:
                         updateMediaSessionPlaybackState(Exo2MediaPlayerImpl.this.getPlaybackPosition());
                         seekPending = false;
+
+                        if (trickplayController != null && trickplayController.isNativeAvailable())
+                        {
+                            trickplayController.notifySeekComplete();
+                        }
                         break;
 
                 }
@@ -819,7 +845,14 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             {
                 if (player != null)
                 {
-                    Exo2MediaPlayerImpl.this.setPlaybackPosition(player.getCurrentPosition());
+                    long pos = player.getCurrentPosition();
+                    Exo2MediaPlayerImpl.this.setPlaybackPosition(pos);
+
+                    if (trickplayController != null && trickplayController.isNativeAvailable())
+                    {
+                        trickplayController.onPlayerPosition(pos);
+                    }
+
                     handler.postDelayed(progressRunnable, 500);
                 }
                 else
