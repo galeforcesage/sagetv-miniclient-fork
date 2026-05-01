@@ -92,12 +92,30 @@ import com.google.android.exoplayer2.util.ParsableByteArray;
         }
     }
 
+    /**
+     * Pre-allocated secondary readers created at init time.
+     * ExoPlayer's ProgressiveMediaPeriod sizes its SampleQueue[] array at
+     * endTracks() and crashes with ArrayIndexOutOfBoundsException if new
+     * TrackOutputs appear afterwards. So we pre-create slots for all
+     * possible AC3 sub-stream IDs (0x80-0x87) up front.
+     */
+    private static final int[] PREALLOCATED_SUBSTREAM_IDS = {
+        0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87
+    };
+
     @Override
     public void createTracks(ExtractorOutput output, TrackIdGenerator idGenerator) {
         this.extractorOutput = output;
         primaryReader = new Ac3Reader();
         primaryReader.createTracks(output, new TrackIdGenerator(
                 PsExtractor.PRIVATE_STREAM_1, 0x100));
+
+        // Pre-create secondary readers so all TrackOutputs exist before endTracks()
+        for (int subId : PREALLOCATED_SUBSTREAM_IDS) {
+            Ac3Reader reader = new Ac3Reader();
+            reader.createTracks(output, new TrackIdGenerator(subId, 0x100));
+            secondaryReaders.put(subId, reader);
+        }
     }
 
     @Override
@@ -188,29 +206,14 @@ import com.google.android.exoplayer2.util.ParsableByteArray;
         return alreadySeeded ? C.TIME_UNSET : pesTimeUs;
     }
 
-    /** Gets or creates an Ac3Reader for a secondary sub-stream ID. */
+    /** Gets a pre-allocated Ac3Reader for a secondary sub-stream ID. */
     @Nullable
     private Ac3Reader getOrCreateSecondaryReader(int subStreamId) {
         Ac3Reader reader = secondaryReaders.get(subStreamId);
-        if (reader != null) {
-            return reader;
+        if (reader == null) {
+            Log.w(TAG, "No pre-allocated reader for sub-stream 0x"
+                    + Integer.toHexString(subStreamId) + ", ignoring");
         }
-
-        if (secondaryReaders.size() >= MAX_SUBSTREAMS) {
-            Log.w(TAG, "Ignoring sub-stream 0x" + Integer.toHexString(subStreamId)
-                    + ": max secondary sub-streams (" + MAX_SUBSTREAMS + ") reached");
-            return null;
-        }
-
-        if (extractorOutput == null) {
-            return null;
-        }
-
-        reader = new Ac3Reader();
-        reader.createTracks(extractorOutput, new TrackIdGenerator(subStreamId, 0x100));
-        secondaryReaders.put(subStreamId, reader);
-        Log.i(TAG, "Created secondary reader for sub-stream 0x" + Integer.toHexString(subStreamId));
-
         return reader;
     }
 }
