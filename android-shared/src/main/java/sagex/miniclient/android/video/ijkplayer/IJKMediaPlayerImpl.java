@@ -342,6 +342,20 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                     dataSource = new IJKPullMediaSource(MiniclientApplication.get().getClient().getConnectedServerInfo().address);
                     ((IJKPullMediaSource) dataSource).open(sageTVurl);
                     player.setDataSource(dataSource);
+
+                    // Wire trickplay controller for pull mode time truth
+                    if (trickplayController != null && trickplayController.isNativeAvailable())
+                    {
+                        trickplayController.open(false);
+                        trickplayController.setSeekCallback(new TrickplayController.PlayerSeekCallback()
+                        {
+                            @Override
+                            public void onSeekTo(long timeMs)
+                            {
+                                seekToImpl(timeMs);
+                            }
+                        });
+                    }
                 }
             }
 
