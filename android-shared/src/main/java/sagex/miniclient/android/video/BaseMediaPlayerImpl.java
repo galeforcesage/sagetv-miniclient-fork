@@ -214,10 +214,12 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     {
         if (lastMediaTime == -1) lastMediaTime = lastServerTime;
 
-        // Use native time truth if available
-        if (trickplayController != null && trickplayController.isNativeAvailable() && pushMode)
+        // Use native time truth if available (both push and pull modes)
+        if (trickplayController != null && trickplayController.isNativeAvailable())
         {
-            trickplayController.setServerStartTime(lastServerTime);
+            if (pushMode) {
+                trickplayController.setServerStartTime(lastServerTime);
+            }
             long reportedTime = trickplayController.getReportedTime();
             if (reportedTime > 0)
             {

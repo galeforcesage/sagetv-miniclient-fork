@@ -75,3 +75,10 @@ gradle-app.setting
 keystore.properties
 jvlsagetvkeystore
 google-services.json
+
+## Debug logs and temp files
+shield_*.txt
+shield_*.xml
+shield_playback_log.txt
+temp_*.txt
+temp_*.xml

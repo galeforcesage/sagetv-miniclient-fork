@@ -34,7 +34,7 @@ typedef enum {
 } TrickplayState;
 
 typedef struct {
-    /* Ring buffer */
+    /* Ring buffer (push mode only) */
     uint8_t*  buffer;
     int32_t   capacity;
     int32_t   readPos;
@@ -49,6 +49,11 @@ typedef struct {
     int64_t   seekTargetMs;
     int64_t   observedPlayerPositionMs;
     int64_t   serverStartTimeMs;
+
+    /* PULL mode: two-clock mapping (SMT = PTT + baseOffsetMs) */
+    int64_t   baseOffsetMs;       /* SMT - PTT offset, computed at seek commit */
+    int64_t   lastStablePttMs;    /* last non-glitch player timeline position */
+    bool      mappingEstablished; /* true once baseOffsetMs is valid */
 
     /* Sparse timestamp sniffing */
     int64_t   lastSniffedPtsMs;

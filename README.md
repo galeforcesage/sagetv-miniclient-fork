@@ -1,5 +1,7 @@
 # SageTV MiniClient
 
+> **This is the active working branch (`java-upgrade`).** All development, updates, and modifications should be made here. This branch contains the latest fixes including ExoPlayer pull-mode seeking, two-clock transport synchronization, and Java 17 / Gradle 8.x modernization.
+
 <a href="https://play.google.com/store/apps/details?id=jvl.sage.miniclient.android.tv.debug">
   <img alt="Get it on Google Play"
        src="https://developer.android.com/images/brand/en_generic_rgb_wo_45.png" />

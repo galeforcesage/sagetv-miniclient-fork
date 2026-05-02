@@ -16,6 +16,7 @@
  */
 package com.google.android.exoplayer2.extractor.ts;
 
+import android.util.Log;
 import android.util.SparseArray;
 
 import androidx.annotation.Nullable;
@@ -28,6 +29,7 @@ import com.google.android.exoplayer2.extractor.ExtractorOutput;
 import com.google.android.exoplayer2.extractor.ExtractorsFactory;
 import com.google.android.exoplayer2.extractor.PositionHolder;
 import com.google.android.exoplayer2.extractor.SeekMap;
+import com.google.android.exoplayer2.extractor.SeekPoint;
 import com.google.android.exoplayer2.extractor.ts.TsPayloadReader.TrackIdGenerator;
 import com.google.android.exoplayer2.util.Assertions;
 import com.google.android.exoplayer2.util.ParsableBitArray;
@@ -81,10 +83,10 @@ public final class SagePsExtractor implements Extractor {
     private boolean foundAudioTrack;
     private boolean foundVideoTrack;
     private long lastTrackPosition;
+    private static final String TAG = "SagePsExtractor";
+    private boolean needsResync; // true after seek to non-zero position
 
     // Accessed only by the loading thread.
-    @Nullable
-    private PsBinarySearchSeeker psBinarySearchSeeker;
     private @MonotonicNonNull ExtractorOutput output;
     private boolean hasOutputSeekMap;
 
@@ -150,29 +152,19 @@ public final class SagePsExtractor implements Extractor {
 
     @Override
     public void seek(long position, long timeUs) {
-        // If the timestamp adjuster has not yet established a timestamp offset, we need to reset its
-        // expected first sample timestamp to be the new seek position. Without this, the timestamp
-        // adjuster would incorrectly establish its timestamp offset assuming that the first sample
-        // after this seek corresponds to the start of the stream (or a previous seek position, if there
-        // was one).
-        boolean resetTimestampAdjuster = timestampAdjuster.getTimestampOffsetUs() == C.TIME_UNSET;
-        if (!resetTimestampAdjuster) {
-            long adjusterFirstSampleTimestampUs = timestampAdjuster.getFirstSampleTimestampUs();
-            // Also reset the timestamp adjuster if its offset was calculated based on a non-zero position
-            // in the stream (other than the position being seeked to), since in this case the offset may
-            // not be accurate.
-            resetTimestampAdjuster =
-                    adjusterFirstSampleTimestampUs != C.TIME_UNSET
-                            && adjusterFirstSampleTimestampUs != 0
-                            && adjusterFirstSampleTimestampUs != timeUs;
-        }
-        if (resetTimestampAdjuster) {
-            timestampAdjuster.reset(timeUs);
-        }
+        // Always reset the timestamp adjuster to the seek target time.
+        // The adjuster computes: offset = timeUs - firstPTS, so all samples
+        // after seeking get adjusted timestamps starting at timeUs.
+        // Without this, ExoPlayer's sample queue discards samples whose
+        // adjusted timestamps don't match the seek position.
+        timestampAdjuster.reset(timeUs);
 
-        if (psBinarySearchSeeker != null) {
-            psBinarySearchSeeker.setSeekTargetUs(timeUs);
-        }
+        // After seeking to a non-zero position, we need to resync to the next
+        // PACK_START_CODE since LinearPsSeekMap byte positions are approximate.
+        needsResync = (position > 0);
+        Log.d(TAG, "seek() called: position=" + position + ", timeUs=" + timeUs
+                + ", reset timestampAdjuster to " + timeUs + ", needsResync=" + needsResync);
+
         for (int i = 0; i < psPayloadReaders.size(); i++) {
             psPayloadReaders.valueAt(i).seek();
         }
@@ -193,8 +185,18 @@ public final class SagePsExtractor implements Extractor {
             return durationReader.readDuration(input, seekPosition);
         }
         maybeOutputSeekMap(inputLength);
-        if (psBinarySearchSeeker != null && psBinarySearchSeeker.isSeeking()) {
-            return psBinarySearchSeeker.handlePendingSeek(input, seekPosition);
+
+        // After a seek to a non-zero position, scan forward efficiently to find
+        // the next PACK_START_CODE. The LinearPsSeekMap provides approximate byte
+        // positions that may not land exactly on a pack header.
+        if (needsResync) {
+            Log.d(TAG, "Resync starting at input position " + input.getPosition());
+            if (!resyncToPackStartCode(input)) {
+                Log.w(TAG, "Resync failed - END_OF_INPUT");
+                return RESULT_END_OF_INPUT;
+            }
+            Log.d(TAG, "Resync complete, now at position " + input.getPosition());
+            needsResync = false;
         }
 
         input.resetPeekPosition();
@@ -304,20 +306,102 @@ public final class SagePsExtractor implements Extractor {
 
     // Internals.
 
+    /**
+     * Scans forward from the current input position to find the next PACK_START_CODE
+     * (0x000001BA). Reads up to 64KB in one pass. Returns true if found (input is
+     * positioned at the start code), false if end of input reached.
+     */
+    private boolean resyncToPackStartCode(ExtractorInput input) throws IOException {
+        byte[] buf = new byte[8192];
+        int maxScans = 8; // 8 * 8KB = 64KB max scan distance
+        for (int scan = 0; scan < maxScans; scan++) {
+            int bytesRead = buf.length;
+            long remaining = input.getLength() != C.LENGTH_UNSET
+                    ? input.getLength() - input.getPosition() : Long.MAX_VALUE;
+            if (remaining <= 0) return false;
+            if (remaining < bytesRead) bytesRead = (int) remaining;
+
+            if (!input.peekFully(buf, 0, bytesRead, true)) {
+                Log.w(TAG, "resync: peekFully returned false at scan " + scan);
+                return false;
+            }
+            for (int i = 0; i < bytesRead - 3; i++) {
+                if (buf[i] == 0x00 && buf[i + 1] == 0x00
+                        && buf[i + 2] == 0x01 && (buf[i + 3] & 0xFF) == 0xBA) {
+                    // Found PACK_START_CODE. Skip to this position.
+                    input.resetPeekPosition();
+                    input.skipFully(i);
+                    Log.d(TAG, "resync: found PACK_START_CODE at offset +" + i + " in scan " + scan
+                            + ", new position=" + input.getPosition());
+                    return true;
+                }
+            }
+            // Didn't find it in this chunk. Advance past it (minus 3 for overlap).
+            input.resetPeekPosition();
+            input.skipFully(bytesRead - 3);
+            Log.d(TAG, "resync: scan " + scan + " no pack header, skipped to " + input.getPosition());
+        }
+        // Fell through without finding a pack start code in 64KB — unlikely but
+        // let the normal read loop handle byte-by-byte from here.
+        return true;
+    }
+
     @RequiresNonNull("output")
     private void maybeOutputSeekMap(long inputLength) {
         if (!hasOutputSeekMap) {
             hasOutputSeekMap = true;
-            if (durationReader.getDurationUs() != C.TIME_UNSET) {
-                psBinarySearchSeeker =
-                        new PsBinarySearchSeeker(
-                                durationReader.getScrTimestampAdjuster(),
-                                durationReader.getDurationUs(),
-                                inputLength);
-                output.seekMap(psBinarySearchSeeker.getSeekMap());
+            long durationUs = durationReader.getDurationUs();
+            if (inputLength != C.LENGTH_UNSET) {
+                // Always provide a seekable linear map. If the duration reader
+                // failed (common with SageTV MPEG-PS recordings where SCR
+                // timestamps are unreliable), estimate duration from file size
+                // assuming ~5 Mbps (625000 bytes/sec). The two-clock middleware
+                // handles any positional inaccuracy from the estimate.
+                if (durationUs == C.TIME_UNSET) {
+                    durationUs = inputLength * 1000000L / 625000L; // estimate ~5 Mbps
+                }
+                output.seekMap(new LinearPsSeekMap(durationUs, inputLength));
             } else {
-                output.seekMap(new SeekMap.Unseekable(durationReader.getDurationUs()));
+                output.seekMap(new SeekMap.Unseekable(durationUs));
             }
+        }
+    }
+
+    /**
+     * A simple SeekMap that maps time to byte position using linear interpolation.
+     * Byte positions are aligned to 2048-byte boundaries (MPEG-PS pack size).
+     */
+    private static final class LinearPsSeekMap implements SeekMap {
+        private final long durationUs;
+        private final long fileSize;
+
+        LinearPsSeekMap(long durationUs, long fileSize) {
+            this.durationUs = durationUs;
+            this.fileSize = fileSize;
+        }
+
+        @Override
+        public boolean isSeekable() {
+            return true;
+        }
+
+        @Override
+        public long getDurationUs() {
+            return durationUs;
+        }
+
+        @Override
+        public SeekMap.SeekPoints getSeekPoints(long timeUs) {
+            if (timeUs <= 0) {
+                return new SeekMap.SeekPoints(new SeekPoint(0, 0));
+            }
+            if (timeUs >= durationUs) {
+                return new SeekMap.SeekPoints(new SeekPoint(durationUs, fileSize));
+            }
+            long bytePos = (long) ((double) timeUs / durationUs * fileSize);
+            // Align to 2048-byte boundary (typical MPEG-PS pack size)
+            bytePos = (bytePos / 2048) * 2048;
+            return new SeekMap.SeekPoints(new SeekPoint(timeUs, bytePos));
         }
     }
 

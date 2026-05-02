@@ -204,19 +204,53 @@ static void update_reported_time(SageTransport* t) {
     switch (t->trickplayState) {
         case TRICKPLAY_STABLE_PLAYING:
         case TRICKPLAY_STABLE_PAUSED: {
-            int64_t sst = t->serverStartTimeMs;
-            int64_t opp = t->observedPlayerPositionMs;
-            if (sst >= 0 && opp >= 0) {
-                int64_t newTime = sst + opp;
-                t->reportedTimeMs = newTime;
-                t->frozenTimeMs = newTime;
+            if (t->pushMode) {
+                /* PUSH mode: reported = serverStartTime + playerPosition */
+                int64_t sst = t->serverStartTimeMs;
+                int64_t opp = t->observedPlayerPositionMs;
+                if (sst >= 0 && opp >= 0) {
+                    int64_t newTime = sst + opp;
+                    t->reportedTimeMs = newTime;
+                    t->frozenTimeMs = newTime;
+                }
+            } else {
+                /* PULL mode two-clock model: SMT = PTT + baseOffsetMs
+                 *
+                 * PTT = observedPlayerPositionMs (ExoPlayer's internal timeline)
+                 * baseOffsetMs bridges PTT → SMT (Server Media Time)
+                 */
+                int64_t ptt = t->observedPlayerPositionMs;
+                if (ptt < 0) break;
+
+                /* Reject transient ptt=0 when we were previously stable */
+                if (ptt == 0 && t->lastStablePttMs > 2000) {
+                    LOGD("PULL: ignoring transient ptt=0 (lastStable=%lld)",
+                         (long long)t->lastStablePttMs);
+                    break;
+                }
+
+                if (!t->mappingEstablished) break;
+
+                int64_t candidateSmt = ptt + t->baseOffsetMs;
+
+                /* Reject large backward jumps in SMT (> 1.5s) */
+                if (t->reportedTimeMs > 0 && candidateSmt < t->reportedTimeMs - 1500) {
+                    LOGD("PULL: rejecting backward SMT jump %lld → %lld (ptt=%lld, offset=%lld)",
+                         (long long)t->reportedTimeMs, (long long)candidateSmt,
+                         (long long)ptt, (long long)t->baseOffsetMs);
+                    break;
+                }
+
+                t->lastStablePttMs = ptt;
+                t->reportedTimeMs = candidateSmt;
+                t->frozenTimeMs = candidateSmt;
             }
             break;
         }
         case TRICKPLAY_SEEK_PENDING:
         case TRICKPLAY_SEEK_COMMITTING:
         case TRICKPLAY_RECOVERING:
-            /* Time stays frozen at frozenTimeMs — do not update reportedTimeMs */
+            /* Time stays frozen — do not update reportedTimeMs */
             break;
     }
 }
@@ -247,6 +281,9 @@ SageTransport* sage_transport_create(int32_t bufferCapacity) {
     t->reportedTimeMs         = 0;
     t->frozenTimeMs           = 0;
     t->seekTargetMs           = -1;
+    t->baseOffsetMs           = 0;
+    t->lastStablePttMs        = 0;
+    t->mappingEstablished     = false;
     t->lastSniffedPtsMs       = -1;
     t->trickplayState         = TRICKPLAY_STABLE_PAUSED;
 
@@ -274,7 +311,6 @@ void sage_transport_open(SageTransport* t, bool pushMode) {
     t->pushMode        = pushMode;
     t->eos             = false;
     t->opened          = true;
-    t->trickplayState  = TRICKPLAY_STABLE_PAUSED;
     t->serverStartTimeMs      = -1;
     t->observedPlayerPositionMs = -1;
     t->reportedTimeMs         = 0;
@@ -286,7 +322,22 @@ void sage_transport_open(SageTransport* t, bool pushMode) {
     t->timestampSampleIndex   = 0;
     t->timestampSampleCount   = 0;
 
-    LOGD("Opened transport, pushMode=%d", pushMode);
+    /* Two-clock state (PULL mode) */
+    t->baseOffsetMs           = 0;
+    t->lastStablePttMs        = 0;
+    t->mappingEstablished     = false;
+
+    if (!pushMode) {
+        /* Treat initial playback as an implicit seek to time 0.
+         * Start in RECOVERING so we don't report player time
+         * until we've established the baseOffset mapping. */
+        t->trickplayState = TRICKPLAY_RECOVERING;
+        t->seekTargetMs   = 0;
+        LOGD("Opened transport, pushMode=0 (pull), starting in RECOVERING");
+    } else {
+        t->trickplayState = TRICKPLAY_STABLE_PAUSED;
+        LOGD("Opened transport, pushMode=1 (push)");
+    }
     pthread_cond_broadcast(&t->spaceAvailable);
     pthread_mutex_unlock(&t->lock);
 }
@@ -388,7 +439,10 @@ void sage_transport_flush(SageTransport* t) {
     if (!t) return;
     pthread_mutex_lock(&t->lock);
 
-    ring_clear(t);
+    /* Only clear ring buffer in push mode */
+    if (t->pushMode) {
+        ring_clear(t);
+    }
     t->eos = false;
 
     /* Freeze time at current value */
@@ -446,12 +500,18 @@ void sage_transport_begin_seek(SageTransport* t, int64_t targetMs) {
     if (t->trickplayState != TRICKPLAY_SEEK_PENDING) {
         /* Freeze time at current reported value */
         t->frozenTimeMs = t->reportedTimeMs;
-        t->reportedTimeMs = t->frozenTimeMs;
     }
+
+    /* Reset stable PTT tracking for the new seek */
+    if (!t->pushMode) {
+        t->lastStablePttMs = 0;
+    }
+
     /* Coalesce: stay in or enter SEEK_PENDING */
     t->trickplayState = TRICKPLAY_SEEK_PENDING;
 
-    LOGD("beginSeek: target=%lld, frozen=%lld", (long long)targetMs, (long long)t->frozenTimeMs);
+    LOGD("beginSeek: target=%lld, frozen=%lld, pullMode=%d",
+         (long long)targetMs, (long long)t->frozenTimeMs, !t->pushMode);
     pthread_mutex_unlock(&t->lock);
 }
 
@@ -473,6 +533,7 @@ void sage_transport_notify_seek_complete(SageTransport* t) {
 
     if (t->trickplayState == TRICKPLAY_SEEK_COMMITTING) {
         t->trickplayState = TRICKPLAY_RECOVERING;
+        t->lastStablePttMs = 0;  /* Reset for convergence detection */
         LOGD("Seek complete → RECOVERING");
     }
 
@@ -487,10 +548,40 @@ void sage_transport_on_player_position(SageTransport* t, int64_t positionMs) {
     t->observedPlayerPositionMs = positionMs;
 
     if (t->trickplayState == TRICKPLAY_RECOVERING) {
-        /* Check if position has stabilized (positive and progressing) */
         if (positionMs > 0) {
-            t->trickplayState = TRICKPLAY_STABLE_PLAYING;
-            LOGD("RECOVERING → STABLE_PLAYING, pos=%lld", (long long)positionMs);
+            bool accept = false;
+
+            if (t->pushMode) {
+                /* PUSH mode: accept immediately once position is positive */
+                accept = true;
+            } else {
+                /* PULL mode: accept once we get a non-zero, stable position.
+                 * First few ticks may be stale pre-seek values. Wait for
+                 * position to stop changing rapidly (2 consecutive ticks). */
+                if (t->lastStablePttMs > 0 && positionMs != t->lastStablePttMs) {
+                    /* Position is progressing — good enough */
+                    accept = true;
+                }
+                t->lastStablePttMs = positionMs;
+            }
+
+            if (accept) {
+                if (!t->pushMode && t->seekTargetMs >= 0) {
+                    /* Compute the two-clock mapping:
+                     * baseOffsetMs = targetSMT - currentPTT
+                     * This makes SMT = PTT + baseOffsetMs = targetSMT
+                     * Even if Exo reports 400ms, we map it to 42980ms. */
+                    t->baseOffsetMs = t->seekTargetMs - positionMs;
+                    t->mappingEstablished = true;
+                    t->lastStablePttMs = positionMs;
+                    LOGD("RECOVERING → STABLE_PLAYING: ptt=%lld, target=%lld, baseOffset=%lld → smt=%lld",
+                         (long long)positionMs, (long long)t->seekTargetMs,
+                         (long long)t->baseOffsetMs, (long long)(positionMs + t->baseOffsetMs));
+                } else {
+                    LOGD("RECOVERING → STABLE_PLAYING, pos=%lld", (long long)positionMs);
+                }
+                t->trickplayState = TRICKPLAY_STABLE_PLAYING;
+            }
         }
     }
 
@@ -506,8 +597,15 @@ int64_t sage_transport_get_reported_time(SageTransport* t) {
     if (t->trickplayState == TRICKPLAY_SEEK_PENDING ||
         t->trickplayState == TRICKPLAY_SEEK_COMMITTING ||
         t->trickplayState == TRICKPLAY_RECOVERING) {
-        result = t->frozenTimeMs;
-    } else if (t->serverStartTimeMs < 0) {
+        /* During seeks: in pull mode, report the seek target so server
+         * doesn't think we're at 0 and re-seek.
+         * In push mode, report the frozen pre-seek time. */
+        if (!t->pushMode && t->seekTargetMs >= 0) {
+            result = t->seekTargetMs;
+        } else {
+            result = t->frozenTimeMs;
+        }
+    } else if (t->pushMode && t->serverStartTimeMs < 0) {
         result = 0;
     } else {
         result = t->reportedTimeMs;

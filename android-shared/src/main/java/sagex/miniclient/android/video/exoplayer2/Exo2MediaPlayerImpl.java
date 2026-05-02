@@ -78,6 +78,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     private Handler handler;
     private Runnable progressRunnable;
     private String url;
+    private volatile long pendingPullSeekMs = -1;  // queued seek until STATE_READY
 
     MediaSessionCompat mediaSession;
 
@@ -317,10 +318,11 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                     {
                         if (player == null) return;
 
-                        log.logDebug("Seek Called - Current Position: " + player.getContentPosition() + "  Seek Request: " + timeInMillis + " Difference: " + (player.getContentPosition() - timeInMillis));
+                        log.logDebug("Seek Called - Current Position: " + player.getContentPosition()
+                                + "  Seek Request: " + timeInMillis
+                                + " Difference: " + (player.getContentPosition() - timeInMillis));
 
                         player.seekTo(timeInMillis);
-                        // Position update handled by onPositionDiscontinuity and progress runnable
                     }
                     catch (Exception ex)
                     {
@@ -349,7 +351,26 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 {
                     if (player != null)
                     {
-                        seekToImpl(timeInMS);
+                        // Pull-mode seeks: always queue via pendingPullSeekMs.
+                        // The actual player.seekTo() happens on the UI thread
+                        // via seekToImpl (called from TrickplayController's
+                        // coalesce timer or STATE_READY callback).
+                        // This avoids IllegalStateException from accessing
+                        // ExoPlayer on the wrong thread.
+                        pendingPullSeekMs = timeInMS;
+                        // Post to UI thread to check if player is ready now
+                        context.runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (player != null && player.getPlaybackState() == Player.STATE_READY) {
+                                    long pending = pendingPullSeekMs;
+                                    if (pending >= 0) {
+                                        pendingPullSeekMs = -1;
+                                        seekToImpl(pending);
+                                    }
+                                }
+                            }
+                        });
                     }
                     else
                     {
@@ -361,13 +382,10 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 }
                 else
                 {
-                    // In push mode, don't call player.seekTo() — the data source is a pipe
-                    // with no seekable index. The server handles seeking by flushing the buffer
-                    // and pushing new data from the new position. We just reset our position
-                    // counter to 0 so getPlayerMediaTimeMillis() returns lastServerStartTime + 0
-                    // until new data arrives and the position starts incrementing again.
-                    log.logDebug("Push mode seek: resetting position to 0, server will push new data from " + timeInMS);
-                    currentPlaybackPosition = 0;
+                    if (player != null)
+                    {
+                        seekToImpl(timeInMS);
+                    }
                 }
             }
             else
@@ -387,11 +405,9 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     @Override
     public void setSubtitleTrack(int streamPos)
     {
-        // Map MPEG PES stream IDs to zero-based index (same as audio)
-        int mappedIndex = (streamPos == Exo2MediaPlayerImpl.DISABLE_TRACK) ? streamPos : mapStreamPosToTrackIndex(streamPos);
-        log.logDebug("Set Subtitle Track Called: " + streamPos + " mapped to: " + mappedIndex);
+        log.logDebug("Set Subtitle Track Called: " + streamPos);
 
-        if (mappedIndex == Exo2MediaPlayerImpl.DISABLE_TRACK)
+        if (streamPos == Exo2MediaPlayerImpl.DISABLE_TRACK)
         {
             this.showCaptions = false;
             this.RemoveSubTitleView();
@@ -402,7 +418,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             this.AddSubTitleView();
         }
 
-        changeTrack(C.TRACK_TYPE_TEXT, mappedIndex, 0);
+        changeTrack(C.TRACK_TYPE_TEXT, streamPos, 0);
     }
 
     @Override
@@ -420,56 +436,15 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     @Override
     public void setAudioTrack(int streamPos)
     {
-        // SageTV server sends MPEG PES stream IDs (e.g. 0xC000 for first audio)
-        // rather than zero-based track indices. Map to zero-based index.
-        int mappedIndex = mapStreamPosToTrackIndex(streamPos);
-        log.logDebug("setAudioTrack: streamPos=" + streamPos + " (0x" + Integer.toHexString(streamPos) + ") mapped to trackIndex=" + mappedIndex);
-
-        if (!playerReady)
+        if (!ExoIsPlaying())
         {
-            initialAudioTrackIndex = mappedIndex;
-            return;
+            initialAudioTrackIndex = streamPos;
         }
-
-        // Always marshal to main thread since ExoPlayer requires it
-        final int trackIndex = mappedIndex;
-        context.runOnUiThread(new Runnable()
+        else
         {
-            @Override
-            public void run()
-            {
-                if (!ExoIsPlaying())
-                {
-                    initialAudioTrackIndex = trackIndex;
-                }
-                else
-                {
-                    initialAudioTrackIndex = -1;
-                    changeTrack(C.TRACK_TYPE_AUDIO, trackIndex, 0);
-                }
-            }
-        });
-    }
-
-    /**
-     * Maps SageTV MPEG PES stream IDs to zero-based ExoPlayer track group indices.
-     * SageTV sends raw MPEG PES stream IDs: audio 0xC000-0xDFFF, subtitle 0x2000-0x3FFF.
-     * ExoPlayer uses zero-based group indices for its track arrays.
-     */
-    private int mapStreamPosToTrackIndex(int streamPos)
-    {
-        // MPEG audio PES stream IDs: 0xC000-0xDFFF → zero-based index
-        if (streamPos >= 0xC000 && streamPos < 0xE000)
-        {
-            return streamPos - 0xC000;
+            initialAudioTrackIndex = -1;
+            changeTrack(C.TRACK_TYPE_AUDIO, streamPos, 0);
         }
-        // MPEG subtitle/private stream IDs: 0x2000-0x3FFF → zero-based index
-        if (streamPos >= 0x2000 && streamPos < 0x4000)
-        {
-            return streamPos - 0x2000;
-        }
-        // Already a zero-based index
-        return streamPos;
     }
 
     @Override
@@ -477,10 +452,6 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     {
         log.logDebug("Flush called, pushMode=" + pushMode);
         super.flush();
-
-        // Reset position immediately so getMediaTimeMillis returns 0 during the flush/seek window.
-        // The server will set lastServerStartTime via the next PUSHBUFFER's serverMuxTime.
-        currentPlaybackPosition = 0;
 
         context.runOnUiThread(new Runnable()
         {
@@ -494,13 +465,24 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                         return;
                     }
 
-                    // Reset ExoPlayer's media source so it starts fresh with new pushed data.
-                    // The resetPosition=true flag resets ExoPlayer's internal position to 0.
-                    player.setMediaSource(mediaSource, true);
-                    player.prepare();
+                    if (pushMode)
+                    {
+                        // Push mode: server will re-push data from new position.
+                        // Must reset the media source so the push data source starts fresh.
+                        player.setMediaSource(mediaSource, true);
+                        player.prepare();
+                        log.logDebug("Push flush: reset media source, position: " + Utils.toHHMMSS(player.getCurrentPosition()));
+                    }
+                    else
+                    {
+                        // Pull/HTTPLS mode: the subsequent MEDIACMD_SEEK will reposition.
+                        // Don't destroy the pipeline — just let ExoPlayer handle it via seekTo().
+                        // Clearing flushed flag here since no pushData() call will do it.
+                        flushed = false;
+                        log.logDebug("Pull flush: no-op, will seek next");
+                    }
 
-                    log.logDebug("After Flush: ExoPlayer position reset to " + Utils.toHHMMSS(player.getCurrentPosition()));
-                    Exo2MediaPlayerImpl.this.currentPlaybackPosition = 0;
+                    Exo2MediaPlayerImpl.this.currentPlaybackPosition = player.getCurrentPosition();
                 }
                 catch (Exception ex)
                 {
@@ -557,6 +539,22 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             {
                 log.logDebug("Creating datasource");
                 dataSource = new Exo2PullDataSource(context.getClient().getConnectedServerInfo().address);
+
+                // Open trickplay controller for pull mode time truth
+                if (trickplayController != null && trickplayController.isNativeAvailable())
+                {
+                    log.logDebug("Opening trickplay controller for PULL mode");
+                    trickplayController.open(false);
+
+                    trickplayController.setSeekCallback(new TrickplayController.PlayerSeekCallback()
+                    {
+                        @Override
+                        public void onSeekTo(long timeMs)
+                        {
+                            seekToImpl(timeMs);
+                        }
+                    });
+                }
             }
             else
             {
@@ -674,6 +672,15 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                     {
                         errorState = false;
                         retryCount = 0;
+                    }
+
+                    // Apply any gated pull-mode seek now that SeekMap exists
+                    if (pendingPullSeekMs >= 0)
+                    {
+                        long pending = pendingPullSeekMs;
+                        pendingPullSeekMs = -1;
+                        log.logDebug("STATE_READY: applying gated seek to " + pending);
+                        seekToImpl(pending);
                     }
 
                     log.logDebug("Player.STATE_READY - setAudioTrack getting called");
@@ -797,16 +804,27 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
             boolean haveStartPosition = (playbackStartPosition >= 0);
 
-            if (haveStartPosition)
-            {
-                player.seekTo(playbackStartPosition);
-                log.logDebug("ExoLogging - Have start position");
-                log.logDebug("ExoLogging - Start Position: " + playbackStartPosition);
-            }
+            log.logDebug("ExoLogging - Preparing playback, startPosition=" + playbackStartPosition);
 
-            log.logDebug("ExoLogging - Preparing playback");
-            //player.prepare(mediaSource, !haveStartPosition, false);
-            player.setMediaSource(mediaSource, !haveStartPosition);
+            if (haveStartPosition && dataSource instanceof Exo2PullDataSource)
+            {
+                // For initial resume in pull mode, set the byte offset on the
+                // DataSource. We don't know duration yet (ExoPlayer hasn't
+                // parsed the file), so we can't do time→byte conversion here.
+                // Instead, queue the seek for STATE_READY when duration is known.
+                pendingPullSeekMs = playbackStartPosition;
+                log.logDebug("ExoLogging - Queuing initial resume seek for STATE_READY: " + playbackStartPosition);
+                player.setMediaSource(mediaSource, true);
+            }
+            else if (haveStartPosition)
+            {
+                player.setMediaSource(mediaSource, playbackStartPosition);
+                log.logDebug("ExoLogging - setMediaSource with startPosition: " + playbackStartPosition);
+            }
+            else
+            {
+                player.setMediaSource(mediaSource, true);
+            }
             player.prepare();
 
         }
