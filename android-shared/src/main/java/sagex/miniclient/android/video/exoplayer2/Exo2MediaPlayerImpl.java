@@ -340,8 +340,6 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
         try
         {
 
-            //currentPlaybackPosition = 0; //Set this to zero during seek.  Lock will hopefully keep it at zero unti we are completed
-
             log.logDebug("Seek - pushmode: " + pushMode + ", timeinMS " + timeInMS + ", playerReady " + playerReady);
 
             super.seek(timeInMS);
@@ -813,10 +811,9 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
             if (haveStartPosition && dataSource instanceof Exo2PullDataSource)
             {
-                // For initial resume in pull mode, set the byte offset on the
-                // DataSource. We don't know duration yet (ExoPlayer hasn't
-                // parsed the file), so we can't do time→byte conversion here.
-                // Instead, queue the seek for STATE_READY when duration is known.
+                // For initial resume in pull mode, queue the time-based seek
+                // for STATE_READY when ExoPlayer has parsed the file and
+                // established a SeekMap with duration.
                 pendingPullSeekMs = playbackStartPosition;
                 if (VerboseLogging.DETAILED_PLAYER_LOGGING)
                     log.logDebug("ExoLogging - Queuing initial resume seek for STATE_READY: " + playbackStartPosition);

@@ -41,9 +41,6 @@ import java.io.IOException;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 import org.checkerframework.checker.nullness.qual.RequiresNonNull;
 
-// Set to true to enable verbose resync/seek logging
-// private static final boolean DEBUG = true;
-
 /**
  * Extracts data from the MPEG-2 PS container format.
  *

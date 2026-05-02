@@ -13,8 +13,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.nio.channels.ScatteringByteChannel;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -124,14 +122,4 @@ public class Exo2PullDataSource implements DataSource, HasClose
     {
         return new HashMap<String, List<String>>();
     }
-
-
-//    @Override
-//    public Map<String, List<String>> getResponseHeaders() {
-//        return Collections.emptyMap();
-//    }
-//
-//    @Override
-//    public void addTransferListener(TransferListener transferListener) {
-//    }
 }
