@@ -166,7 +166,8 @@ public class KeyMapProcessor {
             }
         }
         else if(!uiHandler.isKeyboardVisible()
-                && client.getCurrentConnection().getMenuHint().hasTextInput == true)
+                && client.getCurrentConnection().getMenuHint().hasTextInput == true
+                && !longPress)
         {
             if(keyCode == KeyEvent.KEYCODE_DPAD_CENTER)
             {
