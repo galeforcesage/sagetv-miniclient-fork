@@ -318,7 +318,8 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                     {
                         if (player == null) return;
 
-                        log.logDebug("Seek Called - Current Position: " + player.getContentPosition()
+                        if (VerboseLogging.DETAILED_PLAYER_LOGGING)
+                            log.logDebug("Seek Called - Current Position: " + player.getContentPosition()
                                 + "  Seek Request: " + timeInMillis
                                 + " Difference: " + (player.getContentPosition() - timeInMillis));
 
@@ -471,7 +472,8 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                         // Must reset the media source so the push data source starts fresh.
                         player.setMediaSource(mediaSource, true);
                         player.prepare();
-                        log.logDebug("Push flush: reset media source, position: " + Utils.toHHMMSS(player.getCurrentPosition()));
+                        if (VerboseLogging.DETAILED_PLAYER_LOGGING)
+                            log.logDebug("Push flush: reset media source, position: " + Utils.toHHMMSS(player.getCurrentPosition()));
                     }
                     else
                     {
@@ -479,7 +481,8 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                         // Don't destroy the pipeline — just let ExoPlayer handle it via seekTo().
                         // Clearing flushed flag here since no pushData() call will do it.
                         flushed = false;
-                        log.logDebug("Pull flush: no-op, will seek next");
+                        if (VerboseLogging.DETAILED_PLAYER_LOGGING)
+                            log.logDebug("Pull flush: no-op, will seek next");
                     }
 
                     Exo2MediaPlayerImpl.this.currentPlaybackPosition = player.getCurrentPosition();
@@ -543,7 +546,8 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 // Open trickplay controller for pull mode time truth
                 if (trickplayController != null && trickplayController.isNativeAvailable())
                 {
-                    log.logDebug("Opening trickplay controller for PULL mode");
+                    if (VerboseLogging.DETAILED_PLAYER_LOGGING)
+                        log.logDebug("Opening trickplay controller for PULL mode");
                     trickplayController.open(false);
 
                     trickplayController.setSeekCallback(new TrickplayController.PlayerSeekCallback()
@@ -804,7 +808,8 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
             boolean haveStartPosition = (playbackStartPosition >= 0);
 
-            log.logDebug("ExoLogging - Preparing playback, startPosition=" + playbackStartPosition);
+            if (VerboseLogging.DETAILED_PLAYER_LOGGING)
+                log.logDebug("ExoLogging - Preparing playback, startPosition=" + playbackStartPosition);
 
             if (haveStartPosition && dataSource instanceof Exo2PullDataSource)
             {
@@ -813,13 +818,15 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 // parsed the file), so we can't do time→byte conversion here.
                 // Instead, queue the seek for STATE_READY when duration is known.
                 pendingPullSeekMs = playbackStartPosition;
-                log.logDebug("ExoLogging - Queuing initial resume seek for STATE_READY: " + playbackStartPosition);
+                if (VerboseLogging.DETAILED_PLAYER_LOGGING)
+                    log.logDebug("ExoLogging - Queuing initial resume seek for STATE_READY: " + playbackStartPosition);
                 player.setMediaSource(mediaSource, true);
             }
             else if (haveStartPosition)
             {
                 player.setMediaSource(mediaSource, playbackStartPosition);
-                log.logDebug("ExoLogging - setMediaSource with startPosition: " + playbackStartPosition);
+                if (VerboseLogging.DETAILED_PLAYER_LOGGING)
+                    log.logDebug("ExoLogging - setMediaSource with startPosition: " + playbackStartPosition);
             }
             else
             {

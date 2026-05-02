@@ -41,6 +41,9 @@ import java.io.IOException;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 import org.checkerframework.checker.nullness.qual.RequiresNonNull;
 
+// Set to true to enable verbose resync/seek logging
+// private static final boolean DEBUG = true;
+
 /**
  * Extracts data from the MPEG-2 PS container format.
  *
@@ -84,6 +87,7 @@ public final class SagePsExtractor implements Extractor {
     private boolean foundVideoTrack;
     private long lastTrackPosition;
     private static final String TAG = "SagePsExtractor";
+    private static final boolean DEBUG = false;
     private boolean needsResync; // true after seek to non-zero position
 
     // Accessed only by the loading thread.
@@ -162,7 +166,7 @@ public final class SagePsExtractor implements Extractor {
         // After seeking to a non-zero position, we need to resync to the next
         // PACK_START_CODE since LinearPsSeekMap byte positions are approximate.
         needsResync = (position > 0);
-        Log.d(TAG, "seek() called: position=" + position + ", timeUs=" + timeUs
+        if (DEBUG) Log.d(TAG, "seek() called: position=" + position + ", timeUs=" + timeUs
                 + ", reset timestampAdjuster to " + timeUs + ", needsResync=" + needsResync);
 
         for (int i = 0; i < psPayloadReaders.size(); i++) {
@@ -190,12 +194,12 @@ public final class SagePsExtractor implements Extractor {
         // the next PACK_START_CODE. The LinearPsSeekMap provides approximate byte
         // positions that may not land exactly on a pack header.
         if (needsResync) {
-            Log.d(TAG, "Resync starting at input position " + input.getPosition());
+            if (DEBUG) Log.d(TAG, "Resync starting at input position " + input.getPosition());
             if (!resyncToPackStartCode(input)) {
                 Log.w(TAG, "Resync failed - END_OF_INPUT");
                 return RESULT_END_OF_INPUT;
             }
-            Log.d(TAG, "Resync complete, now at position " + input.getPosition());
+            if (DEBUG) Log.d(TAG, "Resync complete, now at position " + input.getPosition());
             needsResync = false;
         }
 
@@ -322,7 +326,7 @@ public final class SagePsExtractor implements Extractor {
             if (remaining < bytesRead) bytesRead = (int) remaining;
 
             if (!input.peekFully(buf, 0, bytesRead, true)) {
-                Log.w(TAG, "resync: peekFully returned false at scan " + scan);
+                if (DEBUG) Log.w(TAG, "resync: peekFully returned false at scan " + scan);
                 return false;
             }
             for (int i = 0; i < bytesRead - 3; i++) {
@@ -331,7 +335,7 @@ public final class SagePsExtractor implements Extractor {
                     // Found PACK_START_CODE. Skip to this position.
                     input.resetPeekPosition();
                     input.skipFully(i);
-                    Log.d(TAG, "resync: found PACK_START_CODE at offset +" + i + " in scan " + scan
+                    if (DEBUG) Log.d(TAG, "resync: found PACK_START_CODE at offset +" + i + " in scan " + scan
                             + ", new position=" + input.getPosition());
                     return true;
                 }
@@ -339,7 +343,7 @@ public final class SagePsExtractor implements Extractor {
             // Didn't find it in this chunk. Advance past it (minus 3 for overlap).
             input.resetPeekPosition();
             input.skipFully(bytesRead - 3);
-            Log.d(TAG, "resync: scan " + scan + " no pack header, skipped to " + input.getPosition());
+            if (DEBUG) Log.d(TAG, "resync: scan " + scan + " no pack header, skipped to " + input.getPosition());
         }
         // Fell through without finding a pack start code in 64KB — unlikely but
         // let the normal read loop handle byte-by-byte from here.

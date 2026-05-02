@@ -15,6 +15,14 @@
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN,  TAG, __VA_ARGS__)
 
+/* Set to 1 to enable verbose transport debugging */
+#define DEBUG_TRANSPORT 0
+#if DEBUG_TRANSPORT
+#define LOGV(...) LOGD(__VA_ARGS__)
+#else
+#define LOGV(...) ((void)0)
+#endif
+
 /* ------------------------------------------------------------------ */
 /*  Internal helpers                                                   */
 /* ------------------------------------------------------------------ */
@@ -224,7 +232,7 @@ static void update_reported_time(SageTransport* t) {
 
                 /* Reject transient ptt=0 when we were previously stable */
                 if (ptt == 0 && t->lastStablePttMs > 2000) {
-                    LOGD("PULL: ignoring transient ptt=0 (lastStable=%lld)",
+                    LOGV("PULL: ignoring transient ptt=0 (lastStable=%lld)",
                          (long long)t->lastStablePttMs);
                     break;
                 }
@@ -235,7 +243,7 @@ static void update_reported_time(SageTransport* t) {
 
                 /* Reject large backward jumps in SMT (> 1.5s) */
                 if (t->reportedTimeMs > 0 && candidateSmt < t->reportedTimeMs - 1500) {
-                    LOGD("PULL: rejecting backward SMT jump %lld → %lld (ptt=%lld, offset=%lld)",
+                    LOGV("PULL: rejecting backward SMT jump %lld → %lld (ptt=%lld, offset=%lld)",
                          (long long)t->reportedTimeMs, (long long)candidateSmt,
                          (long long)ptt, (long long)t->baseOffsetMs);
                     break;
@@ -467,7 +475,7 @@ void sage_transport_flush(SageTransport* t) {
     /* Wake blocked writers */
     pthread_cond_broadcast(&t->spaceAvailable);
 
-    LOGD("Flushed transport, epoch=%d", t->streamEpoch);
+    LOGV("Flushed transport, epoch=%d", t->streamEpoch);
     pthread_mutex_unlock(&t->lock);
 }
 
@@ -659,7 +667,7 @@ void sage_transport_increment_epoch(SageTransport* t) {
     if (!t) return;
     pthread_mutex_lock(&t->lock);
     t->streamEpoch++;
-    LOGD("Epoch incremented to %d", t->streamEpoch);
+    LOGV("Epoch incremented to %d", t->streamEpoch);
     pthread_mutex_unlock(&t->lock);
 }
 
