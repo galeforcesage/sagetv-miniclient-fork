@@ -249,6 +249,16 @@ static void update_reported_time(SageTransport* t) {
                     break;
                 }
 
+                /* Reject large forward jumps in SMT (> 2s in one tick).
+                 * Normal playback advances ~0.5s/tick (500ms interval);
+                 * anything > 2s per tick indicates a position glitch. */
+                if (t->reportedTimeMs > 0 && candidateSmt > t->reportedTimeMs + 2000) {
+                    LOGV("PULL: rejecting forward SMT jump %lld → %lld (ptt=%lld, offset=%lld)",
+                         (long long)t->reportedTimeMs, (long long)candidateSmt,
+                         (long long)ptt, (long long)t->baseOffsetMs);
+                    break;
+                }
+
                 t->lastStablePttMs = ptt;
                 t->reportedTimeMs = candidateSmt;
                 t->frozenTimeMs = candidateSmt;
@@ -582,6 +592,11 @@ void sage_transport_on_player_position(SageTransport* t, int64_t positionMs) {
                     t->baseOffsetMs = t->seekTargetMs - positionMs;
                     t->mappingEstablished = true;
                     t->lastStablePttMs = positionMs;
+                    /* Reset reportedTimeMs to the new seek target so the
+                     * glitch filters in update_reported_time don't block
+                     * subsequent position updates. */
+                    t->reportedTimeMs = t->seekTargetMs;
+                    t->frozenTimeMs = t->seekTargetMs;
                     LOGD("RECOVERING → STABLE_PLAYING: ptt=%lld, target=%lld, baseOffset=%lld → smt=%lld",
                          (long long)positionMs, (long long)t->seekTargetMs,
                          (long long)t->baseOffsetMs, (long long)(positionMs + t->baseOffsetMs));

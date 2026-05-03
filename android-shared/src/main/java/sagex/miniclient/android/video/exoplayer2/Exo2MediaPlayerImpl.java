@@ -350,26 +350,13 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 {
                     if (player != null)
                     {
-                        // Pull-mode seeks: always queue via pendingPullSeekMs.
-                        // The actual player.seekTo() happens on the UI thread
-                        // via seekToImpl (called from TrickplayController's
-                        // coalesce timer or STATE_READY callback).
-                        // This avoids IllegalStateException from accessing
-                        // ExoPlayer on the wrong thread.
+                        // Pull-mode seeks: queue via pendingPullSeekMs.
+                        // The actual player.seekTo() happens via:
+                        //  1) TrickplayController's coalesce timer (seekCallback.onSeekTo)
+                        //  2) STATE_READY callback (for initial resume or post-seek recovery)
+                        // Do NOT call seekToImpl directly here — it races with
+                        // coalescing and can seek ExoPlayer to a stale target.
                         pendingPullSeekMs = timeInMS;
-                        // Post to UI thread to check if player is ready now
-                        context.runOnUiThread(new Runnable() {
-                            @Override
-                            public void run() {
-                                if (player != null && player.getPlaybackState() == Player.STATE_READY) {
-                                    long pending = pendingPullSeekMs;
-                                    if (pending >= 0) {
-                                        pendingPullSeekMs = -1;
-                                        seekToImpl(pending);
-                                    }
-                                }
-                            }
-                        });
                     }
                     else
                     {
@@ -865,7 +852,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             {
                 if (player != null)
                 {
-                    long pos = player.getCurrentPosition();
+                    long pos = player.getContentPosition();
                     Exo2MediaPlayerImpl.this.setPlaybackPosition(pos);
 
                     if (trickplayController != null && trickplayController.isNativeAvailable())
