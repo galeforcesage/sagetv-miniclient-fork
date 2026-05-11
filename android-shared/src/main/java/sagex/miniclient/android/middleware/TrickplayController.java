@@ -9,39 +9,80 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 
 /**
- * Java-side trickplay orchestrator backed by native transport.
- * <p>
- * Owns the native transport handle. Provides seek coalescing via Handler,
- * delegates time truth and buffering to JNI, and bridges player position
- * observations back to native.
- * <p>
- * Thread safety: all public methods are safe to call from any thread.
- * Seek coalescing callbacks run on the UI thread.
+ * Java-side trickplay orchestrator.
+ *
+ * <p>This class owns ALL clock / seek state in pure Java. The native
+ * transport handle is used only as a ring buffer for push-mode data
+ * delivery to the player.
+ *
+ * <p>Time model (one source of truth):
+ * <ul>
+ *   <li><b>Pull mode</b>: ExoPlayer's {@code getCurrentPosition()} <em>is</em>
+ *       the timeline time, so reported time = playerPos.</li>
+ *   <li><b>Push mode, no seek yet</b>: reported time = serverStartTimeMs +
+ *       playerPos. {@code serverStartTimeMs} is set by
+ *       {@link sagex.miniclient.MediaCmd} from the latest PushBuffer frame.</li>
+ *   <li><b>After any seek converges</b>: reported time = playerPos +
+ *       baseOffsetMs, where baseOffsetMs = seekTargetMs - posAtConvergence.
+ *       This applies to both push and pull. Independent of
+ *       serverStartTimeMs, so server-driven catch-up doesn't drift the
+ *       OSD.</li>
+ *   <li><b>During an in-flight seek</b>: reported time is frozen at the
+ *       seek target, so SageTV's GETMEDIATIME polling doesn't see the
+ *       transient.</li>
+ * </ul>
+ *
+ * <p>Thread safety: all public methods are safe to call from any thread.
+ * Seek-commit Runnable runs on the UI thread (player APIs require that).
  */
 public class TrickplayController
 {
     private static final Logger log = LoggerFactory.getLogger(TrickplayController.class);
-    private static final long SEEK_COALESCE_WINDOW_MS = 200;
-    private static final int DEFAULT_BUFFER_CAPACITY = 4 * 1024 * 1024;
+    private static final long PULL_SEEK_COALESCE_MS = 200;
+    private static final int  DEFAULT_BUFFER_CAPACITY = 4 * 1024 * 1024;
 
+    /* ------------ Native ring buffer handle (push mode only) ------------ */
     private long nativeHandle;
+
+    /* ------------ Java clock state ------------ */
     private final Handler uiHandler;
     private PlayerSeekCallback seekCallback;
-    private EpochChangeListener epochListener;
-    private int lastKnownEpoch;
     private boolean pushMode;
+    private boolean opened;
 
-    /**
-     * Callback for the player to actually execute a seek.
-     */
+    // Latest player position observation (from onPlayerPosition).
+    private long lastPlayerPosMs = 0;
+
+    // Server-supplied start time (push mode only). -1 = unknown.
+    private long serverStartTimeMs = -1;
+
+    // Active seek bookkeeping.
+    // -1 means "no seek in flight". When a beginSeek() arrives, the
+    // target is recorded here and getReportedTime() freezes on it until
+    // the player position converges (mappingValid becomes true).
+    private long seekTargetMs = -1;
+    private boolean seekArmed = false;     // beginSeek called, not yet sent to player
+    private boolean seekCommitted = false; // sent to player, awaiting convergence
+
+    // Two-clock mapping. Once set, reported = playerPos + baseOffsetMs.
+    private boolean mappingValid = false;
+    private long    baseOffsetMs = 0;
+
+    // Paused indicator (used only by isStable / getState).
+    private boolean paused = false;
+
+    /* ------------ Pending pre-ready seek ------------ */
+    // If beginSeek() arrives before the player has been prepared, the
+    // commit Runnable will fail. We park the target here and replay it
+    // on notifyPlayerReady().
+    private boolean pendingPreReadySeek = false;
+
     public interface PlayerSeekCallback
     {
         void onSeekTo(long timeMs);
     }
 
-    /**
-     * Listener for stream epoch changes (discontinuities).
-     */
+    /** Retained for binary compatibility; no longer used. */
     public interface EpochChangeListener
     {
         void onEpochChanged(int newEpoch);
@@ -52,14 +93,23 @@ public class TrickplayController
         @Override
         public void run()
         {
-            if (nativeHandle == 0) return;
-
-            long target = NativeTransport.nCommitSeek(nativeHandle);
-            log.debug("Seek coalesce committed: target={}", target);
-
-            if (seekCallback != null && target >= 0)
+            long target;
+            PlayerSeekCallback cb;
+            synchronized (TrickplayController.this)
             {
-                seekCallback.onSeekTo(target);
+                if (seekTargetMs < 0)
+                {
+                    return;
+                }
+                target = seekTargetMs;
+                seekArmed = false;
+                seekCommitted = true;
+                cb = seekCallback;
+            }
+            log.debug("Seek commit: target={}", target);
+            if (cb != null)
+            {
+                cb.onSeekTo(target);
             }
         }
     };
@@ -74,21 +124,29 @@ public class TrickplayController
         }
         else
         {
-            log.warn("Native transport not available, trickplay disabled");
+            log.warn("Native transport not available, push-mode disabled");
             nativeHandle = 0;
         }
     }
 
     public void setSeekCallback(PlayerSeekCallback callback)
     {
-        this.seekCallback = callback;
+        synchronized (this)
+        {
+            this.seekCallback = callback;
+        }
     }
 
+    /** No-op. Retained for source compatibility. */
     public void setEpochListener(EpochChangeListener listener)
     {
-        this.epochListener = listener;
+        // intentionally empty
     }
 
+    /**
+     * @return true if the native ring buffer is available (push mode can
+     *         use the JNI transport). The Java clock itself always works.
+     */
     public boolean isNativeAvailable()
     {
         return nativeHandle != 0;
@@ -96,19 +154,36 @@ public class TrickplayController
 
     /* ---- Lifecycle ---- */
 
-    public void open(boolean pushMode)
+    public synchronized void open(boolean pushMode)
     {
         this.pushMode = pushMode;
+        this.opened = true;
+
+        // Reset clock state for the new playback session.
+        lastPlayerPosMs = 0;
+        serverStartTimeMs = -1;
+        seekTargetMs = -1;
+        seekArmed = false;
+        seekCommitted = false;
+        mappingValid = false;
+        baseOffsetMs = 0;
+        paused = false;
+        pendingPreReadySeek = false;
+
         if (nativeHandle != 0)
         {
             NativeTransport.nOpen(nativeHandle, pushMode);
-            lastKnownEpoch = 0;
         }
+        log.debug("open(pushMode={})", pushMode);
     }
 
     public void close()
     {
         uiHandler.removeCallbacks(seekCommitRunnable);
+        synchronized (this)
+        {
+            opened = false;
+        }
         if (nativeHandle != 0)
         {
             NativeTransport.nClose(nativeHandle);
@@ -125,14 +200,12 @@ public class TrickplayController
         }
     }
 
-    /* ---- Data flow ---- */
+    /* ---- Data flow (push mode ring buffer) ---- */
 
     public int pushData(byte[] data, int offset, int length) throws IOException
     {
         if (nativeHandle == 0) return 0;
-        int written = NativeTransport.nPushData(nativeHandle, data, offset, length);
-        checkEpoch();
-        return written;
+        return NativeTransport.nPushData(nativeHandle, data, offset, length);
     }
 
     public int readData(byte[] buffer, int offset, int length)
@@ -149,9 +222,21 @@ public class TrickplayController
 
     public void flush()
     {
-        if (nativeHandle == 0) return;
-        uiHandler.removeCallbacks(seekCommitRunnable);
-        NativeTransport.nFlush(nativeHandle);
+        // A flush always invalidates the player-position → wallclock mapping.
+        // The mapping will be re-established on the next seek convergence
+        // (if a seek was in flight) or stay invalid until the player
+        // produces a meaningful position.
+        synchronized (this)
+        {
+            mappingValid = false;
+            // Note: we do NOT clear seekTargetMs / seekArmed / seekCommitted.
+            // A typical sequence is beginSeek() → flush() → push new data
+            // → onPlayerPosition() converges → mapping established.
+        }
+        if (nativeHandle != 0)
+        {
+            NativeTransport.nFlush(nativeHandle);
+        }
     }
 
     public void setEOS()
@@ -169,150 +254,164 @@ public class TrickplayController
     /* ---- Trickplay ---- */
 
     /**
-     * Begin a seek. Freezes reported time and starts coalesce timer.
-     * If another seek arrives within the coalesce window, the target
-     * is updated without committing to the player.
+     * Begin a seek. Reported time freezes on {@code targetMs} immediately
+     * so SageTV's GETMEDIATIME loop sees the intended target rather than
+     * a transient value during the player rebuild.
+     *
+     * <p>Coalescing: rapid successive calls within the coalesce window
+     * collapse to a single {@code seekCallback.onSeekTo(latestTarget)}.
+     * Push mode commits immediately (no coalesce); pull mode waits
+     * {@value #PULL_SEEK_COALESCE_MS} ms.
      */
     public void beginSeek(long targetMs)
     {
-        if (nativeHandle == 0) return;
-        NativeTransport.nBeginSeek(nativeHandle, targetMs);
-
+        synchronized (this)
+        {
+            seekTargetMs = targetMs;
+            seekArmed = true;
+            seekCommitted = false;
+            mappingValid = false;
+            pendingPreReadySeek = !opened; // park if open() hasn't fired
+        }
         uiHandler.removeCallbacks(seekCommitRunnable);
-
         if (pushMode)
         {
-            /* In push mode, the server drives repositioning via flush+push.
-             * The player just needs to reset its pipeline.
-             * Commit immediately — no coalescing needed for push seeks
-             * because the server already serializes flush→push sequences. */
             uiHandler.post(seekCommitRunnable);
         }
         else
         {
-            /* In pull mode, coalesce rapid seeks (FF mashing) */
-            uiHandler.postDelayed(seekCommitRunnable, SEEK_COALESCE_WINDOW_MS);
+            uiHandler.postDelayed(seekCommitRunnable, PULL_SEEK_COALESCE_MS);
+        }
+        log.debug("beginSeek: target={}, push={}", targetMs, pushMode);
+    }
+
+    /**
+     * Optional player hook. Today's logic doesn't gate on player readiness
+     * (the coalesce delay handles cold-start), but kept as an injection
+     * point for future deferred-seek logic.
+     */
+    public void notifyPlayerReady()
+    {
+        boolean replay;
+        synchronized (this)
+        {
+            replay = pendingPreReadySeek && seekTargetMs >= 0;
+            pendingPreReadySeek = false;
+        }
+        if (replay)
+        {
+            uiHandler.removeCallbacks(seekCommitRunnable);
+            uiHandler.post(seekCommitRunnable);
         }
     }
 
     /**
-     * Called by the player when its seek operation completes.
-     * Transitions native state from SEEK_COMMITTING to RECOVERING.
+     * Called by the player when its async seek operation finishes.
+     * Today this is informational only; convergence is detected from
+     * {@link #onPlayerPosition(long)}. Kept as a callback for future
+     * tightening of the SEEK_COMMITTING window.
      */
     public void notifySeekComplete()
     {
-        if (nativeHandle == 0) return;
-        NativeTransport.nNotifySeekComplete(nativeHandle);
+        // intentionally empty — convergence is observed via player position.
     }
 
     /**
-     * Hook called by the player when it transitions to STATE_READY.
-     *
-     * <p>Today this is a placeholder for the unified seek-deferral path
-     * planned in the trickplay refactor: if a future revision needs to
-     * gate a buffered seek until the player is preparing/ready, the logic
-     * lives here instead of being duplicated as a {@code pendingSeekMs}
-     * field on every player implementation.
-     *
-     * <p>The current native state machine doesn't need anything here
-     * because {@link #beginSeek(long)} already arms a coalesce timer that
-     * fires after the player has had a chance to reach a usable state.
+     * Called by the player to report its observed wallclock-independent
+     * position. Drives mapping establishment after a seek.
      */
-    public void notifyPlayerReady()
+    public synchronized void onPlayerPosition(long positionMs)
     {
-        // No-op for now; reserved for future state-machine integration.
+        lastPlayerPosMs = positionMs;
+
+        if (seekCommitted && positionMs > 0)
+        {
+            // Establish the two-clock mapping: from now until the next
+            // beginSeek/flush, reported time = playerPos + baseOffset.
+            baseOffsetMs = seekTargetMs - positionMs;
+            mappingValid = true;
+            seekCommitted = false;
+            log.debug("Mapping established: target={}, pos={}, baseOffset={}",
+                      seekTargetMs, positionMs, baseOffsetMs);
+            seekTargetMs = -1;
+        }
     }
 
     /**
-     * Called periodically by the player to report its observed position.
-     * In RECOVERING state, stable position → transitions to STABLE_PLAYING.
+     * @return the time SageTV's GETMEDIATIME loop should see.
+     *         Frozen during a seek; otherwise derived from player position
+     *         via the active mapping (or push-mode server start time, if
+     *         no mapping has been established yet).
      */
-    public void onPlayerPosition(long positionMs)
+    public synchronized long getReportedTime()
     {
-        if (nativeHandle == 0) return;
-        NativeTransport.nOnPlayerPosition(nativeHandle, positionMs);
+        // Frozen during in-flight seek so the OSD doesn't twitch.
+        if (seekArmed || seekCommitted)
+        {
+            return seekTargetMs;
+        }
+
+        if (mappingValid)
+        {
+            return lastPlayerPosMs + baseOffsetMs;
+        }
+
+        if (pushMode && serverStartTimeMs >= 0)
+        {
+            return serverStartTimeMs + lastPlayerPosMs;
+        }
+
+        // Pull mode pre-mapping (initial load): playerPos IS timeline time.
+        return lastPlayerPosMs;
     }
 
     /**
-     * Returns the time truth for SageTV's GETMEDIATIME polling.
-     * Frozen during seeks, real during stable playback.
+     * Coarse playback state for callers that need to know whether a seek
+     * is pending. Only three values are produced now:
+     * STABLE_PLAYING, STABLE_PAUSED, SEEK_PENDING.
      */
-    public long getReportedTime()
+    public synchronized TrickplayState getState()
     {
-        if (nativeHandle == 0) return 0;
-        return NativeTransport.nGetReportedTime(nativeHandle);
+        if (seekArmed || seekCommitted)
+        {
+            return TrickplayState.SEEK_PENDING;
+        }
+        return paused ? TrickplayState.STABLE_PAUSED : TrickplayState.STABLE_PLAYING;
     }
 
-    public TrickplayState getState()
-    {
-        if (nativeHandle == 0) return TrickplayState.STABLE_PAUSED;
-        return TrickplayState.fromNative(NativeTransport.nGetState(nativeHandle));
-    }
-
-    /**
-     * Convenience: returns true when the trickplay state machine considers
-     * playback "settled" (STABLE_PLAYING or STABLE_PAUSED) — i.e., not in
-     * the middle of a seek/recovery transition. Callers that previously
-     * tracked their own {@code flushed} or {@code seekPending} booleans
-     * should prefer this query because it reflects the single source of
-     * truth in the native two-clock model.
-     *
-     * <p>If the native layer is unavailable, returns true (no state machine
-     * to query, so callers should fall back to their own logic).
-     */
     public boolean isStable()
     {
-        if (nativeHandle == 0) return true;
         TrickplayState s = getState();
         return s != null && s.isStable();
     }
 
-    public void setPaused(boolean paused)
+    public synchronized void setPaused(boolean paused)
     {
-        if (nativeHandle == 0) return;
-        NativeTransport.nSetPaused(nativeHandle, paused);
+        this.paused = paused;
     }
 
     public void setPlaying()
     {
-        if (nativeHandle == 0) return;
-        NativeTransport.nSetPlaying(nativeHandle);
+        setPaused(false);
     }
 
-    /* ---- Server time ---- */
+    /* ---- Server time (push mode startup baseline) ---- */
 
-    public void setServerStartTime(long timeMs)
+    public synchronized void setServerStartTime(long timeMs)
     {
-        if (nativeHandle == 0) return;
-        NativeTransport.nSetServerStartTime(nativeHandle, timeMs);
+        this.serverStartTimeMs = timeMs;
     }
 
-    public long getServerStartTime()
+    public synchronized long getServerStartTime()
     {
-        if (nativeHandle == 0) return -1;
-        return NativeTransport.nGetServerStartTime(nativeHandle);
+        return serverStartTimeMs;
     }
 
-    /* ---- Epoch ---- */
+    /* ---- Epoch (deprecated; no consumer) ---- */
 
     public int getEpoch()
     {
-        if (nativeHandle == 0) return 0;
-        return NativeTransport.nGetEpoch(nativeHandle);
-    }
-
-    /**
-     * Check if epoch has changed and notify listener.
-     */
-    private void checkEpoch()
-    {
-        if (epochListener == null) return;
-        int currentEpoch = getEpoch();
-        if (currentEpoch != lastKnownEpoch)
-        {
-            lastKnownEpoch = currentEpoch;
-            epochListener.onEpochChanged(currentEpoch);
-        }
+        return 0;
     }
 
     public long getNativeHandle()

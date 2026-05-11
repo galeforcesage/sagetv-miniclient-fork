@@ -213,29 +213,45 @@ static void update_reported_time(SageTransport* t) {
         case TRICKPLAY_STABLE_PLAYING:
         case TRICKPLAY_STABLE_PAUSED: {
             if (t->pushMode) {
-                /* PUSH mode: reported = serverStartTime + playerPosition.
+                /* PUSH mode time mapping.
                  *
-                 * After a server-driven flush+repush (e.g. user FF causing
-                 * the server to tear down and restart the push session),
-                 * there is a brief window where the player position has
-                 * reset to 0 but the *new* serverStartTimeMs has not yet
-                 * been delivered by the next PushBuffer command. Emitting
-                 * (oldServerStart + 0) during that window would make the
-                 * OSD timeline bounce backward several minutes. Reject
-                 * candidate times that go backward by > 1.5 s so the
-                 * frozen time stays put until the new start arrives. */
-                int64_t sst = t->serverStartTimeMs;
+                 * Two paths:
+                 *  (a) Initial channel-tune / no seek yet: mappingEstablished
+                 *      is false. Use the legacy formula
+                 *          reported = serverStartTimeMs + observedPlayerPos
+                 *      with serverStartTimeMs supplied by the Java side
+                 *      (set on PushBuffer with a fresh serverMuxTime).
+                 *  (b) After a seek has converged (RECOVERING→STABLE): use
+                 *      the same two-clock mapping pull mode uses
+                 *          reported = observedPlayerPos + baseOffsetMs
+                 *      where baseOffsetMs = seekTargetMs - posAtConvergence.
+                 *      This is independent of serverStartTimeMs, which the
+                 *      server only refreshes once per flush—meanwhile
+                 *      ExoPlayer may rapidly advance currentPosition during
+                 *      its post-prepare/retry buffering catch-up, which would
+                 *      send (sst + opp) racing past real time.
+                 *
+                 * The legacy path also rejects backward jumps > 1.5 s to
+                 * cover the brief window after a server-driven flush where
+                 * the new serverMuxTime has not yet arrived. */
                 int64_t opp = t->observedPlayerPositionMs;
-                if (sst >= 0 && opp >= 0) {
-                    int64_t newTime = sst + opp;
-                    if (t->reportedTimeMs > 0 && newTime < t->reportedTimeMs - 1500) {
-                        LOGV("PUSH: rejecting backward SMT jump %lld → %lld (sst=%lld, opp=%lld)",
-                             (long long)t->reportedTimeMs, (long long)newTime,
-                             (long long)sst, (long long)opp);
-                        break;
-                    }
+                if (t->mappingEstablished && opp >= 0) {
+                    int64_t newTime = opp + t->baseOffsetMs;
                     t->reportedTimeMs = newTime;
                     t->frozenTimeMs = newTime;
+                } else {
+                    int64_t sst = t->serverStartTimeMs;
+                    if (sst >= 0 && opp >= 0) {
+                        int64_t newTime = sst + opp;
+                        if (t->reportedTimeMs > 0 && newTime < t->reportedTimeMs - 1500) {
+                            LOGV("PUSH: rejecting backward SMT jump %lld → %lld (sst=%lld, opp=%lld)",
+                                 (long long)t->reportedTimeMs, (long long)newTime,
+                                 (long long)sst, (long long)opp);
+                            break;
+                        }
+                        t->reportedTimeMs = newTime;
+                        t->frozenTimeMs = newTime;
+                    }
                 }
             } else {
                 /* PULL mode two-clock model: SMT = PTT + baseOffsetMs
@@ -495,6 +511,12 @@ void sage_transport_flush(SageTransport* t) {
     t->timestampSampleCount = 0;
     t->lastSniffedPtsMs     = -1;
 
+    /* Reset the two-clock mapping. A subsequent seek() will re-establish
+     * it via beginSeek→commitSeek→RECOVERING→STABLE; a server-initiated
+     * flush without a seek (e.g. channel change) will fall back to the
+     * sst+opp path until a fresh serverMuxTime arrives. */
+    t->mappingEstablished = false;
+
     /* Increment epoch on flush (new stream segment) */
     t->streamEpoch++;
 
@@ -617,14 +639,18 @@ void sage_transport_on_player_position(SageTransport* t, int64_t positionMs) {
                          (long long)positionMs, (long long)t->seekTargetMs,
                          (long long)t->baseOffsetMs, (long long)(positionMs + t->baseOffsetMs));
                 } else if (t->pushMode && t->seekTargetMs >= 0) {
-                    /* Reset reportedTimeMs baseline so the new
-                     * backward-jump filter (in update_reported_time push
-                     * branch) doesn't reject the legitimately-lower
-                     * post-seek value when the user REWs.  */
+                    /* Establish the same two-clock mapping pull mode uses.
+                     * From here until the next flush, reported time is
+                     * derived from the player's monotonic position rather
+                     * than serverStartTimeMs, which the server refreshes
+                     * only on flush. */
+                    t->baseOffsetMs = t->seekTargetMs - positionMs;
+                    t->mappingEstablished = true;
                     t->reportedTimeMs = t->seekTargetMs;
                     t->frozenTimeMs = t->seekTargetMs;
-                    LOGD("RECOVERING → STABLE_PLAYING (push): pos=%lld, target=%lld",
-                         (long long)positionMs, (long long)t->seekTargetMs);
+                    LOGD("RECOVERING → STABLE_PLAYING (push): pos=%lld, target=%lld, baseOffset=%lld",
+                         (long long)positionMs, (long long)t->seekTargetMs,
+                         (long long)t->baseOffsetMs);
                 } else {
                     LOGD("RECOVERING → STABLE_PLAYING, pos=%lld", (long long)positionMs);
                 }
