@@ -453,12 +453,32 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
                     if (pushMode)
                     {
-                        // Push mode: server will re-push data from new position.
-                        // Must reset the media source so the push data source starts fresh.
-                        player.setMediaSource(mediaSource, true);
-                        player.prepare();
+                        // Push mode (Option B / placeshifter pattern):
+                        // The transport ring buffer was already drained by
+                        // BaseMediaPlayerImpl.flush() -> trickplayController.flush().
+                        // Server will start pushing fresh bytes from the new
+                        // stream position. We do NOT rebuild the pipeline
+                        // (no setMediaSource / no prepare) — that triggers a
+                        // re-sniff cascade and UnrecognizedInputFormatException
+                        // retries when multiple flushes arrive in burst.
+                        //
+                        // Instead, force a player-level seek to 0. ExoPlayer
+                        // will:
+                        //   - drain its sample queues
+                        //   - flush the codec
+                        //   - call extractor.seek(0, 0) which resets
+                        //     SagePsExtractor's TimestampAdjuster and clears
+                        //     PesReader state
+                        //   - resume reading from the same TransportDataSource
+                        //
+                        // Position resets to 0 so the existing
+                        // (lastServerTime + position) time math in
+                        // BaseMediaPlayerImpl.getMediaTimeMillis stays correct.
+                        // Multiple seeks in quick succession are coalesced
+                        // by ExoPlayer naturally.
+                        player.seekTo(0);
                         if (VerboseLogging.DETAILED_PLAYER_LOGGING)
-                            log.logDebug("Push flush: reset media source, position: " + Utils.toHHMMSS(player.getCurrentPosition()));
+                            log.logDebug("Push flush: seekTo(0), position: " + Utils.toHHMMSS(player.getCurrentPosition()));
                     }
                     else
                     {
