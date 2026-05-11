@@ -274,6 +274,19 @@ public class TrickplayController
         return NativeTransport.nBufferAvailable(nativeHandle);
     }
 
+    /**
+     * @return number of bytes currently filled in the ring buffer (capacity
+     *         minus available space). Used by the player to gate prepare()
+     *         until a minimum prebuffer has arrived from the server,
+     *         avoiding sniff retries on push-mode startup.
+     */
+    public int bufferFilledBytes()
+    {
+        if (nativeHandle == 0) return 0;
+        int avail = NativeTransport.nBufferAvailable(nativeHandle);
+        return Math.max(0, DEFAULT_BUFFER_CAPACITY - avail);
+    }
+
     public void flush()
     {
         // A flush always invalidates the player-position → wallclock mapping.

@@ -453,32 +453,32 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
                     if (pushMode)
                     {
-                        // Push mode (Option B / placeshifter pattern):
-                        // The transport ring buffer was already drained by
-                        // BaseMediaPlayerImpl.flush() -> trickplayController.flush().
-                        // Server will start pushing fresh bytes from the new
-                        // stream position. We do NOT rebuild the pipeline
-                        // (no setMediaSource / no prepare) — that triggers a
-                        // re-sniff cascade and UnrecognizedInputFormatException
-                        // retries when multiple flushes arrive in burst.
+                        // Push-mode flush: rebuild the player's MediaSource
+                        // so renderers (especially the audio sink) are
+                        // fully reset. seekTo(...) is too light — it leaves
+                        // partial DefaultAudioSink calibration state that
+                        // accumulates A/V drift across multiple REWs.
                         //
-                        // Instead, force a player-level seek to 0. ExoPlayer
-                        // will:
-                        //   - drain its sample queues
-                        //   - flush the codec
-                        //   - call extractor.seek(0, 0) which resets
-                        //     SagePsExtractor's TimestampAdjuster and clears
-                        //     PesReader state
-                        //   - resume reading from the same TransportDataSource
-                        //
-                        // Position resets to 0 so the existing
-                        // (lastServerTime + position) time math in
-                        // BaseMediaPlayerImpl.getMediaTimeMillis stays correct.
-                        // Multiple seeks in quick succession are coalesced
-                        // by ExoPlayer naturally.
-                        player.seekTo(0);
-                        if (VerboseLogging.DETAILED_PLAYER_LOGGING)
-                            log.logDebug("Push flush: seekTo(0), position: " + Utils.toHHMMSS(player.getCurrentPosition()));
+                        // The cascade-of-rebuilds that used to break this
+                        // is prevented two ways:
+                        //   1. runWhenPrebuffered gates on ~64 KB arriving
+                        //      so sniff doesn't fail.
+                        //   2. Pending gates are cancelled before the next
+                        //      one is scheduled, so a burst of 5 flushes
+                        //      coalesces into a single rebuild.
+                        final com.google.android.exoplayer2.source.MediaSource finalSrc = mediaSource;
+                        runWhenPrebuffered(new Runnable()
+                        {
+                            @Override
+                            public void run()
+                            {
+                                if (player == null) return;
+                                player.setMediaSource(finalSrc, true);
+                                player.prepare();
+                                if (VerboseLogging.DETAILED_PLAYER_LOGGING)
+                                    log.logDebug("Push flush: setMediaSource+prepare after prebuffer");
+                            }
+                        });
                     }
                     else
                     {
@@ -496,6 +496,68 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 {
                     log.logError("Error during flush", ex);
                 }
+            }
+        });
+    }
+
+    /** Pending prebuffer gate, cancelled when a new flush arrives. */
+    private Runnable pendingPrebufferGate;
+
+    /**
+     * Schedule {@code action} to run on the UI thread once the native
+     * transport ring buffer holds at least 64 KB of data, or after a 3 s
+     * safety timeout (whichever comes first). Used to gate
+     * {@code prepare()} on initial open and the rebuild on push-mode
+     * flush, mirroring the placeshifter's {@code pushDataLeftBeforeInit}
+     * behavior.
+     *
+     * <p>Calls coalesce: scheduling a new gate cancels any pending one,
+     * so a burst of 5 flushes within ~500 ms results in exactly one
+     * rebuild instead of 5 (which would race each other's sniffs).
+     */
+    private void runWhenPrebuffered(final Runnable action)
+    {
+        final long startedAt = System.currentTimeMillis();
+        final int PREBUFFER_THRESHOLD = 64 * 1024;
+        final int POLL_INTERVAL_MS = 25;
+        final int TIMEOUT_MS = 3_000;
+        final Runnable[] gate = new Runnable[1];
+        gate[0] = new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                if (player == null) return; // released
+                if (pendingPrebufferGate != gate[0]) return; // superseded
+                int filled = (trickplayController != null && trickplayController.isNativeAvailable())
+                        ? trickplayController.bufferFilledBytes() : PREBUFFER_THRESHOLD;
+                long elapsed = System.currentTimeMillis() - startedAt;
+                if (filled >= PREBUFFER_THRESHOLD || elapsed >= TIMEOUT_MS)
+                {
+                    if (VerboseLogging.DETAILED_PLAYER_LOGGING)
+                        log.logDebug("Prebuffer gate fired: filled=" + filled
+                                + " elapsed=" + elapsed + "ms");
+                    pendingPrebufferGate = null;
+                    action.run();
+                }
+                else
+                {
+                    if (handler == null) handler = new Handler();
+                    handler.postDelayed(gate[0], POLL_INTERVAL_MS);
+                }
+            }
+        };
+        context.runOnUiThread(new Runnable()
+        {
+            @Override public void run()
+            {
+                if (handler == null) handler = new Handler();
+                if (pendingPrebufferGate != null)
+                {
+                    handler.removeCallbacks(pendingPrebufferGate);
+                }
+                pendingPrebufferGate = gate[0];
+                handler.post(gate[0]);
             }
         });
     }
@@ -848,18 +910,43 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 if (VerboseLogging.DETAILED_PLAYER_LOGGING)
                     log.logDebug("ExoLogging - Deferring initial resume seek to STATE_READY: " + playbackStartPosition);
                 player.setMediaSource(mediaSource, true);
+                player.prepare();
             }
             else if (haveStartPosition)
             {
                 player.setMediaSource(mediaSource, playbackStartPosition);
                 if (VerboseLogging.DETAILED_PLAYER_LOGGING)
                     log.logDebug("ExoLogging - setMediaSource with startPosition: " + playbackStartPosition);
+                player.prepare();
+            }
+            else if (pushMode && trickplayController != null && trickplayController.isNativeAvailable())
+            {
+                // Push-mode prebuffer gate (placeshifter pattern).
+                // Defer setMediaSource()+prepare() until ~64 KB has actually
+                // arrived in the ring (matches placeshifter's
+                // pushDataLeftBeforeInit). Without this the first sniff()
+                // runs against a near-empty ring, fails with
+                // UnrecognizedInputFormatException, and ExoPlayer's retry
+                // path burns 1-2 seconds per attempt.
+                final com.google.android.exoplayer2.source.MediaSource finalSrc = mediaSource;
+                runWhenPrebuffered(new Runnable()
+                {
+                    @Override
+                    public void run()
+                    {
+                        if (player == null) return;
+                        player.setMediaSource(finalSrc, true);
+                        player.prepare();
+                        if (VerboseLogging.DETAILED_PLAYER_LOGGING)
+                            log.logDebug("Push setupPlayer: prepare() after prebuffer");
+                    }
+                });
             }
             else
             {
                 player.setMediaSource(mediaSource, true);
+                player.prepare();
             }
-            player.prepare();
 
         }
 
