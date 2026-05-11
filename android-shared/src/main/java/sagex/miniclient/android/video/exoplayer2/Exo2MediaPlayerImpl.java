@@ -619,9 +619,13 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 log.logDebug("PLAYER ERROR: " + error.getErrorCodeName());
                 error.printStackTrace();
 
-                if (retryCount == 0)
+                if (retryCount == 0 && !(error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED
+                        && pushMode))
                 {
-                    //Show toast on first error
+                    // For push-mode MPEG-PS startup, the first sniff frequently fails
+                    // because the ring buffer hasn't filled yet when prepare() runs;
+                    // the retry path recovers transparently. Suppress the toast in
+                    // that transient case — only surface non-recoverable errors.
                     context.showErrorMessage(error.getErrorCodeName(), "Exo2MediaPlayer");
                 }
 

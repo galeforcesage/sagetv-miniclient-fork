@@ -53,6 +53,25 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
  */
 public final class SagePsExtractor implements Extractor {
 
+    /**
+     * Provider of current file size for live/growing recordings. When set, the
+     * {@link LinearPsSeekMap} will use the dynamically-reported size instead of
+     * the frozen size captured at preparation time. This allows seeks (FF/REW
+     * during commercial skip on a still-recording show) to map to correct byte
+     * positions in the file as it grows.
+     */
+    public interface LiveSizeProvider {
+        /** @return current file size in bytes, or -1 if not available. */
+        long getCurrentSize();
+    }
+
+    /**
+     * Per-instance live size provider. Injected via the constructor (preferred)
+     * or, for legacy compatibility with the no-arg {@link ExtractorsFactory}
+     * factory path, via {@link #setLiveSizeProvider(LiveSizeProvider)}.
+     */
+    private LiveSizeProvider instanceLiveSizeProvider = null;
+
     /** Factory for {@link SagePsExtractor} instances. */
     public static final ExtractorsFactory FACTORY = () -> new Extractor[]{new SagePsExtractor()};
 
@@ -90,33 +109,77 @@ public final class SagePsExtractor implements Extractor {
     // Accessed only by the loading thread.
     private @MonotonicNonNull ExtractorOutput output;
     private boolean hasOutputSeekMap;
+    private long durationPhaseInputLength = C.LENGTH_UNSET; // input length from PsDurationReader phase
 
     public SagePsExtractor() {
-        this(new TimestampAdjuster(0));
+        this(new TimestampAdjuster(0), null);
     }
 
     public SagePsExtractor(TimestampAdjuster timestampAdjuster) {
+        this(timestampAdjuster, null);
+    }
+
+    /**
+     * Construct with a {@link LiveSizeProvider} that the extractor's seek map
+     * will consult to determine the current file size for live/growing
+     * recordings. Pass {@code null} for completed-file (bounded) playback.
+     */
+    public SagePsExtractor(TimestampAdjuster timestampAdjuster, LiveSizeProvider liveSizeProvider) {
         this.timestampAdjuster = timestampAdjuster;
+        this.instanceLiveSizeProvider = liveSizeProvider;
         psPacketBuffer = new ParsableByteArray(4096);
         psPayloadReaders = new SparseArray<>();
         durationReader = new PsDurationReader();
     }
 
+    /**
+     * Set or replace the {@link LiveSizeProvider} after construction.
+     * Used when the extractor was created via the no-arg
+     * {@link ExtractorsFactory} path and the data source needs to wire itself
+     * in after the extractor has been built.
+     */
+    public void setLiveSizeProvider(LiveSizeProvider provider) {
+        this.instanceLiveSizeProvider = provider;
+    }
+
     // Extractor implementation.
+
+    /**
+     * Maximum number of leading bytes the sniffer is willing to skip while
+     * looking for the first {@link #PACK_START_CODE}. Push-mode playback
+     * starts the transport buffer at an arbitrary stream position so the
+     * very first bytes are usually mid-PES; without this scan ExoPlayer
+     * raises a transient {@code UnrecognizedInputFormatException} and burns
+     * several player retries before alignment happens to land on a pack
+     * boundary. 16 KB is well over a typical PES packet so we converge on
+     * the first try.
+     */
+    private static final int SNIFF_SCAN_BYTES = 16 * 1024;
 
     @Override
     public boolean sniff(ExtractorInput input) throws IOException {
-        byte[] scratch = new byte[14];
-        input.peekFully(scratch, 0, 14);
-
-        // Verify the PACK_START_CODE for the first 4 bytes
-        if (PACK_START_CODE
-                != (((scratch[0] & 0xFF) << 24)
-                | ((scratch[1] & 0xFF) << 16)
-                | ((scratch[2] & 0xFF) << 8)
-                | (scratch[3] & 0xFF))) {
+        // Look for PACK_START_CODE somewhere in the first SNIFF_SCAN_BYTES,
+        // not necessarily at offset 0. Returns the byte offset of the start
+        // code, or -1 if not found / not enough data.
+        int packOffset = peekPackStartCodeOffset(input);
+        if (packOffset < 0) {
             return false;
         }
+
+        // Validate the pack header marker bits at the discovered offset.
+        // peekPackStartCodeOffset already validated the 4-byte start code;
+        // here we re-peek the surrounding 14 bytes (skipping leading garbage)
+        // and run the original SCR / marker-bit checks.
+        input.resetPeekPosition();
+        if (packOffset > 0) {
+            input.advancePeekPosition(packOffset);
+        }
+
+        byte[] scratch = new byte[14];
+        if (!input.peekFully(scratch, 0, 14, true)) {
+            return false;
+        }
+
         // Verify the 01xxx1xx marker on the 5th byte
         if ((scratch[4] & 0xC4) != 0x44) {
             return false;
@@ -141,9 +204,66 @@ public final class SagePsExtractor implements Extractor {
         int packStuffingLength = scratch[13] & 0x07;
         input.advancePeekPosition(packStuffingLength);
         // Now check that the next 3 bytes are the beginning of an MPEG start code
-        input.peekFully(scratch, 0, 3);
-        return (PACKET_START_CODE_PREFIX
-                == (((scratch[0] & 0xFF) << 16) | ((scratch[1] & 0xFF) << 8) | (scratch[2] & 0xFF)));
+        if (!input.peekFully(scratch, 0, 3, true)) {
+            return false;
+        }
+        if (PACKET_START_CODE_PREFIX
+                != (((scratch[0] & 0xFF) << 16) | ((scratch[1] & 0xFF) << 8) | (scratch[2] & 0xFF))) {
+            return false;
+        }
+
+        // If we had to skip leading garbage, remember to resync the read
+        // position on the very first read() call. We can't call skipFully()
+        // here (sniff is peek-only); the existing resync path handles it.
+        if (packOffset > 0) {
+            needsResync = true;
+            if (DEBUG) {
+                Log.d(TAG, "sniff: PACK_START_CODE at +" + packOffset
+                        + ", read path will resync");
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Peek-only scan for the first {@link #PACK_START_CODE}. Reads up to
+     * {@link #SNIFF_SCAN_BYTES} bytes from the current peek position and
+     * returns the offset of the start code, or -1 if it can't be located.
+     * Resets the peek position before returning either way.
+     *
+     * <p>Uses incremental {@link ExtractorInput#peek} reads so partial data
+     * from a non-seekable / live source (e.g. push-mode ring buffer that
+     * has fewer than {@link #SNIFF_SCAN_BYTES} bytes available right after
+     * a server flush) still produces a valid result instead of failing the
+     * whole sniff.
+     */
+    private int peekPackStartCodeOffset(ExtractorInput input) throws IOException {
+        input.resetPeekPosition();
+        byte[] buf = new byte[SNIFF_SCAN_BYTES];
+        int filled = 0;
+        // Read whatever is currently available, growing up to SNIFF_SCAN_BYTES.
+        // peek() returns the number of bytes read, or RESULT_END_OF_INPUT.
+        while (filled < buf.length) {
+            int read = input.peek(buf, filled, buf.length - filled);
+            if (read == C.RESULT_END_OF_INPUT) {
+                break;
+            }
+            if (read <= 0) {
+                // Defensive: never spin.
+                break;
+            }
+            filled += read;
+        }
+        input.resetPeekPosition();
+        if (filled < 4) return -1;
+
+        for (int i = 0; i <= filled - 4; i++) {
+            if (buf[i] == 0x00 && buf[i + 1] == 0x00
+                    && buf[i + 2] == 0x01 && (buf[i + 3] & 0xFF) == 0xBA) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     @Override
@@ -183,9 +303,15 @@ public final class SagePsExtractor implements Extractor {
         long inputLength = input.getLength();
         boolean canReadDuration = inputLength != C.LENGTH_UNSET;
         if (canReadDuration && !durationReader.isDurationReadFinished()) {
+            // Store the input length from the duration-reading phase so we can
+            // use it for seek map creation even if later opens report LENGTH_UNSET
+            // (which happens for timeshifted/live content after preparation).
+            durationPhaseInputLength = inputLength;
             return durationReader.readDuration(input, seekPosition);
         }
-        maybeOutputSeekMap(inputLength);
+        // Use the stored duration-phase length for seek map if current is unknown
+        long seekMapLength = (inputLength != C.LENGTH_UNSET) ? inputLength : durationPhaseInputLength;
+        maybeOutputSeekMap(seekMapLength);
 
         // After a seek to a non-zero position, scan forward efficiently to find
         // the next PACK_START_CODE. The LinearPsSeekMap provides approximate byte
@@ -361,7 +487,7 @@ public final class SagePsExtractor implements Extractor {
                 if (durationUs == C.TIME_UNSET) {
                     durationUs = inputLength * 1000000L / 625000L; // estimate ~5 Mbps
                 }
-                output.seekMap(new LinearPsSeekMap(durationUs, inputLength));
+                output.seekMap(new LinearPsSeekMap(durationUs, inputLength, instanceLiveSizeProvider));
             } else {
                 output.seekMap(new SeekMap.Unseekable(durationUs));
             }
@@ -371,14 +497,42 @@ public final class SagePsExtractor implements Extractor {
     /**
      * A simple SeekMap that maps time to byte position using linear interpolation.
      * Byte positions are aligned to 2048-byte boundaries (MPEG-PS pack size).
+     *
+     * <p>For live/growing recordings, consults the supplied
+     * {@link LiveSizeProvider} to use the current file size, and reports a
+     * duration that scales with the size via the constant bitrate measured
+     * during preparation. This ensures FF/REW (e.g. comskip jumps) on a
+     * still-recording show maps to correct byte positions instead of getting
+     * clamped to the original (small) duration.
      */
-    private static final class LinearPsSeekMap implements SeekMap {
-        private final long durationUs;
-        private final long fileSize;
+    /* package */ static final class LinearPsSeekMap implements SeekMap {
+        private final long initialDurationUs;
+        private final long initialFileSize;
+        private final double bytesPerUs;
+        private final LiveSizeProvider liveSizeProvider;
 
-        LinearPsSeekMap(long durationUs, long fileSize) {
-            this.durationUs = durationUs;
-            this.fileSize = fileSize;
+        LinearPsSeekMap(long durationUs, long fileSize, LiveSizeProvider liveSizeProvider) {
+            this.initialDurationUs = durationUs;
+            this.initialFileSize = fileSize;
+            this.bytesPerUs = (durationUs > 0) ? (double) fileSize / durationUs : 0.0;
+            this.liveSizeProvider = liveSizeProvider;
+        }
+
+        /** Returns current file size, dynamically queried for live recordings. */
+        private long currentFileSize() {
+            LiveSizeProvider p = liveSizeProvider;
+            if (p != null) {
+                long sz = p.getCurrentSize();
+                if (sz > initialFileSize) return sz;
+            }
+            return initialFileSize;
+        }
+
+        /** Returns current duration scaled with current file size (constant bitrate). */
+        private long currentDurationUs() {
+            long size = currentFileSize();
+            if (size == initialFileSize || bytesPerUs <= 0) return initialDurationUs;
+            return (long) (size / bytesPerUs);
         }
 
         @Override
@@ -388,11 +542,13 @@ public final class SagePsExtractor implements Extractor {
 
         @Override
         public long getDurationUs() {
-            return durationUs;
+            return currentDurationUs();
         }
 
         @Override
         public SeekMap.SeekPoints getSeekPoints(long timeUs) {
+            long durationUs = currentDurationUs();
+            long fileSize = currentFileSize();
             if (timeUs <= 0) {
                 return new SeekMap.SeekPoints(new SeekPoint(0, 0));
             }
