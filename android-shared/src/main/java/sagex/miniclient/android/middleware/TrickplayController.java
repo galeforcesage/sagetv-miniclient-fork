@@ -206,6 +206,24 @@ public class TrickplayController
     }
 
     /**
+     * Hook called by the player when it transitions to STATE_READY.
+     *
+     * <p>Today this is a placeholder for the unified seek-deferral path
+     * planned in the trickplay refactor: if a future revision needs to
+     * gate a buffered seek until the player is preparing/ready, the logic
+     * lives here instead of being duplicated as a {@code pendingSeekMs}
+     * field on every player implementation.
+     *
+     * <p>The current native state machine doesn't need anything here
+     * because {@link #beginSeek(long)} already arms a coalesce timer that
+     * fires after the player has had a chance to reach a usable state.
+     */
+    public void notifyPlayerReady()
+    {
+        // No-op for now; reserved for future state-machine integration.
+    }
+
+    /**
      * Called periodically by the player to report its observed position.
      * In RECOVERING state, stable position → transitions to STABLE_PLAYING.
      */

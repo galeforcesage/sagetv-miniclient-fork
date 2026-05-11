@@ -78,7 +78,6 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     private Handler handler;
     private Runnable progressRunnable;
     private String url;
-    private volatile long pendingPullSeekMs = -1;  // queued seek until STATE_READY
 
     MediaSessionCompat mediaSession;
 
@@ -348,23 +347,18 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             {
                 if (!pushMode)
                 {
-                    if (player != null)
+                    if (player == null)
                     {
-                        // Pull-mode seeks: queue via pendingPullSeekMs.
-                        // The actual player.seekTo() happens via:
-                        //  1) TrickplayController's coalesce timer (seekCallback.onSeekTo)
-                        //  2) STATE_READY callback (for initial resume or post-seek recovery)
-                        // Do NOT call seekToImpl directly here — it races with
-                        // coalescing and can seek ExoPlayer to a stale target.
-                        pendingPullSeekMs = timeInMS;
-                    }
-                    else
-                    {
-
                         log.logDebug("Seek player is null storing position: " + timeInMS);
-
                         playbackStartPosition = timeInMS;
                     }
+                    // Pull-mode: super.seek() above already called
+                    // trickplayController.beginSeek(timeInMS), which arms the
+                    // 200ms coalesce timer. When it fires, seekCallback ->
+                    // seekToImpl -> player.seekTo() is invoked with the latest
+                    // coalesced target. ExoPlayer handles seekTo() in any
+                    // state (IDLE / BUFFERING / READY), so no further deferral
+                    // is required here.
                 }
                 else
                 {
@@ -667,12 +661,22 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                         retryCount = 0;
                     }
 
-                    // Apply any gated pull-mode seek now that SeekMap exists
-                    if (pendingPullSeekMs >= 0)
+                    // Notify the trickplay controller so it can release any
+                    // seek that was buffered while the player was preparing.
+                    if (trickplayController != null && trickplayController.isNativeAvailable())
                     {
-                        long pending = pendingPullSeekMs;
-                        pendingPullSeekMs = -1;
-                        log.logDebug("STATE_READY: applying gated seek to " + pending);
+                        trickplayController.notifyPlayerReady();
+                    }
+
+                    // Apply any deferred initial-resume seek (pull mode only).
+                    // Runtime seeks go through the trickplay controller's
+                    // coalesce timer, but the very first resume after
+                    // setMediaSource() needs the SeekMap to exist first.
+                    if (!pushMode && playbackStartPosition >= 0)
+                    {
+                        long pending = playbackStartPosition;
+                        playbackStartPosition = -1;
+                        log.logDebug("STATE_READY: applying deferred initial resume seek to " + pending);
                         seekToImpl(pending);
                     }
 
@@ -810,12 +814,13 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
             if (haveStartPosition && dataSource instanceof Exo2PullDataSource)
             {
-                // For initial resume in pull mode, queue the time-based seek
-                // for STATE_READY when ExoPlayer has parsed the file and
-                // established a SeekMap with duration.
-                pendingPullSeekMs = playbackStartPosition;
+                // For initial resume in pull mode, the time-based seek can't
+                // be applied at setMediaSource() time because ExoPlayer's
+                // SeekMap isn't established until enough of the stream has
+                // been parsed. Leave playbackStartPosition set; the
+                // STATE_READY handler will consume it and call seekTo().
                 if (VerboseLogging.DETAILED_PLAYER_LOGGING)
-                    log.logDebug("ExoLogging - Queuing initial resume seek for STATE_READY: " + playbackStartPosition);
+                    log.logDebug("ExoLogging - Deferring initial resume seek to STATE_READY: " + playbackStartPosition);
                 player.setMediaSource(mediaSource, true);
             }
             else if (haveStartPosition)
