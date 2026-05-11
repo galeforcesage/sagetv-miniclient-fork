@@ -38,7 +38,30 @@ import java.io.IOException;
 public class TrickplayController
 {
     private static final Logger log = LoggerFactory.getLogger(TrickplayController.class);
-    private static final long PULL_SEEK_COALESCE_MS = 200;
+
+    /**
+     * Quiet-window coalesce. Each beginSeek() resets this timer; when it
+     * elapses with no further seeks, the latest target is committed.
+     * Sized to absorb a typical SageTV smooth-FF/REW burst (≈150 ms
+     * spacing) while staying under human "feels instant" threshold.
+     */
+    private static final long SEEK_QUIET_WINDOW_MS = 180;
+
+    /**
+     * Hard ceiling on how long beginSeek() may defer a held-button burst.
+     * If the user holds REW indefinitely we still need the video to
+     * advance every so often, even if seeks keep arriving.
+     */
+    private static final long SEEK_MAX_DEFER_MS = 1500;
+
+    /**
+     * Safety ceiling on how long we wait for player convergence before
+     * letting another seek fire. Convergence is normally seen in well
+     * under a second; this only triggers on a stalled / failed pipeline
+     * (sniff failure, EOS race, etc) so a held button can't deadlock.
+     */
+    private static final long CONVERGENCE_TIMEOUT_MS = 1500;
+
     private static final int  DEFAULT_BUFFER_CAPACITY = 4 * 1024 * 1024;
 
     /* ------------ Native ring buffer handle (push mode only) ------------ */
@@ -63,6 +86,11 @@ public class TrickplayController
     private long seekTargetMs = -1;
     private boolean seekArmed = false;     // beginSeek called, not yet sent to player
     private boolean seekCommitted = false; // sent to player, awaiting convergence
+    // The target value actually sent to the player at the most recent
+    // commit. Used by onPlayerPosition() to compute the mapping, which
+    // must reference the committed target (not seekTargetMs, which may
+    // have been overwritten by a later beginSeek that's still pending).
+    private long committedTargetMs = -1;
 
     // Two-clock mapping. Once set, reported = playerPos + baseOffsetMs.
     private boolean mappingValid = false;
@@ -76,6 +104,14 @@ public class TrickplayController
     // commit Runnable will fail. We park the target here and replay it
     // on notifyPlayerReady().
     private boolean pendingPreReadySeek = false;
+
+    // Wallclock of the first beginSeek() in the current burst, used to
+    // enforce SEEK_MAX_DEFER_MS. Reset to 0 when a commit fires.
+    private long burstStartedAtMs = 0;
+
+    // Wallclock of the last commit, used to enforce CONVERGENCE_TIMEOUT_MS
+    // when a new burst arrives while seekCommitted is still true.
+    private long lastCommitAtMs = 0;
 
     public interface PlayerSeekCallback
     {
@@ -97,13 +133,28 @@ public class TrickplayController
             PlayerSeekCallback cb;
             synchronized (TrickplayController.this)
             {
-                if (seekTargetMs < 0)
+                if (seekTargetMs < 0 || !seekArmed)
                 {
                     return;
                 }
+
+                // In-flight gate: a previous seek is still converging.
+                // Defer this commit unless the safety ceiling has fired.
+                long now = System.currentTimeMillis();
+                if (seekCommitted && (now - lastCommitAtMs) < CONVERGENCE_TIMEOUT_MS)
+                {
+                    long remaining = CONVERGENCE_TIMEOUT_MS - (now - lastCommitAtMs);
+                    log.debug("Seek deferred {}ms waiting for convergence (target={})", remaining, seekTargetMs);
+                    uiHandler.postDelayed(this, Math.max(40, remaining));
+                    return;
+                }
+
                 target = seekTargetMs;
                 seekArmed = false;
                 seekCommitted = true;
+                committedTargetMs = target;
+                burstStartedAtMs = 0;
+                lastCommitAtMs = now;
                 cb = seekCallback;
             }
             log.debug("Seek commit: target={}", target);
@@ -165,10 +216,13 @@ public class TrickplayController
         seekTargetMs = -1;
         seekArmed = false;
         seekCommitted = false;
+        committedTargetMs = -1;
         mappingValid = false;
         baseOffsetMs = 0;
         paused = false;
         pendingPreReadySeek = false;
+        burstStartedAtMs = 0;
+        lastCommitAtMs = 0;
 
         if (nativeHandle != 0)
         {
@@ -258,31 +312,46 @@ public class TrickplayController
      * so SageTV's GETMEDIATIME loop sees the intended target rather than
      * a transient value during the player rebuild.
      *
-     * <p>Coalescing: rapid successive calls within the coalesce window
-     * collapse to a single {@code seekCallback.onSeekTo(latestTarget)}.
-     * Push mode commits immediately (no coalesce); pull mode waits
-     * {@value #PULL_SEEK_COALESCE_MS} ms.
+     * <p>Coalescing model (push and pull, identical):
+     * <ul>
+     *   <li><b>Quiet window</b> ({@value #SEEK_QUIET_WINDOW_MS} ms): each
+     *       beginSeek resets the timer. Bursts collapse to a single
+     *       {@code onSeekTo(latestTarget)} after the user stops.</li>
+     *   <li><b>Max defer</b> ({@value #SEEK_MAX_DEFER_MS} ms): if a burst
+     *       lasts longer (held REW), force a commit so the video
+     *       advances; the next chunk of the burst will batch into the
+     *       following commit.</li>
+     *   <li><b>In-flight gate</b>: while the player is still converging
+     *       on a prior seek (mappingValid==false &amp;&amp; seekCommitted),
+     *       new commits are deferred until convergence or the safety
+     *       ceiling ({@value #CONVERGENCE_TIMEOUT_MS} ms).</li>
+     * </ul>
+     *
+     * <p>OSD responsiveness is independent of commit cadence: reported
+     * time freezes at {@code targetMs} the instant this method returns.
      */
     public void beginSeek(long targetMs)
     {
+        long delay;
         synchronized (this)
         {
             seekTargetMs = targetMs;
             seekArmed = true;
-            seekCommitted = false;
+            // Note: we do NOT clear seekCommitted here. The in-flight gate
+            // in the runnable needs to know a prior commit hasn't converged.
             mappingValid = false;
-            pendingPreReadySeek = !opened; // park if open() hasn't fired
+            pendingPreReadySeek = !opened;
+
+            long now = System.currentTimeMillis();
+            if (burstStartedAtMs == 0) burstStartedAtMs = now;
+
+            long sinceBurstStart = now - burstStartedAtMs;
+            long maxDeferRemaining = SEEK_MAX_DEFER_MS - sinceBurstStart;
+            delay = Math.min(SEEK_QUIET_WINDOW_MS, Math.max(0, maxDeferRemaining));
         }
         uiHandler.removeCallbacks(seekCommitRunnable);
-        if (pushMode)
-        {
-            uiHandler.post(seekCommitRunnable);
-        }
-        else
-        {
-            uiHandler.postDelayed(seekCommitRunnable, PULL_SEEK_COALESCE_MS);
-        }
-        log.debug("beginSeek: target={}, push={}", targetMs, pushMode);
+        uiHandler.postDelayed(seekCommitRunnable, delay);
+        log.debug("beginSeek: target={}, push={}, delay={}ms", targetMs, pushMode, delay);
     }
 
     /**
@@ -320,20 +389,38 @@ public class TrickplayController
      * Called by the player to report its observed wallclock-independent
      * position. Drives mapping establishment after a seek.
      */
-    public synchronized void onPlayerPosition(long positionMs)
+    public void onPlayerPosition(long positionMs)
     {
-        lastPlayerPosMs = positionMs;
-
-        if (seekCommitted && positionMs > 0)
+        boolean wakeup = false;
+        synchronized (this)
         {
-            // Establish the two-clock mapping: from now until the next
-            // beginSeek/flush, reported time = playerPos + baseOffset.
-            baseOffsetMs = seekTargetMs - positionMs;
-            mappingValid = true;
-            seekCommitted = false;
-            log.debug("Mapping established: target={}, pos={}, baseOffset={}",
-                      seekTargetMs, positionMs, baseOffsetMs);
-            seekTargetMs = -1;
+            lastPlayerPosMs = positionMs;
+
+            if (seekCommitted && positionMs > 0)
+            {
+                // Establish the two-clock mapping using the COMMITTED target
+                // (not seekTargetMs, which may have been overwritten by a
+                // later beginSeek waiting in the in-flight gate).
+                baseOffsetMs = committedTargetMs - positionMs;
+                mappingValid = true;
+                seekCommitted = false;
+                log.debug("Mapping established: target={}, pos={}, baseOffset={}",
+                          committedTargetMs, positionMs, baseOffsetMs);
+                committedTargetMs = -1;
+                if (!seekArmed)
+                {
+                    // No follow-on seek pending; clear the freeze target.
+                    seekTargetMs = -1;
+                }
+                // If a follow-on seek was deferred by the in-flight gate,
+                // poke the runnable so it can fire now.
+                wakeup = seekArmed;
+            }
+        }
+        if (wakeup)
+        {
+            uiHandler.removeCallbacks(seekCommitRunnable);
+            uiHandler.post(seekCommitRunnable);
         }
     }
 

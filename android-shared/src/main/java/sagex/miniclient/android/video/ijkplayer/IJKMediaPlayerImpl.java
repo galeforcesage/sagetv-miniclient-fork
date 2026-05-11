@@ -328,7 +328,14 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                         @Override
                         public void onSeekTo(long timeMs)
                         {
-                            seekToImpl(timeMs);
+                            // Push mode on IJK: the data source is a pipe and
+                            // player.seekTo() is meaningless. The server
+                            // handles the seek by flushing and re-pushing
+                            // data from the new position. We rely on the
+                            // controller's own state (freeze + convergence
+                            // via onPlayerPosition) without invoking the
+                            // player here.
+                            log.debug("Push-mode seek commit (no-op on player): {}", timeMs);
                         }
                     });
                 }

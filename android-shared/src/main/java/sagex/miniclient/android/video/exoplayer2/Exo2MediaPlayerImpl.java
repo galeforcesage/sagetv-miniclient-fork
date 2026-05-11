@@ -354,7 +354,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                     }
                     // Pull-mode: super.seek() above already called
                     // trickplayController.beginSeek(timeInMS), which arms the
-                    // 200ms coalesce timer. When it fires, seekCallback ->
+                    // coalesce timer. When it fires, seekCallback ->
                     // seekToImpl -> player.seekTo() is invoked with the latest
                     // coalesced target. ExoPlayer handles seekTo() in any
                     // state (IDLE / BUFFERING / READY), so no further deferral
@@ -362,9 +362,15 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 }
                 else
                 {
-                    if (player != null)
+                    // Push-mode: also drive through the controller's coalesce.
+                    // super.seek() called beginSeek() which arms the timer; the
+                    // commit Runnable will invoke seekToImpl via seekCallback,
+                    // collapsing rapid bursts (smooth-FF/REW) into a single
+                    // pipeline rebuild.
+                    if (player == null)
                     {
-                        seekToImpl(timeInMS);
+                        log.logDebug("Seek (push) player is null storing position: " + timeInMS);
+                        playbackStartPosition = timeInMS;
                     }
                 }
             }
