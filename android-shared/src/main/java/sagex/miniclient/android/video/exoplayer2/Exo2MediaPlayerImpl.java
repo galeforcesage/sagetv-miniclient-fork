@@ -525,8 +525,8 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
         {
             if (!httpls)
             {
-                log.logDebug("Creating datasource");
-                dataSource = new Exo2PullDataSource(context.getClient().getConnectedServerInfo().address);
+                log.logDebug("Creating datasource, timeshifted=" + timeshifted);
+                dataSource = new Exo2PullDataSource(context.getClient().getConnectedServerInfo().address, timeshifted);
 
                 // Open trickplay controller for pull mode time truth
                 if (trickplayController != null && trickplayController.isNativeAvailable())
@@ -787,8 +787,16 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             //mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(Uri.parse(sageTVurl));
 
             // Use SageExtractorsFactory which provides our patched PsExtractor
-            // that properly demuxes MPEG-PS private_stream_1 sub-streams (AC3/EAC3)
-            mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory, new SageExtractorsFactory()).createMediaSource(MediaItem.fromUri(Uri.parse(sageTVurl)));
+            // that properly demuxes MPEG-PS private_stream_1 sub-streams (AC3/EAC3).
+            // For pull-mode playback, we also wire a per-instance live size
+            // provider so LinearPsSeekMap can map FF/REW (e.g. comskip jumps)
+            // to correct byte positions as a still-recording file grows.
+            com.google.android.exoplayer2.extractor.ts.SagePsExtractor.LiveSizeProvider liveSizeProvider = null;
+            if (dataSource instanceof Exo2PullDataSource) {
+                final Exo2PullDataSource pullDs = (Exo2PullDataSource) dataSource;
+                liveSizeProvider = pullDs::queryCurrentSize;
+            }
+            mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory, new SageExtractorsFactory(liveSizeProvider)).createMediaSource(MediaItem.fromUri(Uri.parse(sageTVurl)));
 
 
             boolean haveStartPosition = (playbackStartPosition >= 0);

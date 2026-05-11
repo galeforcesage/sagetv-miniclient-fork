@@ -149,6 +149,9 @@ dependencies {
 
     implementation 'org.jetbrains:annotations:16.0.2'
 
+    // unit tests (pure-JVM, no Android instrumentation)
+    testImplementation 'junit:junit:4.13.2'
+
 }
 
 // called every time gradle gets executed, takes the native dependencies of

@@ -57,6 +57,7 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     protected String lastUri;
     protected long lastMediaTime = -1;
     protected boolean flushed = false;
+    protected boolean timeshifted = false;
     protected VideoInfo videoInfo = null;
     protected TrickplayController trickplayController;
 
@@ -116,6 +117,7 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
         eos = false;
         seekPending = false;
         flushed = false;
+        this.timeshifted = timeshifted;
 
         String url = urlString;
         httpls = urlString.startsWith("http://");
@@ -214,7 +216,11 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     {
         if (lastMediaTime == -1) lastMediaTime = lastServerTime;
 
-        // Use native time truth if available (both push and pull modes)
+        // ---- Native trickplay path (preferred) ----
+        // When the native two-clock model is available, it is the single
+        // source of truth: lastServerTime, the `flushed` flag, and IJK's
+        // resume-offset bookkeeping are all redundant and ignored here.
+        // See MiniPlayerPlugin.getMediaTimeMillis() Javadoc for the contract.
         if (trickplayController != null && trickplayController.isNativeAvailable())
         {
             if (pushMode) {
@@ -227,7 +233,10 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
                 return reportedTime;
             }
             // Fall through to legacy path if native returns 0
+            // (typically before the first stable position observation).
         }
+
+        // ---- Legacy fallback path (no native trickplay) ----
 
         if (!playerReady || player == null)
         {

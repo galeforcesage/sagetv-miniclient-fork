@@ -46,8 +46,18 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     }
 
     /**
-     * @param serverStartTime
-     * @return
+     * Compute the player's reported media time.
+     *
+     * <p>This is invoked by {@link BaseMediaPlayerImpl#getMediaTimeMillis} only when the
+     * native trickplay layer is unavailable, OR returns 0 — i.e., as a fallback
+     * to the native two-clock truth. When native is active, the reported time
+     * comes from {@code TrickplayController.getReportedTime()} and the
+     * resume-offset bookkeeping below is bypassed.
+     *
+     * <p>The {@code resumeMode} / {@code resumeTimeOffset} hack compensates for IJK's
+     * quirk of resetting its internal clock to 0 after a seek to a non-zero
+     * position in PUSH mode. Native trickplay handles this via
+     * {@code baseOffsetMs = seekTargetMs - positionMs} during RECOVERING.
      */
     @Override
     public long getPlayerMediaTimeMillis(long serverStartTime)

@@ -66,12 +66,23 @@ public interface MiniPlayerPlugin extends Runnable
     void load(byte majorTypeHint, byte minorTypeHint, String encodingHint, String urlString, String hostname, boolean timeshifted, long bufferSize);
 
     /**
-     * Return the current play time on the MediaPlayer.  lastServerTime will be passed when PUSH is used to indicate the
-     * last media time after a PUSH happened.  In the case where the player's time reset's to 0, then this can be used
-     * by the player to append the lastServerTime+playerTime to get the "real" playback time.
+     * Return the current play time on the MediaPlayer.
      *
-     * @param lastServerTime
-     * @return
+     * <p><b>Contract:</b> When the native trickplay layer is available
+     * (Shield TV and most modern Android devices), the implementation
+     * delegates to {@code TrickplayController.getReportedTime()} which
+     * provides a single source of truth via the two-clock model
+     * (PTT/SMT/baseOffsetMs). In that case {@code lastServerTime} is
+     * IGNORED — it would only confuse the bookkeeping that the native
+     * layer already maintains via {@code setServerStartTime()} and
+     * {@code beginSeek()}.
+     *
+     * <p><b>Fallback:</b> When native is unavailable, {@code lastServerTime}
+     * is used by the player implementation as a base offset to compensate
+     * for player clocks that reset to 0 after a push/seek (notably IJK).
+     *
+     * @param lastServerTime base offset hint, used only by the no-native
+     *                       fallback path; ignored otherwise.
      */
     long getMediaTimeMillis(long lastServerTime);
 

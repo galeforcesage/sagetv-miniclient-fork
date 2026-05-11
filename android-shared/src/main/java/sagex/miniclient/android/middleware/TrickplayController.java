@@ -231,6 +231,24 @@ public class TrickplayController
         return TrickplayState.fromNative(NativeTransport.nGetState(nativeHandle));
     }
 
+    /**
+     * Convenience: returns true when the trickplay state machine considers
+     * playback "settled" (STABLE_PLAYING or STABLE_PAUSED) — i.e., not in
+     * the middle of a seek/recovery transition. Callers that previously
+     * tracked their own {@code flushed} or {@code seekPending} booleans
+     * should prefer this query because it reflects the single source of
+     * truth in the native two-clock model.
+     *
+     * <p>If the native layer is unavailable, returns true (no state machine
+     * to query, so callers should fall back to their own logic).
+     */
+    public boolean isStable()
+    {
+        if (nativeHandle == 0) return true;
+        TrickplayState s = getState();
+        return s != null && s.isStable();
+    }
+
     public void setPaused(boolean paused)
     {
         if (nativeHandle == 0) return;

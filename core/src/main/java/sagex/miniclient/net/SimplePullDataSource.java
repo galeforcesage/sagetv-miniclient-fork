@@ -28,7 +28,7 @@ public class SimplePullDataSource implements ISageTVDataSource {
     DataCollector dataCollector = null;
 
     boolean opened = false;
-    long size = 0;
+    volatile long size = 0;
 
     public SimplePullDataSource() {
     }
@@ -138,6 +138,27 @@ public class SimplePullDataSource implements ISageTVDataSource {
         return size;
     }
 
+    /**
+     * Re-queries the server for the current file size and updates the cached
+     * value. For live recordings this returns the latest size as the file grows.
+     * Returns -1 on error; otherwise the new size.
+     */
+    public synchronized long querySize() {
+        if (!opened) return size;
+        try {
+            String strSize = sendStringCommandWithReply("SIZE");
+            if (strSize != null) {
+                long newSize = Long.parseLong(strSize.split(" ")[0]);
+                if (newSize > 0) {
+                    size = newSize;
+                }
+            }
+        } catch (Throwable t) {
+            log.error("Failed to query size", t);
+        }
+        return size;
+    }
+
     public boolean isOpen() {
         return opened;
     }
@@ -157,7 +178,22 @@ public class SimplePullDataSource implements ISageTVDataSource {
         }
 
         if (len < 0) return -1;
-        if (position > size) return -1;
+        if (position > size) {
+            // Re-query file size in case it has grown (live recording)
+            String strSize = sendStringCommandWithReply("SIZE");
+            if (strSize != null) {
+                try {
+                    long newSize = Long.parseLong(strSize.split(" ")[0]);
+                    if (newSize > size) {
+                        size = newSize;
+                        log.debug("SIZE updated to {} (file grew)", size);
+                    }
+                } catch (Throwable t) {
+                    log.error("Failed to re-query size", t);
+                }
+            }
+            if (position > size) return -1;  // truly beyond end
+        }
 
         // just the case where we are being asked to read 0 bytes.
         if (len == 0) return 0;

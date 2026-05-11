@@ -23,13 +23,30 @@ import com.google.android.exoplayer2.extractor.wav.WavExtractor;
  * fixing crashes when files contain multiple AC3/EAC3 audio tracks sharing the
  * same PES stream ID.
  *
+ * <p>If a {@link SagePsExtractor.LiveSizeProvider} is supplied, the
+ * {@code SagePsExtractor} instance is constructed with it so seeks against
+ * live/growing recordings map to correct byte positions even as the file grows.
+ *
  * <p>All other extractors are the same as {@link
  * com.google.android.exoplayer2.extractor.DefaultExtractorsFactory}.
  */
 public final class SageExtractorsFactory implements ExtractorsFactory {
 
+    private final SagePsExtractor.LiveSizeProvider liveSizeProvider;
+
+    public SageExtractorsFactory() {
+        this(null);
+    }
+
+    public SageExtractorsFactory(SagePsExtractor.LiveSizeProvider liveSizeProvider) {
+        this.liveSizeProvider = liveSizeProvider;
+    }
+
     @Override
     public Extractor[] createExtractors() {
+        SagePsExtractor psExtractor = new SagePsExtractor(
+                new com.google.android.exoplayer2.util.TimestampAdjuster(0),
+                liveSizeProvider);
         return new Extractor[]{
                 new MatroskaExtractor(),
                 new FragmentedMp4Extractor(),
@@ -41,7 +58,7 @@ public final class SageExtractorsFactory implements ExtractorsFactory {
                 new FlvExtractor(),
                 new OggExtractor(),
                 // Use our patched PsExtractor that handles private_stream_1 sub-streams
-                new SagePsExtractor(),
+                psExtractor,
                 new WavExtractor(),
                 new FlacExtractor(),
         };

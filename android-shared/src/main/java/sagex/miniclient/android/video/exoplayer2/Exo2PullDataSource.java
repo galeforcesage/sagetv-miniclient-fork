@@ -3,9 +3,7 @@ package sagex.miniclient.android.video.exoplayer2;
 import android.net.Uri;
 
 import com.google.android.exoplayer2.C;
-import com.google.android.exoplayer2.PlaybackException;
 import com.google.android.exoplayer2.upstream.DataSource;
-import com.google.android.exoplayer2.upstream.DataSourceException;
 import com.google.android.exoplayer2.upstream.DataSpec;
 import com.google.android.exoplayer2.upstream.TransferListener;
 
@@ -16,6 +14,8 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+import com.google.android.exoplayer2.extractor.ts.SagePsExtractor;
 
 import sagex.miniclient.net.BufferedPullDataSource;
 import sagex.miniclient.net.HasClose;
@@ -28,10 +28,22 @@ public class Exo2PullDataSource implements DataSource, HasClose
     BufferedPullDataSource dataSource = null;
     private long startPos;
     private Uri uri;
+    private final LiveModeDetector liveMode;
+    private long bytesSinceSizeRefresh = 0;  // for periodic SIZE re-query in live mode
+    // Refresh server SIZE roughly every 32MB of read for live recordings.
+    // At ~5 Mbps that's ~50 seconds — keeps the seek map current without
+    // flooding the server with control commands.
+    private static final long SIZE_REFRESH_INTERVAL_BYTES = 32L * 1024 * 1024;
 
     public Exo2PullDataSource(String host)
     {
-        this.host=host;
+        this(host, false);
+    }
+
+    public Exo2PullDataSource(String host, boolean timeshifted)
+    {
+        this.host = host;
+        this.liveMode = new LiveModeDetector(timeshifted);
     }
     
     
@@ -48,29 +60,11 @@ public class Exo2PullDataSource implements DataSource, HasClose
         this.uri = dataSpec.uri;
         long size = dataSource.open(dataSpec.uri.toString());
         this.startPos = dataSpec.position;
-        log.debug("Open: Offset: {}, Requested Length: {}, Size: {}", startPos, dataSpec.length, size);
+        liveMode.onOpen(size);
+        log.debug("Open #{}: Offset: {}, Requested Length: {}, Size: {}",
+                liveMode.openCount(), startPos, dataSpec.length, size);
 
-        if(dataSpec.position == size)
-        {
-            log.debug("END OF INPUT");
-            return C.RESULT_END_OF_INPUT;
-        }
-        else if(dataSpec.position > size)
-        {
-            log.debug("IO_READ_POSITION_OUT_OF_RANGE");
-            DataSourceException ds = new DataSourceException(PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE);
-            throw ds;
-        }
-
-        // ExoPlayer contract: return the number of bytes available from the
-        // requested position, not the total file size. Returning total size
-        // causes ExoPlayer to miscalculate stream boundaries on subsequent
-        // opens, leading to position > size on the next open.
-        long bytesRemaining = size - dataSpec.position;
-        if (dataSpec.length != C.LENGTH_UNSET) {
-            bytesRemaining = Math.min(bytesRemaining, dataSpec.length);
-        }
-        return bytesRemaining;
+        return LiveSizeStrategy.computeBytesRemaining(liveMode, size, dataSpec.position, dataSpec.length);
     }
 
     @Override
@@ -79,6 +73,24 @@ public class Exo2PullDataSource implements DataSource, HasClose
         if (dataSource != null)
         {
             dataSource.close();
+        }
+    }
+
+    /**
+     * Returns the current file size as known by the underlying data source
+     * after the most recent open. Used by {@link SagePsExtractor.LiveSizeProvider}
+     * to keep the seek map accurate for growing live recordings.
+     *
+     * <p>Public so that {@code Exo2MediaPlayerImpl} can wire it into the
+     * per-instance {@link SageExtractorsFactory} as a method reference.
+     */
+    public long queryCurrentSize() {
+        BufferedPullDataSource ds = dataSource;
+        if (ds == null) return -1;
+        try {
+            return ds.size();
+        } catch (Throwable t) {
+            return -1;
         }
     }
 
@@ -103,6 +115,22 @@ public class Exo2PullDataSource implements DataSource, HasClose
                 return -1;
             }
             startPos += bytes;
+
+            // For actually-live recordings, periodically refresh the file size
+            // from the server so the seek map (LinearPsSeekMap) can compute
+            // correct byte positions for FF/REW jumps to "future" content.
+            // This is done on the read thread so it doesn't race with reads.
+            if (liveMode.isActuallyLive()) {
+                bytesSinceSizeRefresh += bytes;
+                if (bytesSinceSizeRefresh >= SIZE_REFRESH_INTERVAL_BYTES) {
+                    bytesSinceSizeRefresh = 0;
+                    try {
+                        dataSource.querySize();
+                    } catch (Throwable t) {
+                        // best-effort
+                    }
+                }
+            }
             return bytes;
         }
         catch(Exception ex)
