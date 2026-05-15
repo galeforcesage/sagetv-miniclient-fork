@@ -11,7 +11,7 @@
 
     <fragment
         android:id="@+id/fixed_transcoding"
-        class="sagex.miniclient.android.ui.settings.ExoPlayerSettingsFragment"
+        android:name="sagex.miniclient.android.ui.settings.ExoPlayerSettingsFragment"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 </RelativeLayout>

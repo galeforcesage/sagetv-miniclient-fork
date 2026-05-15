@@ -15,12 +15,14 @@
     </string-array>
 
     <string-array name="entries_list_streaming_mode_preference">
-        <item>Dynamic</item>
-        <item>Pull</item>
+        <item>Automatic</item>
+        <item>Dynamic ᵃᵘᵗᵒ</item>
+        <item>Pull ᵃᵘᵗᵒ</item>
         <item>Fixed</item>
     </string-array>
 
     <string-array name="entryvalues_list_streaming_mode_preference">
+        <item>automatic</item>
         <item>dynamic</item>
         <item>pull</item>
         <item>fixed</item>

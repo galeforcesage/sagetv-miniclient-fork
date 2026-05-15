@@ -19,6 +19,21 @@ import sagex.miniclient.util.VerboseLogging;
 public class SimplePullDataSource implements ISageTVDataSource {
     Logger log = LoggerFactory.getLogger(SimplePullDataSource.class);
 
+    /**
+     * Read timeout for the pull-mode media socket, in milliseconds. A stalled
+     * server (network glitch, VPN drop, server hang) would otherwise block
+     * {@link #readBuffer} indefinitely and silently freeze playback.
+     *
+     * On timeout the underlying read throws {@link java.net.SocketTimeoutException}
+     * (an {@link IOException}); ExoPlayer surfaces that as a load error and the
+     * player's seek+prepare retry path recovers transparently.
+     *
+     * Override at runtime with the {@code sagetv.pull.read.timeout.ms} system
+     * property. Set to {@code 0} to restore the legacy "block forever" behaviour.
+     */
+    static final int READ_TIMEOUT_MS = Integer.getInteger(
+            "sagetv.pull.read.timeout.ms", 30_000);
+
     Socket remoteServer;
     String uri;
     String host;
@@ -55,6 +70,15 @@ public class SimplePullDataSource implements ISageTVDataSource {
 
             remoteServer = new Socket();
             remoteServer.connect(new java.net.InetSocketAddress(host, 7818), 2000);
+            if (READ_TIMEOUT_MS > 0) {
+                remoteServer.setSoTimeout(READ_TIMEOUT_MS);
+            }
+            // Pull-mode media socket can sit idle between READ requests when
+            // the player is paused or buffering. Enable keep-alive with tuned
+            // timing so a dead server is detected promptly even with the
+            // SO_TIMEOUT we just set (which only fires during an active read).
+            remoteServer.setKeepAlive(true);
+            sagex.miniclient.util.SocketKeepAlive.apply(remoteServer);
             this.remoteReader = new DataInputStream(remoteServer.getInputStream());
             this.remoteWriter = new BufferedOutputStream(remoteServer.getOutputStream());
 

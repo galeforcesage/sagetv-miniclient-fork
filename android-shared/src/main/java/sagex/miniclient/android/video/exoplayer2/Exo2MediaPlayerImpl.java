@@ -389,22 +389,54 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     }
 
     @Override
-    public void setSubtitleTrack(int streamPos)
+    public void setSubtitleTrack(final int streamPos)
     {
-        log.logDebug("Set Subtitle Track Called: " + streamPos);
-
-        if (streamPos == Exo2MediaPlayerImpl.DISABLE_TRACK)
+        // ExoPlayer is main-thread-only. Like setAudioTrack, this is invoked
+        // from the Media-* dispatch thread, so the changeTrack() call and any
+        // SubtitleView lifecycle changes (which manipulate the View hierarchy)
+        // must run on the UI thread.
+        context.runOnUiThread(new Runnable()
         {
-            this.showCaptions = false;
-            this.RemoveSubTitleView();
-        }
-        else
-        {
-            this.showCaptions = true;
-            this.AddSubTitleView();
-        }
+            @Override
+            public void run()
+            {
+                int mappedIndex = (streamPos == Exo2MediaPlayerImpl.DISABLE_TRACK)
+                        ? streamPos
+                        : mapSubtitleStreamPosToTrackIndex(streamPos);
+                log.logDebug("Set Subtitle Track Called: " + streamPos + " mapped to: " + mappedIndex);
 
-        changeTrack(C.TRACK_TYPE_TEXT, streamPos, 0);
+                if (mappedIndex == Exo2MediaPlayerImpl.DISABLE_TRACK)
+                {
+                    showCaptions = false;
+                    RemoveSubTitleView();
+                }
+                else
+                {
+                    showCaptions = true;
+                    AddSubTitleView();
+                }
+
+                changeTrack(C.TRACK_TYPE_TEXT, mappedIndex, 0);
+            }
+        });
+    }
+
+    private int mapSubtitleStreamPosToTrackIndex(int streamPos)
+    {
+        int mapped = (streamPos >= 0x2000 && streamPos < 0x4000)
+                ? streamPos - 0x2000
+                : streamPos;
+        if (trackSelector != null)
+        {
+            int textGroups = getTrackCount(C.TRACK_TYPE_TEXT);
+            if (textGroups > 0 && (mapped < 0 || mapped >= textGroups))
+            {
+                log.logDebug("mapSubtitleStreamPosToTrackIndex: mapped index " + mapped
+                        + " out of range (textGroups=" + textGroups + "); falling back to 0");
+                mapped = 0;
+            }
+        }
+        return mapped;
     }
 
     @Override
@@ -420,17 +452,85 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     }
 
     @Override
-    public void setAudioTrack(int streamPos)
+    public void setAudioTrack(final int streamPos)
     {
-        if (!ExoIsPlaying())
+        // ExoPlayer is main-thread-only. setAudioTrack is invoked from the
+        // Media-* thread (MediaCmd dispatch), so the read of getPlayWhenReady()
+        // and any subsequent changeTrack() call MUST be marshalled to the UI
+        // thread or ExoPlayerImpl.verifyApplicationThread throws.
+        context.runOnUiThread(new Runnable()
         {
-            initialAudioTrackIndex = streamPos;
+            @Override
+            public void run()
+            {
+                // SageTV server sends MPEG PES stream IDs (e.g. 0xC000 for first MPEG audio,
+                // 0xBD80 for first AC3 sub-stream of private_stream_1) rather than zero-based
+                // track indices. Map to a zero-based group index that ExoPlayer can use.
+                int mappedIndex = mapStreamPosToTrackIndex(streamPos);
+                log.logDebug("setAudioTrack: streamPos=" + streamPos + " (0x" + Integer.toHexString(streamPos)
+                        + ") mapped to groupIndex=" + mappedIndex);
+
+                if (!ExoIsPlaying())
+                {
+                    initialAudioTrackIndex = mappedIndex;
+                }
+                else
+                {
+                    initialAudioTrackIndex = -1;
+                    changeTrack(C.TRACK_TYPE_AUDIO, mappedIndex, 0);
+                }
+            }
+        });
+    }
+
+    /**
+     * Maps a SageTV-supplied audio stream identifier to a zero-based ExoPlayer
+     * audio-renderer group index.
+     *
+     * SageTV may send the value as a raw MPEG PES stream identifier:
+     *   - MPEG audio:           0xC000-0xDFFF  -> (streamPos - 0xC000)
+     *   - AC3 (private_stream_1 sub-stream):
+     *                            0xBD80-0xBDBF -> (streamPos & 0x07)
+     *   - DTS (private_stream_1 sub-stream):
+     *                            0xBD88-0xBD8F -> (streamPos & 0x07)
+     *
+     * Anything else is assumed to already be a zero-based index. The result is
+     * clamped to the actual number of available audio groups (falling back to 0
+     * when the mapping points beyond the discovered tracks) so that
+     * {@link #changeTrack(int, int, int)} cannot raise an
+     * {@link IndexOutOfBoundsException}.
+     */
+    private int mapStreamPosToTrackIndex(int streamPos)
+    {
+        int mapped;
+        if (streamPos >= 0xC000 && streamPos < 0xE000)
+        {
+            mapped = streamPos - 0xC000;
+        }
+        else if (streamPos >= 0xBD80 && streamPos <= 0xBDBF)
+        {
+            mapped = streamPos & 0x07;
         }
         else
         {
-            initialAudioTrackIndex = -1;
-            changeTrack(C.TRACK_TYPE_AUDIO, streamPos, 0);
+            mapped = streamPos;
         }
+
+        // Only clamp when the player/trackSelector exists. Before setupPlayer()
+        // there is no track info and getTrackCount() would NPE; the stored
+        // initialAudioTrackIndex is reapplied in STATE_READY where this method
+        // can clamp safely.
+        if (trackSelector != null)
+        {
+            int audioGroups = getTrackCount(C.TRACK_TYPE_AUDIO);
+            if (audioGroups > 0 && (mapped < 0 || mapped >= audioGroups))
+            {
+                log.logDebug("mapStreamPosToTrackIndex: mapped index " + mapped
+                        + " out of range (audioGroups=" + audioGroups + "); falling back to 0");
+                mapped = 0;
+            }
+        }
+        return mapped;
     }
 
     @Override
@@ -467,6 +567,11 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                         //      one is scheduled, so a burst of 5 flushes
                         //      coalesces into a single rebuild.
                         final com.google.android.exoplayer2.source.MediaSource finalSrc = mediaSource;
+                        // Mark rebuild armed immediately so any malformed
+                        // error from the previous prepare's Loader (cancelled
+                        // by the ring clear in super.flush()) is suppressed.
+                        // Cleared in STATE_READY when the new prepare lands.
+                        pushRebuildInProgress = true;
                         runWhenPrebuffered(new Runnable()
                         {
                             @Override
@@ -502,6 +607,15 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
     /** Pending prebuffer gate, cancelled when a new flush arrives. */
     private Runnable pendingPrebufferGate;
+
+    /**
+     * True from the moment a push-mode flush arms a rebuild until the
+     * next STATE_READY confirms the new prepare has loaded. Any
+     * ERROR_CODE_PARSING_CONTAINER_MALFORMED that fires while this is
+     * true is treated as a transient race with the rebuild and
+     * suppressed.
+     */
+    private volatile boolean pushRebuildInProgress;
 
     /**
      * Schedule {@code action} to run on the UI thread once the native
@@ -637,8 +751,9 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
         DefaultRenderersFactory renderersFactory = new DefaultRenderersFactory(context.getContext()) {
             @Override
             protected AudioSink buildAudioSink(android.content.Context ctx, boolean enableFloatOutput, boolean enableAudioTrackPlaybackParams, boolean enableOffload) {
-                return new DefaultAudioSink.Builder()
-                        .setAudioCapabilities(AudioCapabilities.DEFAULT_AUDIO_CAPABILITIES)
+                // ExoPlayer 2.19.0+ requires Context for DefaultAudioSink so it can
+                // register an AudioCapabilitiesReceiver and react to HDMI plug events.
+                return new DefaultAudioSink.Builder(ctx)
                         .setEnableFloatOutput(enableFloatOutput)
                         .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
                         .setOffloadMode(enableOffload ? DefaultAudioSink.OFFLOAD_MODE_ENABLED_GAPLESS_REQUIRED : DefaultAudioSink.OFFLOAD_MODE_DISABLED)
@@ -648,7 +763,8 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
         if (FfmpegLibrary.isAvailable())
         {
-            final int preferExtensionDecoders = MiniclientApplication.get().getClient().properties().getInt(PrefStore.Keys.exoplayer_ffmpeg_extension_setting, 1);
+            final int preferExtensionDecoders = ((sagex.miniclient.android.prefs.AndroidPrefStore)
+                    MiniclientApplication.get().getClient().properties()).getExoFfmpegExtensionMode();
 
             switch (preferExtensionDecoders)
             {
@@ -701,7 +817,34 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 log.logDebug("PLAYER ERROR: " + error.getErrorCodeName());
                 error.printStackTrace();
 
-                if (retryCount == 0 && !(error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED
+                // Push-mode flush-rebuild race: super.flush() clears the
+                // native ring while a previous prepare's Loader is still
+                // sniffing → cancellation surfaces as MALFORMED_CONTAINER.
+                // Suppress the toast ONLY when we know a flush rebuild is in
+                // flight (gate scheduled or super.flush() just ran). Genuine
+                // container errors (no decoder, broken file, etc.) will still
+                // toast so we can see them. Retry path runs unconditionally.
+                boolean transientFlushRace =
+                        pushMode
+                        && (pendingPrebufferGate != null || pushRebuildInProgress)
+                        && error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED;
+
+                if (transientFlushRace) {
+                    // One-line breadcrumb. No stack trace — this fires often
+                    // during FF mash and stack traces flood logcat enough to
+                    // perceptibly slow the UI.
+                    Throwable cause = error.getCause();
+                    log.logWarning("Suppressed transient flush-race container error: "
+                            + error.getErrorCodeName()
+                            + " retryCount=" + retryCount
+                            + " cause=" + (cause != null
+                                    ? cause.getClass().getSimpleName() + ": " + cause.getMessage()
+                                    : "none"));
+                }
+
+                if (retryCount == 0
+                        && !transientFlushRace
+                        && !(error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED
                         && pushMode))
                 {
                     // For push-mode MPEG-PS startup, the first sniff frequently fails
@@ -743,6 +886,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 if (playbackState == Player.STATE_READY)
                 {
                     log.logDebug("Player.STATE_READY - Media loaded and ready for playback");
+                    pushRebuildInProgress = false;
                     if (errorState)
                     {
                         errorState = false;
@@ -892,7 +1036,15 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 final Exo2PullDataSource pullDs = (Exo2PullDataSource) dataSource;
                 liveSizeProvider = pullDs::queryCurrentSize;
             }
-            mediaSource = new ProgressiveMediaSource.Factory(dataSourceFactory, new SageExtractorsFactory(liveSizeProvider)).createMediaSource(MediaItem.fromUri(Uri.parse(sageTVurl)));
+            // In push mode the SageTV server always sends MPEG-PS, so register
+            // only SagePsExtractor. This avoids spurious
+            // ERROR_CODE_PARSING_CONTAINER_MALFORMED rebuilds when a post-flush
+            // sniff against a partially-filled ring fails over to Mp3Extractor /
+            // other extractors that then bail after scanning >1MB.
+            mediaSource = new ProgressiveMediaSource.Factory(
+                    dataSourceFactory,
+                    new SageExtractorsFactory(liveSizeProvider, pushMode))
+                    .createMediaSource(MediaItem.fromUri(Uri.parse(sageTVurl)));
 
 
             boolean haveStartPosition = (playbackStartPosition >= 0);

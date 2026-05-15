@@ -81,6 +81,19 @@ public class Exo2PullDataSource implements DataSource, HasClose
      * after the most recent open. Used by {@link SagePsExtractor.LiveSizeProvider}
      * to keep the seek map accurate for growing live recordings.
      *
+     * <p>This MUST NOT call {@code querySize()} from threads other than the
+     * Loader thread: the underlying TCP socket is shared with the Loader's
+     * data {@code READ} commands and is not externally synchronized. A
+     * concurrent {@code SIZE} command from the Playback thread (e.g. via
+     * {@code LinearPsSeekMap.getSeekPoints()}) interleaves with an in-flight
+     * {@code READ} reply, causing the protocol to desync — observed in
+     * practice as a corrupt {@code SIZE} response that the seek map
+     * interprets as a multi-GB file, sending the player to an absurd offset
+     * and triggering {@code ERROR_CODE_IO_UNSPECIFIED}. Therefore this
+     * method only returns the cached size; the size is refreshed by the
+     * Loader thread itself in {@code read()} (see byte-interval refresh and
+     * {@code SimplePullDataSource.fetch()} re-query when {@code position > size}).
+     *
      * <p>Public so that {@code Exo2MediaPlayerImpl} can wire it into the
      * per-instance {@link SageExtractorsFactory} as a method reference.
      */

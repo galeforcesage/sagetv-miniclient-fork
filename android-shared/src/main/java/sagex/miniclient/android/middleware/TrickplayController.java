@@ -62,7 +62,20 @@ public class TrickplayController
      */
     private static final long CONVERGENCE_TIMEOUT_MS = 1500;
 
-    private static final int  DEFAULT_BUFFER_CAPACITY = 4 * 1024 * 1024;
+    /**
+     * Native push-mode ring buffer capacity, in bytes.
+     *
+     * <p>Wider buffer = more tolerance for upstream jitter (Wi-Fi, VPN,
+     * shared uplinks, transient server stalls) before the ring underruns
+     * and playback stutters. Bumped from the original 4 MB to 8 MB to
+     * roughly double the jitter window without imposing meaningful memory
+     * pressure on lower-RAM clients (phones).
+     *
+     * <p>Override at runtime with the {@code sagetv.push.ring.bytes}
+     * system property if you want to test a larger / smaller window.
+     */
+    private static final int DEFAULT_BUFFER_CAPACITY = Integer.getInteger(
+            "sagetv.push.ring.bytes", 8 * 1024 * 1024);
 
     /* ------------ Native ring buffer handle (push mode only) ------------ */
     private long nativeHandle;
@@ -228,7 +241,6 @@ public class TrickplayController
         {
             NativeTransport.nOpen(nativeHandle, pushMode);
         }
-        log.debug("open(pushMode={})", pushMode);
     }
 
     public void close()
@@ -258,7 +270,10 @@ public class TrickplayController
 
     public int pushData(byte[] data, int offset, int length) throws IOException
     {
-        if (nativeHandle == 0) return 0;
+        if (nativeHandle == 0)
+        {
+            return 0;
+        }
         return NativeTransport.nPushData(nativeHandle, data, offset, length);
     }
 

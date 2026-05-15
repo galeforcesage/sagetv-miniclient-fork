@@ -2,15 +2,25 @@ package sagex.miniclient.android.ui.settings;
 
 import android.os.Bundle;
 
-import androidx.preference.ListPreference;
 import androidx.preference.PreferenceCategory;
 import androidx.preference.PreferenceFragmentCompat;
 
+import sagex.miniclient.android.MiniclientApplication;
 import sagex.miniclient.android.R;
+import sagex.miniclient.android.media.CodecCapabilityDetector;
+import sagex.miniclient.android.prefs.AndroidPrefStore;
 import sagex.miniclient.media.AudioCodec;
 import sagex.miniclient.media.Container;
 import sagex.miniclient.media.VideoCodec;
+import sagex.miniclient.prefs.TriState;
 
+/**
+ * Phase 2: codec / container support is presented as a flat list of
+ * {@link TriStatePreference} rows, one per Container / VideoCodec / AudioCodec.
+ * The auto-detected boolean for each row comes from
+ * {@link CodecCapabilityDetector} so the user can see what the device actually
+ * supports without ever needing to override.
+ */
 public class CodecContainerFragment extends PreferenceFragmentCompat
 {
     @Override
@@ -18,67 +28,49 @@ public class CodecContainerFragment extends PreferenceFragmentCompat
     {
         setPreferencesFromResource(R.xml.codec_container_prefs, rootKey);
 
-        PreferenceCategory container = findPreference("containers");
-        ListPreference containerPref;
+        AndroidPrefStore prefs = (AndroidPrefStore) MiniclientApplication.get().getClient().properties();
 
-        Container [] containers = Container.values();
-
-        for(int i = 0; i < containers.length; i++)
+        PreferenceCategory containers = findPreference("containers");
+        for (Container c : Container.values())
         {
-            containerPref = new ListPreference(this.getContext());
-
-            containerPref.setEntryValues(R.array.entryvalues_list_container_preference);
-            containerPref.setEntries(R.array.entries_list_container_preference);
-            containerPref.setSummary("%s");
-            containerPref.setTitle(containers[i].getDescription());
-            containerPref.setDialogTitle(containers[i].getDescription());
-            containerPref.setKey("container/" + containers[i].getName() + "/support");
-            containerPref.setDefaultValue("automatic");
-
-            container.addPreference(containerPref);
+            TriStatePreference row = new TriStatePreference(getContext());
+            row.setKey("container/" + c.getName() + "/support");
+            row.setTitle(c.getDescription());
+            row.setDefaultValue(TriState.AUTO.toPrefValue());
+            row.setAutoValue(CodecCapabilityDetector.isContainerSupported(getContext(), prefs, c));
+            row.setSummary(autoLabel(row.getAutoValue()));
+            containers.addPreference(row);
         }
 
-
         PreferenceCategory video = findPreference("video_codecs");
-        ListPreference videoPref;
-
-        VideoCodec [] videoCodecs = VideoCodec.values();
-
-        for(int i = 0; i < videoCodecs.length; i++)
+        for (VideoCodec c : VideoCodec.values())
         {
-            videoPref = new ListPreference(this.getContext());
-
-            videoPref.setEntryValues(R.array.entryvalues_list_container_preference);
-            videoPref.setEntries(R.array.entries_list_container_preference);
-            videoPref.setSummary("%s");
-            videoPref.setTitle(videoCodecs[i].getDescription());
-            videoPref.setDialogTitle(videoCodecs[i].getDescription());
-            videoPref.setKey("codec/video/" + videoCodecs[i].getName() + "/support");
-            videoPref.setDefaultValue("automatic");
-
-            video.addPreference(videoPref);
+            TriStatePreference row = new TriStatePreference(getContext());
+            row.setKey("codec/video/" + c.getName() + "/support");
+            row.setTitle(c.getDescription());
+            row.setDefaultValue(TriState.AUTO.toPrefValue());
+            row.setAutoValue(CodecCapabilityDetector.isVideoCodecSupported(getContext(), prefs, c));
+            row.setSummary(autoLabel(row.getAutoValue()));
+            video.addPreference(row);
         }
 
         PreferenceCategory audio = findPreference("audio_codecs");
-        ListPreference audioPref;
-
-        AudioCodec [] audioCodecs = AudioCodec.values();
-
-        for(int i = 0; i < audioCodecs.length; i++)
+        for (AudioCodec c : AudioCodec.values())
         {
-            audioPref = new ListPreference(this.getContext());
-
-            audioPref.setEntryValues(R.array.entryvalues_list_container_preference);
-            audioPref.setEntries(R.array.entries_list_container_preference);
-            audioPref.setSummary("%s");
-            audioPref.setTitle(audioCodecs[i].getDescription());
-            audioPref.setDialogTitle(audioCodecs[i].getDescription());
-            audioPref.setKey("codec/audio/" + audioCodecs[i].getName() + "/support");
-            audioPref.setDefaultValue("automatic");
-
-            audio.addPreference(audioPref);
+            TriStatePreference row = new TriStatePreference(getContext());
+            row.setKey("codec/audio/" + c.getName() + "/support");
+            row.setTitle(c.getDescription());
+            row.setDefaultValue(TriState.AUTO.toPrefValue());
+            row.setAutoValue(CodecCapabilityDetector.isAudioCodecSupported(getContext(), prefs, c));
+            row.setSummary(autoLabel(row.getAutoValue()));
+            audio.addPreference(row);
         }
+    }
 
-
+    private static String autoLabel(boolean detected)
+    {
+        return detected
+                ? "Auto: supported on this device"
+                : "Auto: not supported on this device";
     }
 }

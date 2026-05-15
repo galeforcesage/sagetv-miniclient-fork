@@ -7,6 +7,7 @@ import java.util.TreeSet;
 
 import sagex.miniclient.MiniClientConnection;
 import sagex.miniclient.prefs.PrefStore;
+import sagex.miniclient.prefs.TriState;
 
 /**
  * Created by seans on 08/11/15.
@@ -16,7 +17,10 @@ public class AndroidPrefStore implements PrefStore
     //<editor-fold name="Constants">
 
     public static final String STREAMING_MODE = "streaming_mode";
-    public static final String STREAMING_MODE_DEFAULT = "fixed";
+    // "automatic" lets MiniClientConnection pick the best mode based on connectivity
+    // (pull when port 7818 is reachable, otherwise dynamic push). Existing users keep
+    // whatever value they previously selected.
+    public static final String STREAMING_MODE_DEFAULT = "automatic";
 
     public static final String FIXED_ENCODING_PREFERENCE = "fixed_encoding/preference";
     public static final String FIXED_ENCODING_PREFERENCE_DEFAULT = "needed";
@@ -232,6 +236,40 @@ public class AndroidPrefStore implements PrefStore
     public String getStreamingMode()
     {
         return prefs.getString(AndroidPrefStore.STREAMING_MODE, AndroidPrefStore.STREAMING_MODE_DEFAULT);
+    }
+
+    /**
+     * Resolve the ExoPlayer FFmpeg-extension preference to the legacy integer
+     * form that {@code DefaultRenderersFactory} expects:
+     * 0 = OFF, 1 = ON (use if needed), 2 = PREFER (always use).
+     *
+     * <p>Reads the new {@link PrefStore.Keys#exoplayer_ffmpeg_extension_tri}
+     * tri-state key when present; otherwise falls back to the legacy
+     * {@link PrefStore.Keys#exoplayer_ffmpeg_extension_setting} integer key
+     * for backward compatibility with existing user installs.</p>
+     */
+    public int getExoFfmpegExtensionMode()
+    {
+        String tri = prefs.getString(PrefStore.Keys.exoplayer_ffmpeg_extension_tri, null);
+        if (tri != null)
+        {
+            switch (TriState.fromPrefValue(tri))
+            {
+                case OFF: return 0;
+                case ON:  return 2;
+                default:  return 1; // AUTO -> "use if needed"
+            }
+        }
+        // Legacy: stored as the integer string "0" / "1" / "2".
+        try
+        {
+            return Integer.parseInt(prefs.getString(
+                    PrefStore.Keys.exoplayer_ffmpeg_extension_setting, "1"));
+        }
+        catch (NumberFormatException nfe)
+        {
+            return 1;
+        }
     }
 
     @Override

@@ -74,6 +74,31 @@ public class MediaCmd
     private MiniClientConnection myConn;
     private long lastServerStartTime = -1;
 
+    /*
+     * Early-push holding buffer.
+     *
+     * The SageTV server can start firing MEDIACMD_PUSHBUFFER packets BEFORE the
+     * MEDIACMD_OPENURL that creates the player. (Observed on Shield: 4 x 16KB push
+     * packets arrive ~4ms before OPENURL.) Historically those bytes were silently
+     * discarded because `playa` was still null, but the server has no idea they were
+     * lost (TCP ACKed them) so it never retransmits. The lost prefix typically
+     * contains the MPEG-TS PAT/PMT, leaving the player unable to identify any
+     * streams -> blank screen forever.
+     *
+     * We buffer up to MAX_PENDING_PUSH bytes of pre-OPENURL data and, once the push
+     * player is created in MEDIACMD_OPENURL, replay them into playa.pushData()
+     * before returning so the ring buffer starts at byte 0.
+     *
+     * This is the SOLE pre-OPENURL hold buffer in the system: BaseMediaPlayerImpl.load()
+     * blocks until setupPlayer() (and TrickplayController.open()) have run on the UI
+     * thread, so by the time the replay below executes the native ring buffer is
+     * already accepting writes and no second-stage staging is required.
+     */
+    private static final int MAX_PENDING_PUSH = 4 * 1024 * 1024;
+    private byte[] pendingPushBuf = null;
+    private int pendingPushSize = 0;
+    private boolean pendingPushOverflow = false;
+
     static
     {
         CMDMAP.put(MEDIACMD_INIT, "MEDIACMD_INIT");
@@ -147,6 +172,10 @@ public class MediaCmd
         if (playa != null)
             playa.free();
         playa = null;
+        // Drop any buffered pre-OPENURL push data; a fresh stream will start over.
+        pendingPushBuf = null;
+        pendingPushSize = 0;
+        pendingPushOverflow = false;
     }
 
     public int ExecuteMediaCommand(int cmd, int len, byte[] cmddata, byte[] retbuf)
@@ -235,6 +264,28 @@ public class MediaCmd
                         playa = myConn.newPlayerPlugin( urlString);//new MiniMPlayerPlugin(myConn.getGfxCmd(), myConn);
                         playa.setPushMode(true);
                         playa.load((byte) 0, (byte) 0, "", urlString, null, true, 0);
+
+                        // If the server pushed bytes BEFORE this OPENURL was processed,
+                        // they were stashed in pendingPushBuf. Replay them now so the ring
+                        // buffer starts with the actual stream prefix (PAT/PMT, etc.) and
+                        // ExoPlayer's TsExtractor can identify the streams.
+                        if (pendingPushSize > 0)
+                        {
+                            try
+                            {
+                                playa.pushData(pendingPushBuf, 0, pendingPushSize);
+                            }
+                            catch (IOException e)
+                            {
+                                log.error("PUSHBUFFER replay error", e);
+                            }
+                            finally
+                            {
+                                pendingPushBuf = null;
+                                pendingPushSize = 0;
+                                pendingPushOverflow = false;
+                            }
+                        }
                     }
                 }
                 writeInt(1, retbuf, 0);
@@ -348,6 +399,48 @@ public class MediaCmd
                     {
                         log.debug("------------------------- setServerEOS Called --------------------------------");
                         playa.setServerEOS();
+                    }
+                }
+                else if (buffSize > 0 && bufDataOffset + buffSize <= len)
+                {
+                    // Player not yet created (race: PUSHBUFFER arrived before OPENURL).
+                    // Stash the bytes so MEDIACMD_OPENURL can replay them after the
+                    // push player is built. Without this the server-pushed prefix
+                    // (PAT/PMT for MPEG-TS) is lost and playback wedges with a blank
+                    // screen because TsExtractor never identifies the streams.
+                    if (!pendingPushOverflow)
+                    {
+                        if (pendingPushBuf == null)
+                        {
+                            // First early packet: allocate exactly what we need; we'll
+                            // grow geometrically if more arrive.
+                            pendingPushBuf = new byte[Math.min(MAX_PENDING_PUSH, Math.max(buffSize, 64 * 1024))];
+                        }
+                        if (pendingPushSize + buffSize > pendingPushBuf.length)
+                        {
+                            int newCap = pendingPushBuf.length;
+                            while (newCap < pendingPushSize + buffSize && newCap < MAX_PENDING_PUSH)
+                            {
+                                newCap = Math.min(MAX_PENDING_PUSH, newCap * 2);
+                            }
+                            if (newCap >= pendingPushSize + buffSize)
+                            {
+                                byte[] grown = new byte[newCap];
+                                System.arraycopy(pendingPushBuf, 0, grown, 0, pendingPushSize);
+                                pendingPushBuf = grown;
+                            }
+                            else
+                            {
+                                pendingPushOverflow = true;
+                                log.warn("PUSHBUFFER pre-OPENURL holding buffer overflow at {} bytes; dropping further early bytes",
+                                        pendingPushSize);
+                            }
+                        }
+                        if (!pendingPushOverflow)
+                        {
+                            System.arraycopy(cmddata, bufDataOffset, pendingPushBuf, pendingPushSize, buffSize);
+                            pendingPushSize += buffSize;
+                        }
                     }
                 }
 

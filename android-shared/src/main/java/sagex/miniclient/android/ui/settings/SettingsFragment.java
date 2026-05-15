@@ -162,8 +162,14 @@ public class SettingsFragment extends PreferenceFragment
             final Preference fixedTranscoding = this.findPreference("fixed_transcoding");
             final Preference fixedRemuxing = this.findPreference("fixed_remuxing");
             final Preference streammode = findPreference(AndroidPrefStore.STREAMING_MODE);
-            fixedTranscoding.setEnabled(prefs.getStreamingMode().equals("fixed"));
-            
+            // Transcoding/Remuxing settings are consulted whenever the server
+            // actually transcodes or remuxes -- which can happen in any
+            // streaming mode (Automatic / Dynamic / Fixed all may trigger it).
+            // Only "Pull" guarantees no server-side conversion, so disable
+            // these submenus only when the user has explicitly pinned Pull.
+            fixedTranscoding.setEnabled(!"pull".equals(prefs.getStreamingMode()));
+            fixedRemuxing.setEnabled(!"pull".equals(prefs.getStreamingMode()));
+
             streammode.setOnPreferenceChangeListener(new OnPreferenceChangeListener()
             {
                 @Override
@@ -171,8 +177,9 @@ public class SettingsFragment extends PreferenceFragment
                 {
                     updateSummary(preference, R.string.summary_list_streaming_mode_preference, newValue);
 
-                    fixedTranscoding.setEnabled(newValue.equals("fixed"));
-                    fixedRemuxing.setEnabled(newValue.equals("fixed"));
+                    boolean isPull = "pull".equals(newValue);
+                    fixedTranscoding.setEnabled(!isPull);
+                    fixedRemuxing.setEnabled(!isPull);
 
                     return true;
                 }

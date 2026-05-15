@@ -17,9 +17,13 @@ import java.io.IOException;
  */
 public class TransportDataSource implements DataSource
 {
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(TransportDataSource.class);
+
     private final TrickplayController controller;
     private Uri uri;
     private boolean opened;
+    private long totalBytesRead;
 
     public TransportDataSource(TrickplayController controller)
     {
@@ -31,6 +35,7 @@ public class TransportDataSource implements DataSource
     {
         this.uri = dataSpec.uri;
         this.opened = true;
+        this.totalBytesRead = 0;
         return C.LENGTH_UNSET;
     }
 
@@ -43,8 +48,11 @@ public class TransportDataSource implements DataSource
 
         if (bytesRead < 0)
         {
+            LOG.debug("TransportDS.read EOS after totalBytes={}", totalBytesRead);
             return C.RESULT_END_OF_INPUT;
         }
+
+        totalBytesRead += bytesRead;
 
         return bytesRead;
     }

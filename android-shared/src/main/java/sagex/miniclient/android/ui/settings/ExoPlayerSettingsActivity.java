@@ -1,11 +1,11 @@
 package sagex.miniclient.android.ui.settings;
 
-import android.app.Activity;
 import android.os.Bundle;
+import androidx.appcompat.app.AppCompatActivity;
 import sagex.miniclient.android.AppUtil;
 import sagex.miniclient.android.R;
 
-public class ExoPlayerSettingsActivity extends Activity
+public class ExoPlayerSettingsActivity extends AppCompatActivity
 {
         @Override
         protected void onCreate(Bundle savedInstanceState)

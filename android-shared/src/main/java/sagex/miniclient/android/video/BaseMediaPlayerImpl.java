@@ -8,6 +8,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import sagex.miniclient.MiniPlayerPlugin;
 import sagex.miniclient.android.AppUtil;
@@ -140,22 +142,52 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
 
         if (createPlayerOnUI)
         {
+            // Block the calling (MediaCmd dispatch) thread until setupPlayer
+            // has run on the UI thread. This guarantees that by the time
+            // load() returns, the player AND its TrickplayController have
+            // been fully created/opened, so any subsequent PUSHBUFFER bytes
+            // can be written straight into the native ring buffer with no
+            // intermediate hold-buffer needed inside TrickplayController.
+            // The pre-OPENURL hold buffer in MediaCmd remains the only
+            // staging area required for the early-push race.
+            final CountDownLatch setupLatch = waitForPlayer ? new CountDownLatch(1) : null;
             context.runOnUiThread(new Runnable()
             {
                 @Override
                 public void run()
                 {
-                    releasePlayer();
-                    state = LOADED_STATE;
-                    context.setupVideoFrame();
-                    setupPlayer(finalUrl);
-
-                    if (dataSource == null && !httpls)
+                    try
                     {
-                        throw new RuntimeException("setupPlayer must create a datasource");
+                        releasePlayer();
+                        state = LOADED_STATE;
+                        context.setupVideoFrame();
+                        setupPlayer(finalUrl);
+
+                        if (dataSource == null && !httpls)
+                        {
+                            throw new RuntimeException("setupPlayer must create a datasource");
+                        }
+                    }
+                    finally
+                    {
+                        if (setupLatch != null) setupLatch.countDown();
                     }
                 }
             });
+            if (setupLatch != null)
+            {
+                try
+                {
+                    if (!setupLatch.await(5, TimeUnit.SECONDS))
+                    {
+                        log.warn("load(): setupPlayer did not complete within 5s; continuing");
+                    }
+                }
+                catch (InterruptedException ie)
+                {
+                    Thread.currentThread().interrupt();
+                }
+            }
         }
         else
         {
@@ -504,7 +536,6 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     @Override
     public void pushData(byte[] cmddata, int bufDataOffset, int buffSize) throws IOException
     {
-        //log.debug("pushData()");
         if (trickplayController != null && trickplayController.isNativeAvailable())
         {
             trickplayController.pushData(cmddata, bufDataOffset, buffSize);

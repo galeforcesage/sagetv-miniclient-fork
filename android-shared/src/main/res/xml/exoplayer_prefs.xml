@@ -6,13 +6,11 @@
         android:summary="@string/show_exo_decoders_pref_summary"
         android:title="@string/show_exo_decoders"/>
 
-    <ListPreference android:defaultValue="1"
+    <sagex.miniclient.android.ui.settings.TriStatePreference
+        android:defaultValue="auto"
         android:title="@string/exoplayer_ffmpeg_extension_title"
-        android:dialogTitle="@string/exoplayer_ffmpeg_extension_title"
         android:summary="@string/exoplayer_ffmpeg_extension_summary"
-        android:key="exoplayer_ffmpeg_extension"
-        android:entries="@array/entries_exoplayer_ffmpeg_extension_preference"
-        android:entryValues="@array/entryvalues_exoplayer_ffmpeg_extension_preference"/>
+        android:key="exoplayer_ffmpeg_extension_tri"/>
 
     <Preference
         android:key="exoversion"

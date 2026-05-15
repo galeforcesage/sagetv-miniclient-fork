@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Widget layout for TriStatePreference. Non-focusable / non-clickable so the
+  parent row receives clicks and the preference's onClick() handles state
+  cycling. The checkbox is decorative — it reflects the resolved value but is
+  not the click target.
+-->
+<CheckBox xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/tristate_checkbox"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:layout_gravity="center"
+    android:focusable="false"
+    android:clickable="false"
+    android:background="@null" />

@@ -4,12 +4,12 @@ import static android.media.AudioFormat.ENCODING_INVALID;
 
 import android.content.ContentResolver;
 import android.os.Bundle;
-import android.preference.Preference;
-import android.preference.PreferenceFragment;
 import android.text.Html;
 import android.util.Pair;
 
 import androidx.appcompat.app.AlertDialog;
+import androidx.preference.Preference;
+import androidx.preference.PreferenceFragmentCompat;
 
 import com.google.android.exoplayer2.ExoPlayerLibraryInfo;
 import com.google.android.exoplayer2.ext.ffmpeg.FfmpegLibrary;
@@ -24,13 +24,12 @@ import sagex.miniclient.android.R;
 import sagex.miniclient.media.AudioCodec;
 import sagex.miniclient.media.VideoCodec;
 
-public class ExoPlayerSettingsFragment extends PreferenceFragment
+public class ExoPlayerSettingsFragment extends PreferenceFragmentCompat
 {
     @Override
-    public void onCreate(Bundle savedInstanceState)
+    public void onCreatePreferences(Bundle savedInstanceState, String rootKey)
     {
-        super.onCreate(savedInstanceState);
-        addPreferencesFromResource(R.xml.exoplayer_prefs);
+        setPreferencesFromResource(R.xml.exoplayer_prefs, rootKey);
 
         final Preference exodecoders = findPreference("show_exo_decoders");
         exodecoders.setOnPreferenceClickListener(new Preference.OnPreferenceClickListener()

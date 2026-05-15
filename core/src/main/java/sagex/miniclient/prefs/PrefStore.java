@@ -37,6 +37,21 @@ public interface PrefStore
 
     void setBoolean(String key, boolean value);
 
+    /**
+     * Read a tri-state preference. Returns {@link TriState#AUTO} when the key is
+     * unset or holds an unrecognised value.
+     */
+    default TriState getTriState(String key)
+    {
+        return TriState.fromPrefValue(getString(key, null));
+    }
+
+    /** Persist a tri-state preference using its stable string form. */
+    default void setTriState(String key, TriState value)
+    {
+        setString(key, (value == null ? TriState.AUTO : value).toPrefValue());
+    }
+
     Set<Object> keys();
 
     void remove(String key);
@@ -104,6 +119,17 @@ public interface PrefStore
         String local_fs_security = "local_fs_security";
         String mplayer_extra_video_codecs = "mplayer/extra_video_codecs";
         String mplayer_extra_audio_codecs = "mplayer/extra_audio_codecs";
+
+        /**
+         * When true, advertise a fixed legacy capability profile equivalent to
+         * the Windows Placeshifter to the server, instead of the device's
+         * auto-detected codec/container lists. Use this for SageTV 9.2.x
+         * servers, which expect a Placeshifter-style client and can mis-route
+         * playback when the client advertises modern Android-only codecs
+         * (e.g. HEVC) or container combos the server's profile resolver
+         * doesn't have a path for. Default false (NG / auto-negotiation).
+         */
+        String legacy_server_compat = "legacy_server_compat";
 
         /**
          * values: dynamic, fixed, pull
@@ -212,8 +238,20 @@ public interface PrefStore
 
         /**
          * Integer: Exoplayer ffmpeg extenstion setting.  (Off = 0, On = 1, Prefer = 2)
+         *
+         * <p>Legacy key. Phase 2 UX uses {@link #exoplayer_ffmpeg_extension_tri}
+         * with {@link TriState} semantics; reads should go through
+         * {@code AndroidPrefStore.getExoFfmpegExtensionMode()} which honours
+         * the new key when present and falls back to this one.</p>
          */
         String exoplayer_ffmpeg_extension_setting = "exoplayer_ffmpeg_extension";
+
+        /**
+         * {@link TriState}: Exoplayer FFmpeg extension. AUTO = use if needed
+         * (matches legacy "1"), ON = always prefer (legacy "2"), OFF = never
+         * use (legacy "0").
+         */
+        String exoplayer_ffmpeg_extension_tri = "exoplayer_ffmpeg_extension_tri";
 
         /**
          * Boolean: if true, then only software decoders are used

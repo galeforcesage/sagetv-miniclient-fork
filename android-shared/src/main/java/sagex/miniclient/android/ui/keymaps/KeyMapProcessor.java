@@ -154,36 +154,15 @@ public class KeyMapProcessor {
             if(keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_BACK)
             {
                 uiHandler.showHideKeyboard(false);
-                // Send select/enter to the server so the text is submitted
-                EventRouter.postCommand(client, SageCommand.SELECT);
-                return;
-            }
-            if(keyCode == KeyEvent.KEYCODE_DEL)
-            {
-                // Send backspace as a keyboard event, not as SageCommand DELETE
-                client.getCurrentConnection().postKeyEvent(8, 0, (char) 8);
                 return;
             }
         }
-        else if(!uiHandler.isKeyboardVisible()
-                && client.getCurrentConnection().getMenuHint().hasTextInput == true
-                && !longPress)
+        else if(!uiHandler.isKeyboardVisible() && client.getCurrentConnection().getMenuHint().hasMenuLike("Main Menu")
+                && client.getCurrentConnection().getMenuHint().hasTextInput == true)
         {
             if(keyCode == KeyEvent.KEYCODE_DPAD_CENTER)
             {
                 uiHandler.showHideKeyboard(true);
-                return;
-            }
-            if(keyCode == KeyEvent.KEYCODE_DEL)
-            {
-                // USB keyboard backspace in a text field
-                client.getCurrentConnection().postKeyEvent(8, 0, (char) 8);
-                return;
-            }
-            if(keyCode == KeyEvent.KEYCODE_ENTER)
-            {
-                // USB keyboard enter in a text field — submit
-                EventRouter.postCommand(client, SageCommand.SELECT);
                 return;
             }
         }

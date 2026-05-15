@@ -14,7 +14,7 @@
     <string name="summary_list_loglevels_preference">(%s) - The logging level</string>
     <string name="dialog_title_list_loglevels_preference">Set Logging Level</string>
     <string name="dialog_title_list_streaming_mode_preference">Set Stream Mode</string>
-    <string name="summary_list_streaming_mode_preference">(%s) - Fixed is preferred and offers HD transcoding and remuxing.  Dynamic adapts to bandwidth but only in SD</string>
+    <string name="summary_list_streaming_mode_preference">(%s) - Automatic picks the best mode for your network. Pull is most reliable; Dynamic adapts to bandwidth; Fixed forces transcode/remux.</string>
     <string name="title_list_streaming_mode_preference">Streaming Mode</string>
     <string name="send_log">Send Log</string>
     <string name="send_log_summary">If using Send Log, then make sure that you are NOT logging to file.  Logging to a File will result in Send Log only capturing a partial log.</string>
@@ -113,7 +113,7 @@
     <string name="show_exo_decoders_pref_summary">Show the MediaCodecs that are available on this device</string>
     <string name="exo_decoders">ExoPlayer MediaCodecs</string>
     <string name="exoplayer_ffmpeg_extension_title">ExoPlayer FFmpeg Audio Extension</string>
-    <string name="exoplayer_ffmpeg_extension_summary">Sets how the FFmpeg extension is utilized in ExoPlayer. Preferred for audio decoding, On for decoding codecs which the device does not support natively or off.</string>
+    <string name="exoplayer_ffmpeg_extension_summary">Tap to cycle Auto / Always / Off. Auto uses the FFmpeg extension only for codecs the device cannot decode natively. Always prefers the FFmpeg extension. Off disables it. Long-press to reset to Auto.</string>
     <string name="dialog_title_list_transcoding_format_preference">Container Format</string>
     <string name="summary_list_transcoding_formats_preference">%s - The container format that will be used for transcoding</string>
     <string name="title_list_transcoding_formats_preference">Container Format</string>

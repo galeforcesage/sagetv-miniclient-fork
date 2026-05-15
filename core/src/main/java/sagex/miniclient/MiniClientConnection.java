@@ -412,6 +412,10 @@ public class MiniClientConnection implements SageTVInputCallback
             sake.setSoTimeout(30000);
             sake.setTcpNoDelay(true);
             sake.setKeepAlive(true);
+            // Tune OS keep-alive timing so a dead control connection is
+            // detected in ~80 s instead of the default ~2 h. No-op on
+            // platforms that don't expose jdk.net.ExtendedSocketOptions.
+            sagex.miniclient.util.SocketKeepAlive.apply(sake);
             outStream = sake.getOutputStream();
             inStream = sake.getInputStream();
             byte[] msg = new byte[7];
@@ -644,9 +648,18 @@ public class MiniClientConnection implements SageTVInputCallback
         // If push-only (remote/Placeshifter), use dynamic to avoid FFmpeg dependency.
         final String userStreamingMode = client.properties().getStreamingMode();
         final String effectiveStreamingMode;
+        final boolean userIsAutomatic = "automatic".equalsIgnoreCase(userStreamingMode);
 
-        if (canDoPullStreaming) {
-            // Pull mode always works with any server, uses zero server CPU
+        if (userIsAutomatic) {
+            // Automatic: pick the best mode based on connectivity.
+            //   - pull if port 7818 is reachable (zero server CPU, most reliable)
+            //   - dynamic otherwise (raw push first, then server falls back to remux/transcode)
+            effectiveStreamingMode = canDoPullStreaming ? "pull" : "dynamic";
+            log.logInfo("STREAMING AUTOMATIC: resolved to '" + effectiveStreamingMode
+                    + "' (pull available: " + canDoPullStreaming + ")");
+        } else if (canDoPullStreaming) {
+            // User picked an explicit mode but pull is reachable -- keep current behavior of
+            // overriding to pull, since pull mode always works and uses zero server CPU.
             effectiveStreamingMode = "pull";
             if (!"pull".equalsIgnoreCase(userStreamingMode)) {
                 log.logInfo("STREAMING OVERRIDE: '" + userStreamingMode + "' -> 'pull' "
@@ -1108,7 +1121,17 @@ public class MiniClientConnection implements SageTVInputCallback
                     }
                     else if ("VIDEO_CODECS".equals(propName))
                     {
-                        if (client.properties().getFixedEncodingPreference().equalsIgnoreCase("always")
+                        if (client.properties().getBoolean(PrefStore.Keys.legacy_server_compat, false))
+                        {
+                            // 9.2.x server: advertise the EXACT original Placeshifter
+                            // codec set (sourced from MiniClientConnection commit eec5131,
+                            // pre-codec-detection era). The server's profile resolver
+                            // matches on these exact tokens; modern names like "MP3" or
+                            // "MPEG2-AUDIO" don't map and cause it to fall back to paths
+                            // that produce IO_UNSPECIFIED.
+                            propVal = "MPEG2-VIDEO,MPEG2-VIDEO@HL,MPEG1-VIDEO,MPEG4-VIDEO,DIVX3,MSMPEG4,FLASHVIDEO,H.264,WMV9,VC1,MJPEG,HEVC";
+                        }
+                        else if (client.properties().getFixedEncodingPreference().equalsIgnoreCase("always")
                                 && effectiveStreamingMode.equalsIgnoreCase("fixed"))
                         {
                             propVal = "NONE";
@@ -1123,7 +1146,14 @@ public class MiniClientConnection implements SageTVInputCallback
                     }
                     else if ("AUDIO_CODECS".equals(propName))
                     {
-                        if (client.properties().getFixedEncodingPreference().equalsIgnoreCase("always")
+                        if (client.properties().getBoolean(PrefStore.Keys.legacy_server_compat, false))
+                        {
+                            // 9.2.x server: original Placeshifter audio token list.
+                            // Note: MPG1L2/MPG1L3 = MPEG-1 Layer 2/3 (NOT "MP3"/"MPEG2-AUDIO");
+                            // EC-3 is the alt spelling of EAC3; both included for safety.
+                            propVal = "MPG1L2,MPG1L3,AC3,AAC,AAC-HE,WMA,FLAC,VORBIS,PCM,DTS,DCA,PCM_S16LE,WMA8,ALAC,WMAPRO,0X0162,DolbyTrueHD,DTS-HD,DTS-MA,EAC3,EC-3";
+                        }
+                        else if (client.properties().getFixedEncodingPreference().equalsIgnoreCase("always")
                                 && effectiveStreamingMode.equalsIgnoreCase("fixed"))
                         {
                             propVal = "NONE";
@@ -1140,7 +1170,13 @@ public class MiniClientConnection implements SageTVInputCallback
                     }
                     else if ("PUSH_AV_CONTAINERS".equals(propName))
                     {
-                        if (((client.properties().getFixedEncodingPreference().equalsIgnoreCase("always")
+                        if (client.properties().getBoolean(PrefStore.Keys.legacy_server_compat, false))
+                        {
+                            // 9.2.x server: advertise only the push containers a
+                            // Windows Placeshifter would.
+                            propVal = "MPEG2-PS,MPEG2-TS,MPEG1-PS";
+                        }
+                        else if (((client.properties().getFixedEncodingPreference().equalsIgnoreCase("always")
                             || client.properties().getFixedRemuxingPreference().equalsIgnoreCase("always"))
                                 && effectiveStreamingMode.equalsIgnoreCase("fixed")))
                         {
@@ -1148,12 +1184,14 @@ public class MiniClientConnection implements SageTVInputCallback
                             // pushing
                             propVal = "NONE";
                         }
-                        else if (canDoPullStreaming && "pull".equalsIgnoreCase(effectiveStreamingMode))
-                        {
-                            // If we are forced into pull mode then we don't support
-                            // pushing
-                            propVal = "NONE";
-                        }
+                        // NOTE: previously we forced PUSH_AV_CONTAINERS=NONE whenever effectiveStreamingMode resolved
+                        // to "pull" (i.e. server reachable on the pull port). That advertised a false capability:
+                        // the client IS able to receive raw MPEG-PS/TS via the push transport, and the server's
+                        // profile resolver uses PUSH_AV_CONTAINERS to decide whether DIRECT_PLAY (MPEG2 pusher) is
+                        // available. Forcing NONE here pushed the server into transcoder paths even when push would
+                        // have worked (e.g. HEVC + MPEG2-TS). The push vs. pull decision is made per-stream when the
+                        // server returns a push:// or stv:// URL to OPENURL; capability advertisement should describe
+                        // what we can accept regardless of the currently-preferred mode.
                         else
                         {
                             if(pushFormats.size() == 0)
@@ -1174,7 +1212,15 @@ public class MiniClientConnection implements SageTVInputCallback
                         PULL - Containers we can read without transcoding.
                         Set this to empty if we are remote or if we are fixed and preference is to always transcode or always remux
                         */
-                        if (!canDoPullStreaming
+                        if (client.properties().getBoolean(PrefStore.Keys.legacy_server_compat, false))
+                        {
+                            // 9.2.x server: advertise only Placeshifter pull containers.
+                            if (!canDoPullStreaming)
+                                propVal = "";
+                            else
+                                propVal = "AVI,FLASHVIDEO,Quicktime,Ogg,MP3,AAC,WMV,ASF,FLAC,MATROSKA,WAV,AC3";
+                        }
+                        else if (!canDoPullStreaming
                                 || ((client.properties().getFixedEncodingPreference().equalsIgnoreCase("always")
                                 || client.properties().getFixedRemuxingPreference().equalsIgnoreCase("always"))
                                 && "fixed".equalsIgnoreCase(effectiveStreamingMode)))

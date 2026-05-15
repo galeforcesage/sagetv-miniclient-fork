@@ -14,7 +14,7 @@
             android:title="@string/title_list_default_player"/>
 
         <ListPreference
-            android:defaultValue="fixed"
+            android:defaultValue="automatic"
             android:dialogTitle="@string/dialog_title_list_streaming_mode_preference"
             android:entries="@array/entries_list_streaming_mode_preference"
             android:entryValues="@array/entryvalues_list_streaming_mode_preference"
@@ -22,17 +22,23 @@
             android:summary="@string/summary_list_streaming_mode_preference"
             android:title="@string/title_list_streaming_mode_preference"/>
 
-        <Preference android:title="Fixed Transcoding Settings"
-            android:summary="Change the setting SageTV server will use to transcode content when using fixed streaming"
+        <Preference android:title="Transcoding Settings"
+            android:summary="Output parameters used when the server transcodes content (any streaming mode)."
             android:key="fixed_transcoding"/>
 
-        <Preference android:title="Fixed Remuxing Settings"
-            android:summary="Change the setting SageTV server will use to remux content when using fixed streaming (> v9.2.5 SageTV)"
+        <Preference android:title="Remuxing Settings"
+            android:summary="Output container used when the server remuxes content (any streaming mode, > v9.2.5 SageTV)."
             android:key="fixed_remuxing"/>
 
         <Preference android:title="Codec and Container Settings"
             android:summary="Change how the application reports to SageTV which containers and codecs it supports. This can be helpful if a specific device does not handle a specific codec or container well"
             android:key="container_codec_settings"/>
+
+        <CheckBoxPreference
+            android:defaultValue="false"
+            android:key="legacy_server_compat"
+            android:title="Legacy SageTV Server (pre-NG / 9.2.x)"
+            android:summary="Advertise a fixed Windows Placeshifter capability profile to the server instead of the device's auto-detected codecs/containers. Enable when connecting to a SageTV 9.2.x server. Leave OFF for SageTV-NG."/>
 
         <Preference android:title="ExoPlayer Settings and Information"
             android:summary="Change the behavior of ExoPlayer and see supported codecs and version info"

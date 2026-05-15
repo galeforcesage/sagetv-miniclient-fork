@@ -577,13 +577,32 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
         ITrackInfo info[] = player.getTrackInfo();
         if (info == null || info.length == 0) return -1;
 
+        // SageTV may send raw MPEG PES stream IDs rather than zero-based indices.
+        // Translate them the same way Exo2MediaPlayerImpl does so callers using
+        // either backend get consistent behavior.
+        //   MPEG audio:                       0xC000-0xDFFF -> (sageTVPosition - 0xC000)
+        //   AC3 (private_stream_1 sub-stream): 0xBD80-0xBDBF -> (sageTVPosition & 0x07)
+        int zeroBasedPos;
+        if (sageTVPosition >= 0xC000 && sageTVPosition < 0xE000)
+        {
+            zeroBasedPos = sageTVPosition - 0xC000;
+        }
+        else if (sageTVPosition >= 0xBD80 && sageTVPosition <= 0xBDBF)
+        {
+            zeroBasedPos = sageTVPosition & 0x07;
+        }
+        else
+        {
+            zeroBasedPos = sageTVPosition;
+        }
+
         int audioTrackCount = 0;
 
         for (int i = 0; i < info.length; i++)
         {
             if (info[i] != null && info[i].getTrackType() == IjkTrackInfo.MEDIA_TRACK_TYPE_AUDIO)
             {
-                if (audioTrackCount == sageTVPosition)
+                if (audioTrackCount == zeroBasedPos)
                 {
                     return i;
                 }
