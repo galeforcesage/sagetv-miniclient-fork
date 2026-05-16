@@ -168,6 +168,22 @@ public class MiniClientConnection implements SageTVInputCallback
     public static final String SMIL = "SMIL"; // for SMIL-XML files which represent sequences of content
     public static final String VP6F = "VP6F";
     public static final String JPEG = "JPEG";
+
+    // -------------------------------------------------------------------------
+    // SageTV-NG protocol version
+    //
+    // Independent of FIRMWARE_VERSION (which stays "9.0.0" for plugin back-compat
+    // with anything that reads Global.GetMiniclientFirmwareVersion()). NG servers
+    // read SAGETV_NG_VERSION to gate modern-profile selection (e.g. android_modern
+    // with HEVC + AC-4 + audioonly transcode); legacy 9.x servers ignore it.
+    //
+    // BACK-OUT PATH (if NG is upstreamed as e.g. "SageTV 10.0.0"):
+    //   1. Delete SAGETV_NG_VERSION constant + its property handler below.
+    //   2. Bump FIRMWARE_VERSION handler from "9.0.0" → "10.0.0".
+    //   NG's autoDetectProfile falls back to parsing firmwareVersion when the
+    //   NG version property is absent, so this is a one-line client cutover.
+    // -------------------------------------------------------------------------
+    public static final String SAGETV_NG_VERSION = "1.0.1";
     public static final String GIF = "GIF";
     public static final String PNG = "PNG";
     public static final String BMP = "BMP";
@@ -1130,6 +1146,13 @@ public class MiniClientConnection implements SageTVInputCallback
                         // sage.Version.MINOR_VERSION + "." +
                         // sage.Version.MICRO_VERSION;
                         propVal = "9.0.0";
+                    }
+                    else if ("SAGETV_NG_VERSION".equals(propName))
+                    {
+                        // NG servers read this to engage modern profile (HEVC + AC-4 +
+                        // audioonly transcode); legacy 9.x servers ignore unknown props.
+                        // See constant declaration above for back-out path.
+                        propVal = SAGETV_NG_VERSION;
                     }
                     else if ("DETAILED_BUFFER_STATS".equals(propName))
                     {
