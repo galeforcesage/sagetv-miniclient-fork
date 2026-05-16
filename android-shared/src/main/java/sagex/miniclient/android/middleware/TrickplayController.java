@@ -44,6 +44,11 @@ public class TrickplayController
      * elapses with no further seeks, the latest target is committed.
      * Sized to absorb a typical SageTV smooth-FF/REW burst (≈150 ms
      * spacing) while staying under human "feels instant" threshold.
+     *
+     * <p><b>Push mode uses zero coalesce</b>: the player does no work on
+     * a push-mode seek (the server flushes and re-pushes from the new
+     * position), so there is nothing to debounce against. Any added delay
+     * is pure user-visible latency. See {@link #beginSeek}.</p>
      */
     private static final long SEEK_QUIET_WINDOW_MS = 180;
 
@@ -361,6 +366,7 @@ public class TrickplayController
     public void beginSeek(long targetMs)
     {
         long delay;
+        boolean isPush;
         synchronized (this)
         {
             seekTargetMs = targetMs;
@@ -369,17 +375,41 @@ public class TrickplayController
             // in the runnable needs to know a prior commit hasn't converged.
             mappingValid = false;
             pendingPreReadySeek = !opened;
+            isPush = pushMode;
 
             long now = System.currentTimeMillis();
             if (burstStartedAtMs == 0) burstStartedAtMs = now;
 
-            long sinceBurstStart = now - burstStartedAtMs;
-            long maxDeferRemaining = SEEK_MAX_DEFER_MS - sinceBurstStart;
-            delay = Math.min(SEEK_QUIET_WINDOW_MS, Math.max(0, maxDeferRemaining));
+            if (isPush)
+            {
+                // Push mode: server does the seek (flush + re-push from
+                // new position). Coalescing here only adds latency. Fire
+                // the commit immediately so the player-side bookkeeping
+                // (resume offsets, native ring drop) happens ASAP.
+                delay = 0;
+            }
+            else
+            {
+                long sinceBurstStart = now - burstStartedAtMs;
+                long maxDeferRemaining = SEEK_MAX_DEFER_MS - sinceBurstStart;
+                delay = Math.min(SEEK_QUIET_WINDOW_MS, Math.max(0, maxDeferRemaining));
+            }
         }
+
+        // Push-mode preflush: drop the stale ring contents NOW so IJK's
+        // demuxer thread doesn't continue draining pre-seek bytes while
+        // we wait for the server's MEDIACMD_FLUSH (which can lag the
+        // SEEK by several seconds during transcoder restart). The next
+        // bytes pushed into the ring are post-seek by definition, so
+        // dropping is always safe.
+        if (isPush && nativeHandle != 0)
+        {
+            NativeTransport.nFlush(nativeHandle);
+        }
+
         uiHandler.removeCallbacks(seekCommitRunnable);
         uiHandler.postDelayed(seekCommitRunnable, delay);
-        log.debug("beginSeek: target={}, push={}, delay={}ms", targetMs, pushMode, delay);
+        log.debug("beginSeek: target={}, push={}, delay={}ms", targetMs, isPush, delay);
     }
 
     /**

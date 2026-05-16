@@ -1,7 +1,9 @@
 package sagex.miniclient.android.util;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.view.MenuItem;
 import android.view.View;
@@ -45,6 +47,8 @@ public class ServerInfoUtil {
             onChangeClientID(context, serverInfo, after);
         } else if (item.getItemId() == R.id.menu_duplicate) {
             onDuplicate(context, serverInfo, after);
+        } else if (item.getItemId() == R.id.menu_legacy_mode) {
+            onSetLegacyMode(context, serverInfo, after);
         } else if (item.getItemId() == R.id.menu_connect) {
             connect(context, serverInfo);
         } else if (item.getItemId() == R.id.menu_connect_locator) {
@@ -195,6 +199,61 @@ public class ServerInfoUtil {
                 log.info("New Server Duplicated: {}; {}", newValue, newSI);
             }
         });
+    }
+
+    /**
+     * Per-server compatibility-mode picker. AUTO is the default and lets the
+     * client advertise the full NG capability set; if the server fails to
+     * negotiate (IO_UNSPECIFIED on first OPENURL) it auto-flips to LEGACY.
+     * LEGACY pins the Placeshifter baseline (good for SageTV 9.2.x). NG pins
+     * the full NG set and disables auto-flip (useful when an NG server has
+     * a transient hiccup you don't want misclassified).
+     */
+    public static void onSetLegacyMode(final Context context, final ServerInfo serverInfo, final OnAfterCommands after) {
+        final ServerInfo.LegacyMode[] modes = ServerInfo.LegacyMode.values();
+        final String[] labels = new String[modes.length];
+        int selected = 0;
+        for (int i = 0; i < modes.length; i++) {
+            switch (modes[i]) {
+                case AUTO:
+                    labels[i] = "Auto (NG, auto-fallback to Legacy)";
+                    break;
+                case LEGACY:
+                    labels[i] = "Legacy (SageTV 9.2.x \u2014 Placeshifter caps)";
+                    break;
+                case NG:
+                    labels[i] = "NG (full capability set, no auto-fallback)";
+                    break;
+                default:
+                    labels[i] = modes[i].name();
+            }
+            if (modes[i] == serverInfo.legacyMode) {
+                selected = i;
+            }
+        }
+
+        new AlertDialog.Builder(context)
+                .setTitle("Server Mode \u2014 " + serverInfo.name)
+                .setSingleChoiceItems(labels, selected, new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        ServerInfo.LegacyMode chosen = modes[which];
+                        if (chosen != serverInfo.legacyMode) {
+                            serverInfo.legacyMode = chosen;
+                            serverInfo.save(MiniclientApplication.get().getClient().properties());
+                            log.info("Server '{}' legacyMode set to {}", serverInfo.name, chosen);
+                            Toast.makeText(context,
+                                    "Mode saved: " + chosen.name() + ". Reconnect to apply.",
+                                    Toast.LENGTH_LONG).show();
+                            if (after != null) {
+                                after.onAfterAdd(serverInfo);
+                            }
+                        }
+                        dialog.dismiss();
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
     }
 
 }

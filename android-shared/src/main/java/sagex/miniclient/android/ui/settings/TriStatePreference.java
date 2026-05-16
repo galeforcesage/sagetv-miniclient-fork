@@ -1,9 +1,10 @@
 package sagex.miniclient.android.ui.settings;
 
 import android.content.Context;
+import android.graphics.drawable.GradientDrawable;
 import android.util.AttributeSet;
 import android.view.View;
-import android.widget.CheckBox;
+import android.widget.TextView;
 
 import androidx.annotation.Nullable;
 import androidx.preference.Preference;
@@ -14,16 +15,18 @@ import sagex.miniclient.prefs.TriState;
 
 /**
  * Three-state preference widget used by the Phase 2 "Automatic-First" settings
- * UX. A row shows a checkbox plus the title with a trailing superscript marker:
+ * UX. A row shows a coloured pill on the right plus the title with a trailing
+ * superscript marker.
  *
  * <ul>
- *   <li>{@link TriState#AUTO}  — checkbox reflects {@link #setAutoValue(boolean)},
- *       title gets a superscript {@code ᵃ}. The visual is dimmed slightly so
- *       the user can see the value is auto-derived rather than pinned.</li>
- *   <li>{@link TriState#ON}    — checkbox checked, title gets a superscript
- *       {@code ᵒ}.</li>
- *   <li>{@link TriState#OFF}   — checkbox unchecked, title gets a superscript
- *       {@code ᵒ}.</li>
+ *   <li>{@link TriState#AUTO}  — pill text "AUTO·ON" or "AUTO·OFF" depending
+ *       on the auto-detected value supplied via {@link #setAutoValue(boolean)};
+ *       background grey to indicate "system decided". Title gets superscript
+ *       {@code ᵃᵘᵗᵒ}.</li>
+ *   <li>{@link TriState#ON}    — pill text "ON", green background; title
+ *       superscript {@code ᵒⁿ}.</li>
+ *   <li>{@link TriState#OFF}   — pill text "OFF", red background; no
+ *       superscript.</li>
  * </ul>
  *
  * <p>Tapping the row cycles {@code AUTO → ON → OFF → AUTO}. Long-press jumps
@@ -31,7 +34,7 @@ import sagex.miniclient.prefs.TriState;
  * form returned by {@link TriState#toPrefValue()}.</p>
  *
  * <p>{@link #setAutoValue(boolean)} should be called by the hosting fragment
- * after the auto-detected capability is known so the AUTO checkbox visual is
+ * after the auto-detected capability is known so the AUTO pill text is
  * accurate. It does not change the persisted value.</p>
  */
 public class TriStatePreference extends Preference
@@ -152,14 +155,36 @@ public class TriStatePreference extends Preference
     public void onBindViewHolder(PreferenceViewHolder holder)
     {
         super.onBindViewHolder(holder);
-        View widget = holder.findViewById(R.id.tristate_checkbox);
-        if (widget instanceof CheckBox)
+        View widget = holder.findViewById(R.id.tristate_label);
+        if (widget instanceof TextView)
         {
-            CheckBox cb = (CheckBox) widget;
-            cb.setChecked(isEffectivelyOn());
-            // Dim slightly when the value comes from auto-detection so the
-            // user can tell at a glance which rows are pinned.
-            cb.setAlpha(state == TriState.AUTO ? 0.55f : 1.0f);
+            TextView label = (TextView) widget;
+            String text;
+            int bgColor;
+            switch (state)
+            {
+                case ON:
+                    text = "ON";
+                    bgColor = 0xFF2E7D32; // green 800
+                    break;
+                case OFF:
+                    text = "OFF";
+                    bgColor = 0xFFC62828; // red 800
+                    break;
+                case AUTO:
+                default:
+                    text = autoValue ? "AUTO\u00b7ON" : "AUTO\u00b7OFF";
+                    bgColor = 0xFF616161; // grey 700
+                    break;
+            }
+            label.setText(text);
+            // Rounded pill background; build at runtime so we don't need
+            // a separate drawable XML per colour.
+            GradientDrawable pill = new GradientDrawable();
+            pill.setShape(GradientDrawable.RECTANGLE);
+            pill.setCornerRadius(label.getResources().getDisplayMetrics().density * 4f);
+            pill.setColor(bgColor);
+            label.setBackground(pill);
         }
         // Long-press anywhere on the row resets to AUTO.
         holder.itemView.setOnLongClickListener(new View.OnLongClickListener()

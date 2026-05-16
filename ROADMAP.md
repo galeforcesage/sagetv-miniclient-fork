@@ -56,9 +56,10 @@ Done so far:
   or remuxes, which can happen in Automatic / Dynamic / Fixed).
 
 To do:
-- `TriStatePreference` custom widget — checkbox-with-superscript control
-  (`ᵃ` for auto-derived value, `ᵒ` for user override). Tap cycles AUTO →
-  ON → OFF → AUTO; long-press resets to AUTO.
+- ~~`TriStatePreference` custom widget~~ ✅ Replaced ambiguous checkbox
+  with a coloured pill on the right of each row (`AUTO·ON` / `AUTO·OFF`
+  grey, `ON` green, `OFF` red) plus the title-superscript marker. Tap
+  cycles AUTO → ON → OFF → AUTO; long-press resets to AUTO.
 - Convert ExoPlayer FFmpeg Extension setting to tri-state.
 - Codec & Container Settings submenu rebuild — items generated dynamically
   from the union of `MediaCodecList` (REGULAR_CODECS), IJK FFmpeg software
@@ -90,6 +91,97 @@ player can't actually decode.
 Split into per-player capability sets and advertise the appropriate one
 based on the active player preference / per-stream selection. Best built
 on top of Phase 2's tri-state foundation.
+
+## Phone / non-Leanback mode
+
+The app currently targets Android TV (Leanback) primarily. When run on a
+phone or tablet (non-Leanback launcher), playback has two visible issues:
+
+- **Aspect-ratio scaling.** Video is currently stretched to fill the surface
+  on phone, distorting 4:3 SD content and 16:9 HD content alike when the
+  device aspect ratio doesn't match. Should letterbox/pillarbox to preserve
+  the source aspect ratio (black bars top/bottom or left/right as needed).
+  Implementation: detect non-Leanback at startup (`PackageManager.
+  hasSystemFeature(FEATURE_LEANBACK)`); when false, set the video Surface
+  / `AspectRatioFrameLayout` resize mode to `RESIZE_MODE_FIT` (currently
+  `RESIZE_MODE_FILL` or unset). Plumb actual stream aspect ratio via
+  `onVideoSizeChanged()` from both Exo and IJK players. Add a settings
+  toggle (Fit / Fill / Zoom) so users can override per-device.
+
+- **Screen rotation.** App is currently locked to landscape. On phones
+  users want both landscape and portrait playback (e.g. holding the phone
+  upright when watching a 4:3 newscast or filling the screen sideways for
+  16:9). Implementation: detect non-Leanback; if true, set
+  `screenOrientation="unspecified"` (or `"sensor"`) instead of the current
+  `"landscape"` in the relevant Activity entries. Ensure GDX surface,
+  ExoPlayer surface, and IJK surface all handle configuration changes
+  without tearing down playback (declare `configChanges="orientation|
+  screenSize|screenLayout"` and re-bind surface in `onConfigurationChanged`).
+  Persist last-used orientation per device.
+
+## Per-server legacy / NG mode
+
+The global `legacy_server_compat` checkbox is a stop-gap. Households with
+both a 9.2.x server and an SageTV-NG server need different codec/container
+advertisement per server, so this needs to live on the `ServerInfo` record.
+
+Plan:
+- Add `legacyMode` enum (AUTO / LEGACY / NG) to `ServerInfo`, persisted as
+  `servers/<key>/legacy_mode`. Default AUTO.
+- `MiniClientConnection` consults `client.getConnectedServerInfo().legacyMode`
+  instead of the global pref. AUTO starts in NG mode.
+- On the **first** OPENURL that fails with `IO_UNSPECIFIED` (or related
+  negotiation-mismatch errors) on an AUTO server, flip that server to
+  LEGACY, drop+rebuild the player, and reload. Sticky from then on.
+- Server-edit UI (where name/IP/port live) gains a 3-way radio: Auto /
+  Legacy (pre-NG, 9.2.x) / NG.
+- Remove the global `legacy_server_compat` checkbox from `prefs.xml` and
+  the corresponding hard branches in `MiniClientConnection`'s
+  `VIDEO_CODECS` / `AUDIO_CODECS` / `PUSH_AV_CONTAINERS` /
+  `PULL_AV_CONTAINERS` handlers — their AUTO branch instead consults the
+  per-capability `TriState` resolver (see Phase 2/3) which uses the
+  per-server legacy mode to pick its baseline.
+- No data migration. New installs and existing installs both start AUTO
+  on every server; the IO_UNSPECIFIED self-heal does the rest.
+
+## Auto player selection (Exo ↔ IJK)
+
+Default player is a manual user choice today (Exo or IJK). For known
+landmines the client should silently pick the right one for that one
+stream so the user doesn't have to know which player handles which codec.
+
+Plan, in priority order:
+
+1. **Pre-emptive URL inspection (primary).** At OPENURL, parse the
+   `push:` URL's container and codec hints. If the combination is on the
+   known-Exo-broken list, instantiate IJK for this stream regardless of
+   the user's preference. The first concrete entry on that list:
+   - `f=MPEG2-PS` containing `[bf=vid;f=MPEG4]` (MPEG-4 Part 2 in MPEG
+     program stream) — `PsExtractor.H262Reader.parseCsdBuffer` AIOOBE
+     in ExoPlayer 2.18.1; IJK demuxes natively.
+   No spinner penalty: the player is selected once, before any data
+   flows. Other entries can be added as we hit them.
+
+2. **Reactive error fallback (safety net).** If ExoPlayer surfaces
+   `ERROR_CODE_PARSING_CONTAINER_MALFORMED` (or similar demux-level
+   parse errors) on initial sniff and the URL was *not* on the known
+   list, swap to IJK for this stream and remember the URL
+   container/codec signature so the next play of a similar stream goes
+   straight to IJK without the failed first attempt. Cache lives in
+   `MiniClient` for the session; consider persisting later if the list
+   stabilises.
+
+3. **User preference (fallback).** When neither rule fires, use the
+   user-selected default player. Setting label can stay "Default
+   Player"; the auto-swap is invisible unless something on the
+   landmine list shows up.
+
+Non-goals (for v1):
+- No keep-warm second player. Each swap pays the ~300–500 ms cold-start
+  cost. Revisit if instrumentation says it matters.
+- No toast / on-screen indication of the swap. If users want to know
+  which player handled a stream, expose it in the existing OSD/info
+  overlay later.
 
 ## Network latency resilience
 

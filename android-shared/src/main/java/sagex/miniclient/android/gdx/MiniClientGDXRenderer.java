@@ -39,6 +39,7 @@ import sagex.miniclient.MiniClientConnection;
 import sagex.miniclient.MiniPlayerPlugin;
 import sagex.miniclient.android.ui.AndroidUIController;
 import sagex.miniclient.android.video.BaseMediaPlayerImpl;
+import sagex.miniclient.android.video.PlayerSelectionUtil;
 import sagex.miniclient.android.video.exlink.ExternalLinkPlayerImpl;
 import sagex.miniclient.android.video.exoplayer2.Exo2MediaPlayerImpl;
 import sagex.miniclient.android.video.ijkplayer.IJKMediaPlayerImpl;
@@ -858,6 +859,15 @@ public class MiniClientGDXRenderer implements ApplicationListener, UIRenderer<Gd
 
         if (activity.isSwitchingPlayerOneTime()) {
             useExoPlayer = !useExoPlayer;
+        }
+
+        // URL-inspection landmine swap: ExoPlayer 2.18.1's PsExtractor crashes
+        // on MPEG-4 Part 2 inside MPEG-PS (the 9.2.x "dynamic Placeshifter"
+        // transcode path). Force IJK for that exact pattern even when the user
+        // prefers ExoPlayer — avoids 12 wasted retry cycles and a black screen.
+        if (useExoPlayer && PlayerSelectionUtil.isExoPsMpeg4Landmine(urlString)) {
+            log.warn("ExoPlayer landmine detected (MPEG-4 in MPEG-PS): swapping to IJK for this stream. URL={}", urlString);
+            useExoPlayer = false;
         }
 
         if (useExoPlayer) {

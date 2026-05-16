@@ -817,6 +817,45 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 log.logDebug("PLAYER ERROR: " + error.getErrorCodeName());
                 error.printStackTrace();
 
+                // AUTO-mode legacy-server detection: ERROR_CODE_IO_UNSPECIFIED
+                // on first OPENURL is the canonical signal that a SageTV 9.2.x
+                // server's profile resolver couldn't match our NG capability
+                // advertisement. Flip the connected ServerInfo to LEGACY and
+                // persist; a one-shot toast tells the user to reconnect.
+                // Only fires once per playback session (retryCount == 0) so
+                // we don't spam during the existing 12-retry loop.
+                //
+                // GUARD: do NOT flip if this URL is the known ExoPlayer-PsExtractor
+                // landmine (MPEG-4 Part 2 in MPEG-PS). That's a *decoder* problem
+                // already routed around by PlayerSelectionUtil at newPlayerPlugin
+                // time on most code paths; if we still got here it means the user
+                // is forcing ExoPlayer for this stream. Flipping AUTO→LEGACY would
+                // tell the server "I can play MPEG-2 raw" which is wrong on devices
+                // without an MPEG-2 hardware decoder (e.g. Galaxy Fold) and would
+                // strand the user with silent video on every subsequent play.
+                if (retryCount == 0
+                        && error.errorCode == PlaybackException.ERROR_CODE_IO_UNSPECIFIED
+                        && !sagex.miniclient.android.video.PlayerSelectionUtil.isExoPsMpeg4Landmine(url)
+                        && context != null && context.getClient() != null
+                        && context.getClient().getCurrentConnection() != null)
+                {
+                    try
+                    {
+                        boolean flipped = context.getClient().getCurrentConnection()
+                                .notifyServerCompatibilityFailure();
+                        if (flipped)
+                        {
+                            context.showErrorMessage(
+                                    "Detected legacy SageTV server. Reconnect to enable compatibility mode.",
+                                    "Exo2MediaPlayer");
+                        }
+                    }
+                    catch (Throwable t)
+                    {
+                        log.logWarning("notifyServerCompatibilityFailure raised: " + t);
+                    }
+                }
+
                 // Push-mode flush-rebuild race: super.flush() clears the
                 // native ring while a previous prepare's Loader is still
                 // sniffing → cancellation surfaces as MALFORMED_CONTAINER.

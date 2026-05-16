@@ -13,6 +13,43 @@ public class ServerInfo implements Serializable, Comparable<ServerInfo>, Cloneab
     public static final int DIRECT_CONNECT_SERVER = 2;
     public static final int LOCATABLE_SERVER = 3;
 
+    /**
+     * How this client should advertise its codec/container capabilities to
+     * this particular server. Different SageTV server vintages parse the
+     * advertisement differently:
+     *
+     * <ul>
+     *   <li>{@link #AUTO} (default for new servers) — start in NG mode and
+     *       fall back to LEGACY automatically if the server returns
+     *       {@code IO_UNSPECIFIED} (or similar negotiation-mismatch error)
+     *       on the first OPENURL. The fallback is sticky for that server.
+     *   <li>{@link #LEGACY} — always advertise the fixed Placeshifter
+     *       baseline. Use for SageTV 9.2.x and older servers whose profile
+     *       resolver doesn't understand modern token names like "MP3" or
+     *       "MPEG2-AUDIO".
+     *   <li>{@link #NG} — always advertise the device's auto-detected
+     *       capabilities. Use for SageTV-NG servers that negotiate richer
+     *       codec sets (HEVC, AC-4, etc.).
+     * </ul>
+     */
+    public enum LegacyMode {
+        AUTO, LEGACY, NG;
+
+        public static LegacyMode fromPrefValue(String s) {
+            if (s == null) return AUTO;
+            switch (s.toLowerCase()) {
+                case "legacy": return LEGACY;
+                case "ng":     return NG;
+                case "auto":
+                default:       return AUTO;
+            }
+        }
+
+        public String toPrefValue() {
+            return name().toLowerCase();
+        }
+    }
+
     public String address;
     public int port = 31099;
     public String name;
@@ -24,6 +61,13 @@ public class ServerInfo implements Serializable, Comparable<ServerInfo>, Cloneab
 
     public String macAddress = null;
     public Boolean use_stateful_remote=null;
+
+    /**
+     * Per-server legacy/NG capability advertisement mode. See {@link LegacyMode}.
+     * Defaults to {@link LegacyMode#AUTO}; the AUTO→LEGACY auto-flip on
+     * IO_UNSPECIFIED is wired in {@code MiniClientConnection}.
+     */
+    public LegacyMode legacyMode = LegacyMode.AUTO;
 
     public ServerInfo() {
     }
@@ -126,6 +170,9 @@ public class ServerInfo implements Serializable, Comparable<ServerInfo>, Cloneab
         if (use_stateful_remote!=null) {
             store.setBoolean("servers/" + name + "/use_stateful_remote", use_stateful_remote);
         }
+        // Always persist legacy mode so explicit user overrides survive even
+        // when the value is the AUTO default (matches what UI expects).
+        store.setString("servers/" + name + "/legacy_mode", legacyMode.toPrefValue());
     }
 
     public void load(String name, PrefStore store) {
@@ -140,6 +187,8 @@ public class ServerInfo implements Serializable, Comparable<ServerInfo>, Cloneab
         if (store.contains("servers/" + name + "/use_stateful_remote")) {
             use_stateful_remote = store.getBoolean("servers/" + name + "/use_stateful_remote", true);
         }
+        legacyMode = LegacyMode.fromPrefValue(
+                store.getString("servers/" + name + "/legacy_mode", LegacyMode.AUTO.toPrefValue()));
     }
 
     public boolean isLocatorOnly() {

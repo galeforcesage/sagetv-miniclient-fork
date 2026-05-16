@@ -34,11 +34,11 @@
             android:summary="Change how the application reports to SageTV which containers and codecs it supports. This can be helpful if a specific device does not handle a specific codec or container well"
             android:key="container_codec_settings"/>
 
-        <CheckBoxPreference
-            android:defaultValue="false"
-            android:key="legacy_server_compat"
-            android:title="Legacy SageTV Server (pre-NG / 9.2.x)"
-            android:summary="Advertise a fixed Windows Placeshifter capability profile to the server instead of the device's auto-detected codecs/containers. Enable when connecting to a SageTV 9.2.x server. Leave OFF for SageTV-NG."/>
+        <!-- Legacy SageTV server (pre-NG / 9.2.x) compatibility is now per-server.
+             Long-press a server tile on the connect screen and choose
+             "Server Mode (Auto/Legacy/NG)". The default Auto mode advertises
+             the full NG capability set and auto-flips to Legacy on the first
+             OPENURL IO_UNSPECIFIED. -->
 
         <Preference android:title="ExoPlayer Settings and Information"
             android:summary="Change the behavior of ExoPlayer and see supported codecs and version info"

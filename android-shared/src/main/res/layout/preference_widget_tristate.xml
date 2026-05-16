@@ -1,15 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Widget layout for TriStatePreference. Non-focusable / non-clickable so the
-  parent row receives clicks and the preference's onClick() handles state
-  cycling. The checkbox is decorative — it reflects the resolved value but is
-  not the click target.
+  Widget layout for TriStatePreference. A single TextView pill shows the
+  current state explicitly so all three states (AUTO·ON, AUTO·OFF, ON,
+  OFF) are unambiguously distinguishable at a glance. Background colour is
+  set in code by TriStatePreference.onBindViewHolder().
+
+  Non-focusable / non-clickable so the parent row receives clicks and the
+  preference's onClick() handles state cycling.
 -->
-<CheckBox xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/tristate_checkbox"
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/tristate_label"
     android:layout_width="wrap_content"
     android:layout_height="wrap_content"
-    android:layout_gravity="center"
+    android:layout_gravity="center_vertical|end"
     android:focusable="false"
     android:clickable="false"
-    android:background="@null" />
+    android:minWidth="84dp"
+    android:gravity="center"
+    android:paddingStart="10dp"
+    android:paddingEnd="10dp"
+    android:paddingTop="4dp"
+    android:paddingBottom="4dp"
+    android:textSize="12sp"
+    android:textStyle="bold"
+    android:textColor="#FFFFFFFF"
+    android:text="AUTO" />
+

@@ -16,6 +16,9 @@
         android:id="@+id/menu_duplicate"
         android:title="Duplicate"/>
     <item
+        android:id="@+id/menu_legacy_mode"
+        android:title="Server Mode (Auto/Legacy/NG)"/>
+    <item
         android:id="@+id/menu_remove"
         android:title="Remove"/>
 </menu>

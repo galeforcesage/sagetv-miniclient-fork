@@ -307,6 +307,73 @@ public class MiniClientConnection implements SageTVInputCallback
     private MenuHint menuHint = new MenuHint();
     private Properties profileProperties;
 
+    /**
+     * Resolves whether this connection should advertise the fixed Placeshifter
+     * legacy capability profile to the server. Order of precedence:
+     *
+     * <ol>
+     *   <li>Per-server {@link ServerInfo#legacyMode}: LEGACY → true; NG → false.
+     *   <li>AUTO: starts false (NG); the OPENURL IO_UNSPECIFIED hook may flip
+     *       it to LEGACY at runtime and re-save the ServerInfo.
+     *   <li>Backward-compat fallback: the deprecated global
+     *       {@code legacy_server_compat} pref. New installs never write it;
+     *       leave the read in place until existing installs have migrated.
+     * </ol>
+     */
+    public boolean isLegacyServerCompat()
+    {
+        if (msi != null && msi.legacyMode != null)
+        {
+            switch (msi.legacyMode)
+            {
+                case LEGACY: return true;
+                case NG:     return false;
+                case AUTO:
+                default:     break;  // fall through to global fallback
+            }
+        }
+        return client.properties().getBoolean(PrefStore.Keys.legacy_server_compat, false);
+    }
+
+    /**
+     * Called by the active player when it sees an error that strongly
+     * suggests the server doesn't understand our NG capability advertisement
+     * (e.g. {@code ERROR_CODE_IO_UNSPECIFIED} on first OPENURL because the
+     * server's profile resolver couldn't pick a transcode/remux path).
+     *
+     * <p>If the connected server is in {@link ServerInfo.LegacyMode#AUTO}
+     * mode, flip it to {@link ServerInfo.LegacyMode#LEGACY} and persist so
+     * the next reconnect advertises the Placeshifter baseline. Manual
+     * pins (LEGACY or NG explicitly) are respected and not changed.</p>
+     *
+     * <p>This v1 just persists — the user must back out and reconnect for
+     * the new caps to take effect (capabilities are exchanged at handshake
+     * time, not per OPENURL). A future improvement could trigger an
+     * automatic reconnect via the existing GFXCMD_MEDIA_RECONNECT path.</p>
+     *
+     * @return true if the auto-flip happened (caller may want to surface a
+     *         user-visible message); false if no change.
+     */
+    public boolean notifyServerCompatibilityFailure()
+    {
+        if (msi == null || msi.legacyMode != ServerInfo.LegacyMode.AUTO)
+        {
+            return false;
+        }
+        log.logInfo("Server '" + msi.name + "' returned a negotiation-mismatch error in AUTO mode; "
+                + "flipping legacyMode → LEGACY and persisting. Reconnect to apply.");
+        msi.legacyMode = ServerInfo.LegacyMode.LEGACY;
+        try
+        {
+            msi.save(client.properties());
+        }
+        catch (Throwable t)
+        {
+            log.logError("Failed to persist legacyMode flip for server '" + msi.name + "'", t);
+        }
+        return true;
+    }
+
     public MiniClientConnection(MiniClient client, String myID, ServerInfo msi, ILogger log)
     {
         this.log = log;
@@ -1121,15 +1188,11 @@ public class MiniClientConnection implements SageTVInputCallback
                     }
                     else if ("VIDEO_CODECS".equals(propName))
                     {
-                        if (client.properties().getBoolean(PrefStore.Keys.legacy_server_compat, false))
+                        if (isLegacyServerCompat())
                         {
-                            // 9.2.x server: advertise the EXACT original Placeshifter
-                            // codec set (sourced from MiniClientConnection commit eec5131,
-                            // pre-codec-detection era). The server's profile resolver
-                            // matches on these exact tokens; modern names like "MP3" or
-                            // "MPEG2-AUDIO" don't map and cause it to fall back to paths
-                            // that produce IO_UNSPECIFIED.
-                            propVal = "MPEG2-VIDEO,MPEG2-VIDEO@HL,MPEG1-VIDEO,MPEG4-VIDEO,DIVX3,MSMPEG4,FLASHVIDEO,H.264,WMV9,VC1,MJPEG,HEVC";
+                            // 9.2.x server: device-aware Placeshifter advertisement.
+                            // See LEGACY_VIDEO_UNIVERSE comment block for rationale.
+                            propVal = legacyAdvertise("VIDEO_CODECS", LEGACY_VIDEO_UNIVERSE, videoCodecs);
                         }
                         else if (client.properties().getFixedEncodingPreference().equalsIgnoreCase("always")
                                 && effectiveStreamingMode.equalsIgnoreCase("fixed"))
@@ -1146,12 +1209,13 @@ public class MiniClientConnection implements SageTVInputCallback
                     }
                     else if ("AUDIO_CODECS".equals(propName))
                     {
-                        if (client.properties().getBoolean(PrefStore.Keys.legacy_server_compat, false))
+                        if (isLegacyServerCompat())
                         {
-                            // 9.2.x server: original Placeshifter audio token list.
-                            // Note: MPG1L2/MPG1L3 = MPEG-1 Layer 2/3 (NOT "MP3"/"MPEG2-AUDIO");
-                            // EC-3 is the alt spelling of EAC3; both included for safety.
-                            propVal = "MPG1L2,MPG1L3,AC3,AAC,AAC-HE,WMA,FLAC,VORBIS,PCM,DTS,DCA,PCM_S16LE,WMA8,ALAC,WMAPRO,0X0162,DolbyTrueHD,DTS-HD,DTS-MA,EAC3,EC-3";
+                            // 9.2.x server: device-aware Placeshifter advertisement.
+                            // Drops decoder tokens the device can't actually handle
+                            // (e.g. DTS-HD on devices without DTS HW) so the resolver
+                            // picks an audio target the client can play.
+                            propVal = legacyAdvertise("AUDIO_CODECS", LEGACY_AUDIO_UNIVERSE, audioCodecs);
                         }
                         else if (client.properties().getFixedEncodingPreference().equalsIgnoreCase("always")
                                 && effectiveStreamingMode.equalsIgnoreCase("fixed"))
@@ -1170,11 +1234,13 @@ public class MiniClientConnection implements SageTVInputCallback
                     }
                     else if ("PUSH_AV_CONTAINERS".equals(propName))
                     {
-                        if (client.properties().getBoolean(PrefStore.Keys.legacy_server_compat, false))
+                        if (isLegacyServerCompat())
                         {
-                            // 9.2.x server: advertise only the push containers a
-                            // Windows Placeshifter would.
-                            propVal = "MPEG2-PS,MPEG2-TS,MPEG1-PS";
+                            // 9.2.x server: device-aware Placeshifter push container set.
+                            // Most modern Android devices handle MPEG2-TS; MPEG2-PS is
+                            // the ExoPlayer-PsExtractor landmine container but the
+                            // PlayerSelectionUtil swap routes around that at OPENURL time.
+                            propVal = legacyAdvertise("PUSH_AV_CONTAINERS", LEGACY_PUSH_UNIVERSE, pushFormats);
                         }
                         else if (((client.properties().getFixedEncodingPreference().equalsIgnoreCase("always")
                             || client.properties().getFixedRemuxingPreference().equalsIgnoreCase("always"))
@@ -1212,13 +1278,13 @@ public class MiniClientConnection implements SageTVInputCallback
                         PULL - Containers we can read without transcoding.
                         Set this to empty if we are remote or if we are fixed and preference is to always transcode or always remux
                         */
-                        if (client.properties().getBoolean(PrefStore.Keys.legacy_server_compat, false))
+                        if (isLegacyServerCompat())
                         {
-                            // 9.2.x server: advertise only Placeshifter pull containers.
+                            // 9.2.x server: device-aware Placeshifter pull container set.
                             if (!canDoPullStreaming)
                                 propVal = "";
                             else
-                                propVal = "AVI,FLASHVIDEO,Quicktime,Ogg,MP3,AAC,WMV,ASF,FLAC,MATROSKA,WAV,AC3";
+                                propVal = legacyAdvertise("PULL_AV_CONTAINERS", LEGACY_PULL_UNIVERSE, pullFormats);
                         }
                         else if (!canDoPullStreaming
                                 || ((client.properties().getFixedEncodingPreference().equalsIgnoreCase("always")
@@ -1786,6 +1852,132 @@ public class MiniClientConnection implements SageTVInputCallback
             {
                 sb.append(",");
             }
+            sb.append(s);
+        }
+        return sb.toString();
+    }
+
+    // -----------------------------------------------------------------
+    // Device-aware LEGACY (SageTV 9.2.x Placeshifter) capability sets.
+    //
+    // Each *_UNIVERSE array is the verbatim original Placeshifter list as
+    // sourced from the pre-codec-detection era of MiniClientConnection
+    // (commit eec5131 etc.). The order matters: the 9.2.x dynamic-profile
+    // resolver biases its codec/container picker based on the order our
+    // client lists them. We preserve order strictly and only *remove*
+    // tokens for codecs/containers the device cannot actually handle.
+    //
+    // Why this matters: on devices without an MPEG-2 hardware decoder
+    // (Samsung Fold, Galaxy Tab, Pixel, etc.), advertising MPEG2-VIDEO
+    // tells the 9.2.x server "send raw MPEG-2" — the client then has no
+    // way to render it (silent video). Likewise advertising MPEG4-VIDEO
+    // when the device can't decode MPEG-4 Part 2 lets the resolver pick
+    // a transcode target it shouldn't, and even on devices that *can*
+    // decode it, MPEG-4 Part 2 sits ahead of H.264 in the universe so
+    // the resolver picks the lower-quality target. Dropping MPEG-4 from
+    // the advertisement on devices where it isn't a true HW path bumps
+    // the resolver onto H.264, which is dramatically higher quality at
+    // the same bitrate.
+    //
+    // Devices WITH MPEG-2 HW (Shield TV etc.) keep MPEG-2 first → server
+    // direct-plays raw OTA → best possible quality, no regression.
+    //
+    // For the NG case we send the full HW-detected list as before; this
+    // helper is only consulted from the LEGACY branches.
+    // -----------------------------------------------------------------
+
+    // Order matters: SageTV's dynamic-profile resolver biases toward
+    // earlier tokens in this list. We put MPEG-2 first so devices with
+    // MPEG-2 HW (Shield) get raw direct play, then modern codecs
+    // (H.264 / HEVC / VC1) so devices WITHOUT MPEG-2 HW (Fold/Tab) get
+    // an H.264 transcode rather than MPEG-4 Part 2 ASP. MPEG4-VIDEO and
+    // friends sit at the back as last-resort fallbacks.
+    private static final String[] LEGACY_VIDEO_UNIVERSE = {
+            "MPEG2-VIDEO", "MPEG2-VIDEO@HL", "MPEG1-VIDEO",
+            "H.264", "HEVC", "VC1", "WMV9",
+            "MPEG4-VIDEO", "DIVX3", "MSMPEG4", "FLASHVIDEO", "MJPEG"
+    };
+
+    private static final String[] LEGACY_AUDIO_UNIVERSE = {
+            "MPG1L2", "MPG1L3", "AC3", "AAC", "AAC-HE",
+            "WMA", "FLAC", "VORBIS", "PCM", "DTS", "DCA",
+            "PCM_S16LE", "WMA8", "ALAC", "WMAPRO", "0X0162",
+            "DolbyTrueHD", "DTS-HD", "DTS-MA", "EAC3", "EC-3"
+    };
+
+    private static final String[] LEGACY_PUSH_UNIVERSE = {
+            "MPEG2-PS", "MPEG2-TS", "MPEG1-PS"
+    };
+
+    private static final String[] LEGACY_PULL_UNIVERSE = {
+            "AVI", "FLASHVIDEO", "Quicktime", "Ogg", "MP3", "AAC",
+            "WMV", "ASF", "FLAC", "MATROSKA", "WAV", "AC3"
+    };
+
+    /**
+     * Intersects a Placeshifter universe with the device's HW-detected
+     * token list, preserving the universe's ordering. Case-insensitive.
+     *
+     * <p>If {@code deviceTokens} is null/empty (codec detection didn't
+     * run yet) or the intersection comes out empty (would brick the
+     * server), we fall back to the full universe so the server has
+     * <em>something</em> to try. Both paths log a warning so the
+     * fallback is visible in diagnostics.</p>
+     *
+     * @param label         category name for log lines (e.g. "VIDEO_CODECS")
+     * @param universe      original Placeshifter token list
+     * @param deviceTokens  the matching field on this connection
+     *                      ({@code videoCodecs}, {@code audioCodecs}, etc.)
+     * @return comma-separated token string suitable for SageTV propVal
+     */
+    private String legacyAdvertise(String label, String[] universe, List<String> deviceTokens)
+    {
+        if (deviceTokens == null || deviceTokens.isEmpty())
+        {
+            log.logWarning("LEGACY " + label + ": device codec list empty; advertising full Placeshifter universe");
+            return joinTokens(universe);
+        }
+
+        java.util.Set<String> deviceSet = new java.util.HashSet<String>();
+        for (String t : deviceTokens)
+        {
+            if (t != null) deviceSet.add(t.toLowerCase(java.util.Locale.ROOT));
+        }
+
+        StringBuilder kept = new StringBuilder();
+        StringBuilder dropped = new StringBuilder();
+        for (String token : universe)
+        {
+            String lc = token.toLowerCase(java.util.Locale.ROOT);
+            if (deviceSet.contains(lc))
+            {
+                if (kept.length() > 0) kept.append(",");
+                kept.append(token);
+            }
+            else
+            {
+                if (dropped.length() > 0) dropped.append(",");
+                dropped.append(token);
+            }
+        }
+
+        if (kept.length() == 0)
+        {
+            log.logWarning("LEGACY " + label + ": intersection empty (device list=" + deviceTokens
+                    + "); advertising full Placeshifter universe as fallback");
+            return joinTokens(universe);
+        }
+
+        log.logInfo("LEGACY " + label + " advertise: keep=[" + kept + "] drop=[" + dropped + "]");
+        return kept.toString();
+    }
+
+    private static String joinTokens(String[] arr)
+    {
+        StringBuilder sb = new StringBuilder();
+        for (String s : arr)
+        {
+            if (sb.length() > 0) sb.append(",");
             sb.append(s);
         }
         return sb.toString();
