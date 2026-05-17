@@ -741,9 +741,35 @@ public class MiniClientConnection implements SageTVInputCallback
         //
         // If pull is available (port 7818 reachable), always use it.
         // If push-only (remote/Placeshifter), use dynamic to avoid FFmpeg dependency.
-        final String userStreamingMode = client.properties().getStreamingMode();
+        //
+        // Per-server override: ServerInfo.streamingModeOverride wins over both
+        // the global pref and the pull-prefer auto-override below. Lets the
+        // user pin a stock SageTV 9.2.x server to FIXED (so the client's
+        // FIXED_PUSH_MEDIA_FORMAT recipe is respected) while leaving an NG
+        // server on AUTOMATIC/PULL. Existing users default to INHERIT so
+        // single-server setups see no change.
+        final String userStreamingMode;
+        final ServerInfo overrideSi = (client != null) ? client.getConnectedServerInfo() : null;
+        final ServerInfo.StreamingModeOverride perServer =
+                (overrideSi != null) ? overrideSi.streamingModeOverride : ServerInfo.StreamingModeOverride.INHERIT;
+        if (perServer != null && perServer != ServerInfo.StreamingModeOverride.INHERIT) {
+            switch (perServer) {
+                case AUTOMATIC: userStreamingMode = "automatic"; break;
+                case PULL:      userStreamingMode = "pull";      break;
+                case DYNAMIC:   userStreamingMode = "dynamic";   break;
+                case FIXED:     userStreamingMode = "fixed";     break;
+                default:        userStreamingMode = client.properties().getStreamingMode();
+            }
+            log.logInfo("STREAMING per-server override: '" + perServer + "' -> '" + userStreamingMode
+                    + "' (server: " + (overrideSi != null ? overrideSi.name : "?") + ")");
+        } else {
+            userStreamingMode = client.properties().getStreamingMode();
+        }
         final String effectiveStreamingMode;
         final boolean userIsAutomatic = "automatic".equalsIgnoreCase(userStreamingMode);
+        final boolean perServerExplicit =
+                perServer != null && perServer != ServerInfo.StreamingModeOverride.INHERIT
+                        && perServer != ServerInfo.StreamingModeOverride.AUTOMATIC;
 
         if (userIsAutomatic) {
             // Automatic: pick the best mode based on connectivity.
@@ -751,6 +777,14 @@ public class MiniClientConnection implements SageTVInputCallback
             //   - dynamic otherwise (raw push first, then server falls back to remux/transcode)
             effectiveStreamingMode = canDoPullStreaming ? "pull" : "dynamic";
             log.logInfo("STREAMING AUTOMATIC: resolved to '" + effectiveStreamingMode
+                    + "' (pull available: " + canDoPullStreaming + ")");
+        } else if (perServerExplicit) {
+            // User pinned a per-server explicit mode. Do NOT auto-override to pull
+            // even if port 7818 is reachable -- that's the whole point of the
+            // override (lets the user keep a stock SageTV 9.2.x tile on FIXED for
+            // higher-quality transcode while NG tiles ride PULL).
+            effectiveStreamingMode = userStreamingMode;
+            log.logInfo("STREAMING per-server explicit: keeping '" + effectiveStreamingMode
                     + "' (pull available: " + canDoPullStreaming + ")");
         } else if (canDoPullStreaming) {
             // User picked an explicit mode but pull is reachable -- keep current behavior of

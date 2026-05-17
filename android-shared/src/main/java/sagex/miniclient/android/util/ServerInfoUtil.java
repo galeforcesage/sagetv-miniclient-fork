@@ -49,6 +49,8 @@ public class ServerInfoUtil {
             onDuplicate(context, serverInfo, after);
         } else if (item.getItemId() == R.id.menu_legacy_mode) {
             onSetLegacyMode(context, serverInfo, after);
+        } else if (item.getItemId() == R.id.menu_streaming_mode) {
+            onSetStreamingMode(context, serverInfo, after);
         } else if (item.getItemId() == R.id.menu_connect) {
             connect(context, serverInfo);
         } else if (item.getItemId() == R.id.menu_connect_locator) {
@@ -244,6 +246,66 @@ public class ServerInfoUtil {
                             log.info("Server '{}' legacyMode set to {}", serverInfo.name, chosen);
                             Toast.makeText(context,
                                     "Mode saved: " + chosen.name() + ". Reconnect to apply.",
+                                    Toast.LENGTH_LONG).show();
+                            if (after != null) {
+                                after.onAfterAdd(serverInfo);
+                            }
+                        }
+                        dialog.dismiss();
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    /**
+     * Per-server Streaming Mode override. Lets the user pin one server tile
+     * to FIXED (stock SageTV 9.2.x with no FIXED_PUSH_MEDIA_FORMAT defaults
+     * to 352x240 MPEG-4 — pinning to FIXED makes the client send its
+     * higher-quality recipe) while another tile inherits the global pref
+     * or rides PULL/AUTOMATIC.
+     */
+    public static void onSetStreamingMode(final Context context, final ServerInfo serverInfo, final OnAfterCommands after) {
+        final ServerInfo.StreamingModeOverride[] modes = ServerInfo.StreamingModeOverride.values();
+        final String[] labels = new String[modes.length];
+        int selected = 0;
+        for (int i = 0; i < modes.length; i++) {
+            switch (modes[i]) {
+                case INHERIT:
+                    labels[i] = "Inherit global pref (default)";
+                    break;
+                case AUTOMATIC:
+                    labels[i] = "Automatic (pull if reachable, else dynamic)";
+                    break;
+                case PULL:
+                    labels[i] = "Pull (zero server CPU; needs port 7818)";
+                    break;
+                case DYNAMIC:
+                    labels[i] = "Dynamic push (server picks transcode)";
+                    break;
+                case FIXED:
+                    labels[i] = "Fixed push (use client Fixed Encoding/Remux)";
+                    break;
+                default:
+                    labels[i] = modes[i].name();
+            }
+            if (modes[i] == serverInfo.streamingModeOverride) {
+                selected = i;
+            }
+        }
+
+        new AlertDialog.Builder(context)
+                .setTitle("Streaming Mode — " + serverInfo.name)
+                .setSingleChoiceItems(labels, selected, new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        ServerInfo.StreamingModeOverride chosen = modes[which];
+                        if (chosen != serverInfo.streamingModeOverride) {
+                            serverInfo.streamingModeOverride = chosen;
+                            serverInfo.save(MiniclientApplication.get().getClient().properties());
+                            log.info("Server '{}' streamingModeOverride set to {}", serverInfo.name, chosen);
+                            Toast.makeText(context,
+                                    "Streaming mode saved: " + chosen.name() + ". Reconnect to apply.",
                                     Toast.LENGTH_LONG).show();
                             if (after != null) {
                                 after.onAfterAdd(serverInfo);

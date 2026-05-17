@@ -2,6 +2,8 @@ package sagex.miniclient.android.ui.keymaps;
 
 import android.content.Context;
 import android.media.AudioManager;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.KeyEvent;
 import android.widget.Toast;
 
@@ -50,6 +52,15 @@ public class KeyMapProcessor {
     boolean longPressCancel = false;
     long longPressTime = 0;
 
+    // Fallback timer for remotes that send a single ACTION_DOWN at press and
+    // ACTION_UP at release (no auto-repeating DOWNs). Without this, the
+    // inline `event.getEventTime() - event.getDownTime()` threshold check
+    // never fires and long-press is unreachable. Shield TV BLE remotes and
+    // several BT replacements behave this way for KEYCODE_DPAD_CENTER.
+    private final Handler longPressHandler = new Handler(Looper.getMainLooper());
+    private Runnable pendingLongPress = null;
+    private int pendingLongPressKeyCode = 0;
+
     protected Context context;
     private MediaMappingPreferences prefs;
     private UIActivityLifeCycleHandler uiHandler;
@@ -80,6 +91,17 @@ public class KeyMapProcessor {
             if (VerboseLogging.LOG_KEYS)
                 log.debug("LONG DOWN: {} - {} -- {}", event.getEventTime(), event.getDownTime(), event);
 
+            // Schedule a Handler-based long-press for remotes that DON'T
+            // repeat ACTION_DOWN. Only arm on the very first DOWN for this
+            // key (downTime == eventTime) so we don't queue duplicates.
+            if (!longPress
+                    && pendingLongPress == null
+                    && keyMap.hasLongPress(keyCode)
+                    && event.getDownTime() == event.getEventTime())
+            {
+                schedulePendingLongPress(keyMap, keyCode, event);
+            }
+
             // check for longpress
             if (!longPress && event.getEventTime() - event.getDownTime() > keyMap.getKeyRepeatDelayMS(keyCode)) {
                 longPress = true;
@@ -88,6 +110,7 @@ public class KeyMapProcessor {
                 if (VerboseLogging.LOG_KEYS)
                     log.debug("FIRE: LongPress {} {}", longPressTime, event);
 
+                cancelPendingLongPress();
                 handleKeyPress(keyMap, keyCode, event, longPress);
 
                 // some long press actions might only want to be processed once, like, back, or select
@@ -120,6 +143,7 @@ public class KeyMapProcessor {
                 }
             }
         } else if (event.getAction() == KeyEvent.ACTION_UP) {
+            cancelPendingLongPress();
             if (longPress || skipUp) {
                 if (VerboseLogging.LOG_KEYS)
                     log.debug("Long Press UP: Do Nothing.");
@@ -137,6 +161,40 @@ public class KeyMapProcessor {
         }
 
         return true;
+    }
+
+    private void schedulePendingLongPress(final KeyMap keyMap, final int keyCode, final KeyEvent downEvent)
+    {
+        pendingLongPressKeyCode = keyCode;
+        pendingLongPress = new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                pendingLongPress = null;
+                if (longPress) return; // inline threshold path already fired
+                if (VerboseLogging.LOG_KEYS)
+                    log.debug("FIRE: LongPress (Handler fallback) {}", downEvent);
+                longPress = true;
+                longPressTime = downEvent.getDownTime() + keyMap.getKeyRepeatDelayMS(keyCode);
+                handleKeyPress(keyMap, keyCode, downEvent, true);
+                if (keyMap.shouldCancelLongPress(keyCode))
+                {
+                    longPressCancel = true;
+                }
+            }
+        };
+        longPressHandler.postDelayed(pendingLongPress, keyMap.getKeyRepeatDelayMS(keyCode));
+    }
+
+    private void cancelPendingLongPress()
+    {
+        if (pendingLongPress != null)
+        {
+            longPressHandler.removeCallbacks(pendingLongPress);
+            pendingLongPress = null;
+            pendingLongPressKeyCode = 0;
+        }
     }
 
     private void handleKeyPress(KeyMap keyMap, int keyCode, KeyEvent event, boolean longPress) {

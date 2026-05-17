@@ -19,6 +19,9 @@
         android:id="@+id/menu_legacy_mode"
         android:title="Server Mode (Auto/Legacy/NG)"/>
     <item
+        android:id="@+id/menu_streaming_mode"
+        android:title="Streaming Mode (per-server)"/>
+    <item
         android:id="@+id/menu_remove"
         android:title="Remove"/>
 </menu>

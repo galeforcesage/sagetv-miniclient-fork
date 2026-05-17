@@ -50,6 +50,49 @@ public class ServerInfo implements Serializable, Comparable<ServerInfo>, Cloneab
         }
     }
 
+    /**
+     * Per-server override of the global {@code streaming_mode} pref. The
+     * global setting is a one-size-fits-all switch, but a mixed server
+     * fleet often needs different choices: e.g. a stock SageTV 9.2.x
+     * server defaults to 352x240 MPEG-4 when given an empty
+     * {@code FIXED_PUSH_MEDIA_FORMAT}, so it benefits from being pinned
+     * to FIXED, while an NG server is happier on PULL or DYNAMIC.
+     *
+     * <ul>
+     *   <li>{@link #INHERIT} (default) — use whatever the global
+     *       {@code streaming_mode} pref says.
+     *   <li>{@link #AUTOMATIC} — pull if port 7818 reachable, else dynamic.
+     *   <li>{@link #PULL} — force pull (zero server CPU).
+     *   <li>{@link #DYNAMIC} — force dynamic push (server picks transcode
+     *       at OPENURL time).
+     *   <li>{@link #FIXED} — force fixed push using the client's
+     *       Fixed Encoding / Fixed Remuxing settings.
+     * </ul>
+     *
+     * When set to anything other than {@link #INHERIT} this value wins
+     * over the global pref AND over the "pull is reachable, always pick
+     * pull" auto-override in {@code MiniClientConnection}.
+     */
+    public enum StreamingModeOverride {
+        INHERIT, AUTOMATIC, PULL, DYNAMIC, FIXED;
+
+        public static StreamingModeOverride fromPrefValue(String s) {
+            if (s == null) return INHERIT;
+            switch (s.toLowerCase()) {
+                case "automatic": return AUTOMATIC;
+                case "pull":      return PULL;
+                case "dynamic":   return DYNAMIC;
+                case "fixed":     return FIXED;
+                case "inherit":
+                default:          return INHERIT;
+            }
+        }
+
+        public String toPrefValue() {
+            return name().toLowerCase();
+        }
+    }
+
     public String address;
     public int port = 31099;
     public String name;
@@ -68,6 +111,13 @@ public class ServerInfo implements Serializable, Comparable<ServerInfo>, Cloneab
      * IO_UNSPECIFIED is wired in {@code MiniClientConnection}.
      */
     public LegacyMode legacyMode = LegacyMode.AUTO;
+
+    /**
+     * Per-server streaming mode override. See {@link StreamingModeOverride}.
+     * Defaults to {@link StreamingModeOverride#INHERIT} so existing
+     * single-server users see no behavior change.
+     */
+    public StreamingModeOverride streamingModeOverride = StreamingModeOverride.INHERIT;
 
     public ServerInfo() {
     }
@@ -173,6 +223,8 @@ public class ServerInfo implements Serializable, Comparable<ServerInfo>, Cloneab
         // Always persist legacy mode so explicit user overrides survive even
         // when the value is the AUTO default (matches what UI expects).
         store.setString("servers/" + name + "/legacy_mode", legacyMode.toPrefValue());
+        // Same rationale for streaming mode override.
+        store.setString("servers/" + name + "/streaming_mode", streamingModeOverride.toPrefValue());
     }
 
     public void load(String name, PrefStore store) {
@@ -189,6 +241,9 @@ public class ServerInfo implements Serializable, Comparable<ServerInfo>, Cloneab
         }
         legacyMode = LegacyMode.fromPrefValue(
                 store.getString("servers/" + name + "/legacy_mode", LegacyMode.AUTO.toPrefValue()));
+        streamingModeOverride = StreamingModeOverride.fromPrefValue(
+                store.getString("servers/" + name + "/streaming_mode",
+                        StreamingModeOverride.INHERIT.toPrefValue()));
     }
 
     public boolean isLocatorOnly() {
