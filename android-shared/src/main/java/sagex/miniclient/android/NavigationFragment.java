@@ -37,6 +37,7 @@ import sagex.miniclient.android.events.HideSystemUIEvent;
 import sagex.miniclient.android.events.ToggleAspectRatioEvent;
 import sagex.miniclient.android.preferences.MediaMappingPreferences;
 import sagex.miniclient.android.video.NonLeanbackAspect;
+import sagex.miniclient.android.video.OrientationController;
 import sagex.miniclient.events.ShowKeyboardEvent;
 import sagex.miniclient.events.VideoInfoShow;
 import sagex.miniclient.media.SubtitleTrack;
@@ -144,6 +145,28 @@ public class NavigationFragment extends DialogFragment
                 onToggleAspectRatio();
             }
         });
+
+        // Orientation toggle: only present on phone/tablet navigation layouts; hidden on Leanback.
+        View orientationBtn = navView.findViewById(R.id.nav_toggle_orientation);
+        if (orientationBtn != null)
+        {
+            Context octx = getActivity();
+            if (octx != null && OrientationController.isLeanback(octx))
+            {
+                orientationBtn.setVisibility(View.GONE);
+            }
+            else
+            {
+                orientationBtn.setOnClickListener(new View.OnClickListener()
+                {
+                    @Override
+                    public void onClick(View v)
+                    {
+                        onToggleOrientation();
+                    }
+                });
+            }
+        }
 
         navView.findViewById(R.id.nav_video_info).setOnClickListener(new View.OnClickListener()
         {
@@ -379,6 +402,15 @@ public class NavigationFragment extends DialogFragment
         }
         // Leanback (TV): defer to the SageTV server AR_TOGGLE cycle (Source/Stretch/Zoom).
         client.eventbus().post(ToggleAspectRatioEvent.INSTANCE);
+    }
+
+    public void onToggleOrientation()
+    {
+        Activity act = getActivity();
+        if (act == null || OrientationController.isLeanback(act)) return;
+        OrientationController.Mode next = OrientationController.cycleAndApply(act);
+        Toast.makeText(act, "Orientation: " + next.label, Toast.LENGTH_SHORT).show();
+        dismiss();
     }
 
     // @OnClick(R.id.nav_remote_mode)

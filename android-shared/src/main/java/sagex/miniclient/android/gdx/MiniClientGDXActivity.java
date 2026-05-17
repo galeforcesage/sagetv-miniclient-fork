@@ -11,6 +11,7 @@ import com.badlogic.gdx.backends.android.AndroidApplicationConfiguration;
 
 import sagex.miniclient.android.R;
 import sagex.miniclient.android.UIActivityLifeCycleHandler;
+import sagex.miniclient.android.video.OrientationController;
 import sagex.miniclient.prefs.PrefStore;
 
 /**
@@ -25,6 +26,9 @@ public class MiniClientGDXActivity extends AndroidApplication implements UIActiv
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // Apply user-chosen orientation on non-Leanback before any layout happens.
+        // No-op on Leanback (TV stays locked landscape per manifest).
+        OrientationController.apply(this);
         uiActivityLifeCycleHandler.onCreate(this);
 
         if( this.uiActivityLifeCycleHandler.getClient().properties().getBoolean(PrefStore.Keys.disable_sleep, true))
