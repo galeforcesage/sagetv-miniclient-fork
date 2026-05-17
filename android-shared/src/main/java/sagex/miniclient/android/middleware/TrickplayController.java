@@ -44,13 +44,25 @@ public class TrickplayController
      * elapses with no further seeks, the latest target is committed.
      * Sized to absorb a typical SageTV smooth-FF/REW burst (≈150 ms
      * spacing) while staying under human "feels instant" threshold.
-     *
-     * <p><b>Push mode uses zero coalesce</b>: the player does no work on
-     * a push-mode seek (the server flushes and re-pushes from the new
-     * position), so there is nothing to debounce against. Any added delay
-     * is pure user-visible latency. See {@link #beginSeek}.</p>
      */
     private static final long SEEK_QUIET_WINDOW_MS = 180;
+
+    /**
+     * Outgoing-SEEK coalesce window for push mode. Originally push used
+     * zero coalesce on the assumption that "the server does the seek so
+     * there is nothing to debounce." Field traces (Fold, May 2026) prove
+     * that wrong: each MEDIACMD_SEEK forces the server transcoder to
+     * reposition + emit a MEDIACMD_FLUSH; a 13-SEEK FF burst over 2.8 s
+     * produced 12 sequential FLUSHes and 5.5 s of stalled video while
+     * the OSD timeline ran ahead.
+     *
+     * <p>Coalescing outgoing SEEKs to the latest target collapses that
+     * to one FLUSH and one transcoder reposition per burst. The window
+     * needs to be short enough to feel responsive (well under the
+     * human "feels instant" threshold) but long enough to absorb a
+     * normal SageTV remote FF cadence (≈200-300 ms between events).</p>
+     */
+    private static final long PUSH_SEEK_QUIET_WINDOW_MS = 250;
 
     /**
      * Hard ceiling on how long beginSeek() may defer a held-button burst.
@@ -380,20 +392,10 @@ public class TrickplayController
             long now = System.currentTimeMillis();
             if (burstStartedAtMs == 0) burstStartedAtMs = now;
 
-            if (isPush)
-            {
-                // Push mode: server does the seek (flush + re-push from
-                // new position). Coalescing here only adds latency. Fire
-                // the commit immediately so the player-side bookkeeping
-                // (resume offsets, native ring drop) happens ASAP.
-                delay = 0;
-            }
-            else
-            {
-                long sinceBurstStart = now - burstStartedAtMs;
-                long maxDeferRemaining = SEEK_MAX_DEFER_MS - sinceBurstStart;
-                delay = Math.min(SEEK_QUIET_WINDOW_MS, Math.max(0, maxDeferRemaining));
-            }
+            long sinceBurstStart = now - burstStartedAtMs;
+            long maxDeferRemaining = SEEK_MAX_DEFER_MS - sinceBurstStart;
+            long window = isPush ? PUSH_SEEK_QUIET_WINDOW_MS : SEEK_QUIET_WINDOW_MS;
+            delay = Math.min(window, Math.max(0, maxDeferRemaining));
         }
 
         // Push-mode preflush: drop the stale ring contents NOW so IJK's

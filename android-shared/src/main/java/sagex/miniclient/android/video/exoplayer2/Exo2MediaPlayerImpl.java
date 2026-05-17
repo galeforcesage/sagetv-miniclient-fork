@@ -836,6 +836,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 if (retryCount == 0
                         && error.errorCode == PlaybackException.ERROR_CODE_IO_UNSPECIFIED
                         && !sagex.miniclient.android.video.PlayerSelectionUtil.isExoPsMpeg4Landmine(url)
+                        && !sagex.miniclient.android.video.PlayerSelectionUtil.isBarePushUrl(url)
                         && context != null && context.getClient() != null
                         && context.getClient().getCurrentConnection() != null)
                 {

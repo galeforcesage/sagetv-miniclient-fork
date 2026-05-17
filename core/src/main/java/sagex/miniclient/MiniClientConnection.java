@@ -329,12 +329,21 @@ public class MiniClientConnection implements SageTVInputCallback
      *
      * <ol>
      *   <li>Per-server {@link ServerInfo#legacyMode}: LEGACY → true; NG → false.
-     *   <li>AUTO: starts false (NG); the OPENURL IO_UNSPECIFIED hook may flip
-     *       it to LEGACY at runtime and re-save the ServerInfo.
-     *   <li>Backward-compat fallback: the deprecated global
-     *       {@code legacy_server_compat} pref. New installs never write it;
-     *       leave the read in place until existing installs have migrated.
+     *   <li>AUTO (or null/missing): defaults to <b>false (NG advertise)</b>.
+     *       The OPENURL IO_UNSPECIFIED hook flips AUTO→LEGACY at runtime if
+     *       the server actually rejects our NG caps, then re-saves the
+     *       ServerInfo so future connections start in LEGACY. Defaulting
+     *       AUTO to NG means we never silently degrade an NG server to the
+     *       legacy Placeshifter ceiling just because the user hasn't pinned
+     *       it yet — worst case is one failed playback that auto-recovers.
      * </ol>
+     *
+     * <p>The old behavior fell back to the deprecated global
+     * {@code legacy_server_compat} pref on AUTO; that pref defaulted to true
+     * on installs migrated from pre-per-server-mode builds, which silently
+     * forced every NG server into legacy advertisement. The fallback is
+     * removed; users on legacy-only deployments should long-press their
+     * server tile and pin LEGACY explicitly.</p>
      */
     public boolean isLegacyServerCompat()
     {
@@ -345,10 +354,13 @@ public class MiniClientConnection implements SageTVInputCallback
                 case LEGACY: return true;
                 case NG:     return false;
                 case AUTO:
-                default:     break;  // fall through to global fallback
+                default:     break;
             }
         }
-        return client.properties().getBoolean(PrefStore.Keys.legacy_server_compat, false);
+        // AUTO (or unset): default to NG advertisement.
+        // notifyServerCompatibilityFailure() will flip to LEGACY if the
+        // server proves it can't handle us.
+        return false;
     }
 
     /**
@@ -1780,6 +1792,20 @@ public class MiniClientConnection implements SageTVInputCallback
                                     msi.save(client.properties());
                                 }
                             }
+                            retval = 0;
+                        }
+                        else if ("CAP_EFFECTIVE_PROFILE".equals(propName))
+                        {
+                            // NG server informs us which client profile its
+                            // resolver picked (e.g. android_modern, hd_legacy_strict).
+                            // We don't act on it today — the server already applied
+                            // the profile to its codec/container decisions. Logged
+                            // so we can confirm in field traces which profile a given
+                            // session resolved to.
+                            // TODO: remove (or gate behind BuildConfig.DEBUG) when
+                            // shipping production / non-debug builds.
+                            propVal = new String(cmdbuffer, 4 + nameLen, valLen);
+                            log.logInfo("Server resolved client profile: CAP_EFFECTIVE_PROFILE=" + propVal);
                             retval = 0;
                         }
                         else

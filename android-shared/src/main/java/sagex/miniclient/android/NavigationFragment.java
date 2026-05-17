@@ -36,6 +36,7 @@ import sagex.miniclient.android.events.HideNavigationEvent;
 import sagex.miniclient.android.events.HideSystemUIEvent;
 import sagex.miniclient.android.events.ToggleAspectRatioEvent;
 import sagex.miniclient.android.preferences.MediaMappingPreferences;
+import sagex.miniclient.android.video.NonLeanbackAspect;
 import sagex.miniclient.events.ShowKeyboardEvent;
 import sagex.miniclient.events.VideoInfoShow;
 import sagex.miniclient.media.SubtitleTrack;
@@ -362,6 +363,21 @@ public class NavigationFragment extends DialogFragment
     // @OnClick(R.id.nav_toggle_ar)
     public void onToggleAspectRatio()
     {
+        Context ctx = getActivity();
+        if (ctx != null && !NonLeanbackAspect.isLeanback(ctx))
+        {
+            // Phone/tablet/foldable: cycle client-side Fit/Fill/Zoom.
+            NonLeanbackAspect.Mode next = NonLeanbackAspect.cycle(ctx);
+            Toast.makeText(ctx, "Aspect: " + next.label(), Toast.LENGTH_SHORT).show();
+            MiniPlayerPlugin p = client.getPlayer();
+            if (p instanceof sagex.miniclient.android.video.BaseMediaPlayerImpl)
+            {
+                ((sagex.miniclient.android.video.BaseMediaPlayerImpl<?, ?>) p).updatePlayerView();
+            }
+            dismiss();
+            return;
+        }
+        // Leanback (TV): defer to the SageTV server AR_TOGGLE cycle (Source/Stretch/Zoom).
         client.eventbus().post(ToggleAspectRatioEvent.INSTANCE);
     }
 

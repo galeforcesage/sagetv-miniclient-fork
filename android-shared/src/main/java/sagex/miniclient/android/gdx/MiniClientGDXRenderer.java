@@ -869,6 +869,13 @@ public class MiniClientGDXRenderer implements ApplicationListener, UIRenderer<Gd
             log.warn("ExoPlayer landmine detected (MPEG-4 in MPEG-PS): swapping to IJK for this stream. URL={}", urlString);
             useExoPlayer = false;
         }
+        // NG bare-push landmine: NG server emits OPENURL `push:` with no
+        // format hint, ExoPlayer can't pick the right Extractor, audio plays
+        // but video stays black. IJK's libavformat sniffs and handles it.
+        else if (useExoPlayer && PlayerSelectionUtil.isBarePushUrl(urlString)) {
+            log.warn("NG bare-push landmine detected (no format hint): swapping to IJK. URL={}", urlString);
+            useExoPlayer = false;
+        }
 
         if (useExoPlayer) {
             log.debug("Using ExoPlayer");

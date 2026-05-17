@@ -54,4 +54,40 @@ public final class PlayerSelectionUtil
         // Match F=MPEG4 followed by ; or end-of-block ] (not F=MPEG4-VIDEO etc.)
         return window.contains("F=MPEG4;") || window.contains("F=MPEG4]");
     }
+
+    /**
+     * NG-server landmine: bare {@code push:} OPENURL with no format hint
+     * string after the colon. Observed on sagetv-mine NG May 2026: the
+     * server's profile resolver picked DIRECT_PLAY / REMUX but emitted an
+     * OPENURL whose payload-format descriptor is empty. ExoPlayer needs
+     * the container hint to pick the right Extractor; without it the
+     * extractor falls back to sniff and on the Fold (Snapdragon 8 Gen 2)
+     * partially succeeds &mdash; audio demuxes, video does not, screen
+     * stays black with sound.
+     *
+     * <p>IJK uses libavformat to sniff and handles a wider set of input
+     * shapes than ExoPlayer's hint-driven extractors, so swap to IJK when
+     * we see this pattern. Same belt-and-suspenders strategy as
+     * {@link #isExoPsMpeg4Landmine}.</p>
+     *
+     * <p>Pattern recognised: the URL ends with literally {@code push:} (no
+     * characters after the colon) or {@code push:;} or {@code push:[...} with
+     * no top-level {@code F=} format token. The full-form URLs we DO want to
+     * route to ExoPlayer (e.g. {@code push:f=MPEG2-TS;[bf=vid;f=H264;...]})
+     * always carry an {@code f=} segment immediately after {@code push:}.</p>
+     */
+    public static boolean isBarePushUrl(String url)
+    {
+        if (url == null) return false;
+        String u = url.toUpperCase(java.util.Locale.ROOT);
+        int p = u.indexOf("PUSH:");
+        if (p < 0) return false;
+        // What follows "PUSH:" up to the end of the URL token.
+        String tail = u.substring(p + "PUSH:".length()).trim();
+        if (tail.isEmpty()) return true;
+        // A well-formed push URL always starts the format descriptor with
+        // F=<container>; right after the colon. Anything else (empty,
+        // bracket-only, garbage) is a server bug we should route around.
+        return !tail.startsWith("F=");
+    }
 }

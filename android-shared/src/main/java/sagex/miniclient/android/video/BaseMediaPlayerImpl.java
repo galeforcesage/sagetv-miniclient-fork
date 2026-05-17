@@ -663,17 +663,21 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
 
     public void updatePlayerView(final Rectangle rect)
     {
+        // On non-Leanback (phone/tablet/foldable), apply user-chosen Fit/Fill/Zoom so the
+        // surface lands at the correct aspect instead of stretching to the panel.
+        // No-op on Leanback (TV) so the server-driven AR pipeline keeps full control.
+        final Rectangle finalRect = NonLeanbackAspect.apply(context.getContext(), rect, videoInfo);
         context.runOnUiThread(new Runnable()
         {
             @Override
             public void run()
             {
-                log.debug("updatePlayerView: Video Size {}", rect);
+                log.debug("updatePlayerView: Video Size {} (server: {})", finalRect, rect);
                 FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) context.getVideoView().getLayoutParams();
-                lp.width = rect.width;
-                lp.height = rect.height;
-                lp.leftMargin = rect.x;
-                lp.topMargin = rect.y;
+                lp.width = finalRect.width;
+                lp.height = finalRect.height;
+                lp.leftMargin = finalRect.x;
+                lp.topMargin = finalRect.y;
                 context.getVideoView().setLayoutParams(lp);
                 context.getVideoView().requestLayout();
 
