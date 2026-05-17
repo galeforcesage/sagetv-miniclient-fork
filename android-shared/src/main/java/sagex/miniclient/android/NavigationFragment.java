@@ -410,7 +410,8 @@ public class NavigationFragment extends DialogFragment
         if (act == null || OrientationController.isLeanback(act)) return;
         OrientationController.Mode next = OrientationController.cycleAndApply(act);
         Toast.makeText(act, "Orientation: " + next.label, Toast.LENGTH_SHORT).show();
-        dismiss();
+        // Keep the OSD visible so the user can cycle through the three modes
+        // and preview each one against the video playing behind it.
     }
 
     // @OnClick(R.id.nav_remote_mode)

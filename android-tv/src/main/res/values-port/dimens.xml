@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Shrink the OSD navigation icons when the device is in portrait
+         orientation so the full transport + right-side cluster fits on
+         narrower phone/foldable widths without being clipped. -->
+    <dimen name="nav_icon_size">36dp</dimen>
+    <dimen name="nav_icon_padding">3dp</dimen>
+</resources>
