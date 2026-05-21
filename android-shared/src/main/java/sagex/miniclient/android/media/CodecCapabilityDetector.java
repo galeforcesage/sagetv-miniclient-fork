@@ -36,21 +36,39 @@ public final class CodecCapabilityDetector
     /** True when the configured player can demux the container natively. */
     public static boolean isContainerSupported(Context ctx, AndroidPrefStore prefs, Container container)
     {
-        if (isExoPlayer(prefs))
-        {
-            return isSupportedExoPlayerContainer(container);
-        }
-        // IJKPlayer assumed to handle everything.
+        return isExoPlayer(prefs)
+                ? isContainerSupportedByExo(container)
+                : isContainerSupportedByIjk(container);
+    }
+
+    /** Phase 3: ExoPlayer's hard-coded native demuxer set. */
+    public static boolean isContainerSupportedByExo(Container container)
+    {
+        return isSupportedExoPlayerContainer(container);
+    }
+
+    /**
+     * Phase 3: IJKPlayer is libavformat-based and demuxes essentially every
+     * container the project ships SageTV names for. Blanket {@code true} is
+     * the historical assumption and matches field behaviour. If a specific
+     * container ever proves IJK-broken in practice, narrow this method.
+     */
+    public static boolean isContainerSupportedByIjk(Container container)
+    {
         return true;
     }
 
     /** True when the configured player can decode the video codec on this device. */
     public static boolean isVideoCodecSupported(Context ctx, AndroidPrefStore prefs, VideoCodec codec)
     {
-        if (!isExoPlayer(prefs))
-        {
-            return true; // IJKPlayer assumed to handle everything.
-        }
+        return isExoPlayer(prefs)
+                ? isVideoCodecSupportedByExo(ctx, codec)
+                : isVideoCodecSupportedByIjk(codec);
+    }
+
+    /** Phase 3: ExoPlayer-specific video decode probe (MediaCodec only). */
+    public static boolean isVideoCodecSupportedByExo(Context ctx, VideoCodec codec)
+    {
         for (String mime : collectMimeTypes("video/"))
         {
             if (codec.hasAndroidMimeType(mime)) return true;
@@ -58,13 +76,44 @@ public final class CodecCapabilityDetector
         return false;
     }
 
+    /** Phase 3: IJKPlayer libavcodec covers the project's video codec list. */
+    public static boolean isVideoCodecSupportedByIjk(VideoCodec codec)
+    {
+        return true;
+    }
+
+    /**
+     * True when the audio sink reports passthrough (bitstream) capability
+     * for any of the codec's Android encoding constants. Independent of
+     * the per-codec MediaCodec / FFmpeg software decode path used by
+     * {@link #isAudioCodecSupported}.
+     */
+    public static boolean isAudioPassthroughSupported(Context ctx, AudioCodec codec)
+    {
+        int[] encodings = codec.getAndroidAudioEncodings();
+        if (encodings == null || encodings.length == 0) return false;
+        AudioCapabilities caps = AudioCapabilities.getCapabilities(ctx);
+        for (int enc : encodings)
+        {
+            if (caps.supportsEncoding(enc)) return true;
+        }
+        return false;
+    }
+
     /** True when the configured player can decode the audio codec on this device. */
     public static boolean isAudioCodecSupported(Context ctx, AndroidPrefStore prefs, AudioCodec codec)
     {
-        if (!isExoPlayer(prefs))
-        {
-            return true;
-        }
+        return isExoPlayer(prefs)
+                ? isAudioCodecSupportedByExo(ctx, prefs, codec)
+                : isAudioCodecSupportedByIjk(codec);
+    }
+
+    /**
+     * Phase 3: ExoPlayer-specific audio decode probe (MediaCodec + optional
+     * FFmpeg ext + AudioCapabilities passthrough fallback).
+     */
+    public static boolean isAudioCodecSupportedByExo(Context ctx, AndroidPrefStore prefs, AudioCodec codec)
+    {
         // Prefer FFmpeg ext when enabled.
         if (FfmpegLibrary.isAvailable() && prefs.getExoFfmpegExtensionMode() != 0)
         {
@@ -84,6 +133,12 @@ public final class CodecCapabilityDetector
             if (caps.supportsEncoding(enc)) return true;
         }
         return false;
+    }
+
+    /** Phase 3: IJKPlayer libavcodec covers the project's audio codec list. */
+    public static boolean isAudioCodecSupportedByIjk(AudioCodec codec)
+    {
+        return true;
     }
 
     private static boolean isExoPlayer(AndroidPrefStore prefs)

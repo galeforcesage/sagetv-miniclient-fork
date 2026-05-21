@@ -61,6 +61,7 @@ public class AndroidPrefStore implements PrefStore
     public static final String CONTAINER_SUPPORT_DEFAULT = "automatic";
     public static final String VIDEO_CODEC_SUPPORT_DEFAULT = "automatic";
     public static final String AUDIO_CODEC_SUPPORT_DEFAULT = "automatic";
+    public static final String AUDIO_PASSTHROUGH_SUPPORT_DEFAULT = "automatic";
 
     public static final String FIREBASE_CRASHLYTICS_ENABLED = "firebase/crashlytics/enabled";
     public static final boolean FIREBASE_CRASHLYTICS_ENABLED_DEFAULT = true;
@@ -358,6 +359,17 @@ public class AndroidPrefStore implements PrefStore
     public String getAudioCodecSupport(String codec)
     {
         return this.getString("codec/audio/" + codec + "/support", AndroidPrefStore.AUDIO_CODEC_SUPPORT_DEFAULT);
+    }
+
+    /**
+     * Phase 2: per-codec passthrough (bitstream-to-AVR over HDMI) support.
+     * Independent of {@link #getAudioCodecSupport(String)} so a device that
+     * cannot software-decode AC3/EAC3/DTS/TrueHD can still advertise it to
+     * the server when the connected audio sink accepts the encoding.
+     */
+    public String getAudioPassthroughSupport(String codec)
+    {
+        return this.getString("codec/audio_passthrough/" + codec + "/support", AndroidPrefStore.AUDIO_PASSTHROUGH_SUPPORT_DEFAULT);
     }
 
     public boolean getFirebaseCrashlyticsEnabled()

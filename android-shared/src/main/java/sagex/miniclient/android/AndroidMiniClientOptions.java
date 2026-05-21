@@ -203,6 +203,118 @@ public class AndroidMiniClientOptions implements MiniClientOptions {
         return supportedCodecs;
     }
 
+    @Override
+    public void prepareAudioPassthrough(List<String> passthroughCodecs)
+    {
+        passthroughCodecs.clear();
+        for (AudioCodec c : AudioCodec.values())
+        {
+            // Skip codecs with no Android encoding constant \u2014 passthrough is meaningless.
+            if (c.getAndroidAudioEncodings() == null || c.getAndroidAudioEncodings().length == 0) continue;
+
+            TriState state = TriState.fromPrefValue(prefs.getAudioPassthroughSupport(c.getName()));
+            boolean detected = CodecCapabilityDetector.isAudioPassthroughSupported(context, c);
+            if (state.resolve(detected))
+            {
+                log.debug("Audio passthrough added [{}]: {}", state, c.getName());
+                for (String sageName : c.getSageTVNames())
+                {
+                    passthroughCodecs.add(sageName);
+                }
+            }
+            else
+            {
+                log.debug("Audio passthrough excluded [{}]: {}", state, c.getName());
+            }
+        }
+    }
+
+    /**
+     * Phase 3: produce honest per-player capability lists. The same tri-state
+     * settings drive both EXO_* and IJK_* lists, but the auto-detected
+     * baseline is computed independently per player so AUTO is honest. ON
+     * still forces both, OFF still excludes both.
+     *
+     * <p>Emitted under SageTV property names {@code EXO_VIDEO_CODECS},
+     * {@code IJK_VIDEO_CODECS}, etc. Legacy 9.2.x servers never query these;
+     * NG servers can use them to pick a codec/container combination that
+     * matches whichever player will actually decode the stream (tracked by
+     * the same {@code default_player} setting plus the
+     * {@code PlayerSelectionUtil} landmine swaps at OPENURL time).</p>
+     */
+    @Override
+    public void preparePerPlayerCapabilities(java.util.Map<String, List<String>> caps)
+    {
+        caps.clear();
+
+        // Push containers (push-only set used today by getSupportedPushContainers).
+        java.util.List<String> exoPush = new ArrayList<>();
+        java.util.List<String> ijkPush = new ArrayList<>();
+        Container[] pushAll = new Container[]{MPEG1PS, MPEG2PS, MPEG2TS};
+        for (Container c : pushAll)
+        {
+            TriState state = TriState.fromPrefValue(prefs.getContainerSupport(c.getName()));
+            if (state.resolve(CodecCapabilityDetector.isContainerSupportedByExo(c)))
+                addAllSageNames(exoPush, c.getSageTVNames());
+            if (state.resolve(CodecCapabilityDetector.isContainerSupportedByIjk(c)))
+                addAllSageNames(ijkPush, c.getSageTVNames());
+        }
+        caps.put("EXO_PUSH_AV_CONTAINERS", exoPush);
+        caps.put("IJK_PUSH_AV_CONTAINERS", ijkPush);
+
+        // Pull containers (everything except the push-only set).
+        java.util.List<String> exoPull = new ArrayList<>();
+        java.util.List<String> ijkPull = new ArrayList<>();
+        for (Container c : Container.values())
+        {
+            if (c == MPEG1PS || c == MPEG2TS || c == MPEG2PS) continue;
+            TriState state = TriState.fromPrefValue(prefs.getContainerSupport(c.getName()));
+            if (state.resolve(CodecCapabilityDetector.isContainerSupportedByExo(c)))
+                addAllSageNames(exoPull, c.getSageTVNames());
+            if (state.resolve(CodecCapabilityDetector.isContainerSupportedByIjk(c)))
+                addAllSageNames(ijkPull, c.getSageTVNames());
+        }
+        caps.put("EXO_PULL_AV_CONTAINERS", exoPull);
+        caps.put("IJK_PULL_AV_CONTAINERS", ijkPull);
+
+        // Video codecs.
+        java.util.List<String> exoVideo = new ArrayList<>();
+        java.util.List<String> ijkVideo = new ArrayList<>();
+        for (VideoCodec c : VideoCodec.values())
+        {
+            TriState state = TriState.fromPrefValue(prefs.getVideoCodecSupport(c.getName()));
+            if (state.resolve(CodecCapabilityDetector.isVideoCodecSupportedByExo(context, c)))
+                addAllSageNames(exoVideo, c.sageTVNames());
+            if (state.resolve(CodecCapabilityDetector.isVideoCodecSupportedByIjk(c)))
+                addAllSageNames(ijkVideo, c.sageTVNames());
+        }
+        caps.put("EXO_VIDEO_CODECS", exoVideo);
+        caps.put("IJK_VIDEO_CODECS", ijkVideo);
+
+        // Audio codecs.
+        java.util.List<String> exoAudio = new ArrayList<>();
+        java.util.List<String> ijkAudio = new ArrayList<>();
+        for (AudioCodec c : AudioCodec.values())
+        {
+            TriState state = TriState.fromPrefValue(prefs.getAudioCodecSupport(c.getName()));
+            if (state.resolve(CodecCapabilityDetector.isAudioCodecSupportedByExo(context, prefs, c)))
+                addAllSageNames(exoAudio, c.getSageTVNames());
+            if (state.resolve(CodecCapabilityDetector.isAudioCodecSupportedByIjk(c)))
+                addAllSageNames(ijkAudio, c.getSageTVNames());
+        }
+        caps.put("EXO_AUDIO_CODECS", exoAudio);
+        caps.put("IJK_AUDIO_CODECS", ijkAudio);
+
+        log.debug("Per-player capabilities prepared: EXO_VIDEO={} IJK_VIDEO={} EXO_AUDIO={} IJK_AUDIO={}",
+                  exoVideo.size(), ijkVideo.size(), exoAudio.size(), ijkAudio.size());
+    }
+
+    private static void addAllSageNames(List<String> dst, String[] names)
+    {
+        if (names == null) return;
+        for (String n : names) dst.add(n);
+    }
+
     private List<VideoCodec> getSupportedVideoCodecs()
     {
         List<VideoCodec> supportedCodecs = new ArrayList<VideoCodec>();
@@ -240,6 +352,65 @@ public class AndroidMiniClientOptions implements MiniClientOptions {
     public boolean isDesktopUI()
     {
         return false;
+    }
+
+    /**
+     * Coarse device classification for legacy-server capability tuning.
+     * Used by {@code MiniClientConnection} to decide e.g. whether to drop
+     * MPEG2-PS from the legacy push advertisement on cheap AndroidTV
+     * sticks whose MediaCodec stacks handle MPEG2-TS more reliably.
+     *
+     * <p>Detection uses {@link android.os.Build#MANUFACTURER} +
+     * {@link android.os.Build#MODEL} + {@link android.os.Build#PRODUCT}
+     * substring matching. Anything we can't confidently slot returns
+     * {@code "UNKNOWN"}, which keeps the existing behavior.</p>
+     */
+    @Override
+    public String getDeviceClass()
+    {
+        String mfr = String.valueOf(android.os.Build.MANUFACTURER).toLowerCase(java.util.Locale.ROOT);
+        String model = String.valueOf(android.os.Build.MODEL).toLowerCase(java.util.Locale.ROOT);
+        String prod = String.valueOf(android.os.Build.PRODUCT).toLowerCase(java.util.Locale.ROOT);
+
+        // NVIDIA Shield TV (mdarcy, foster, sif, etc.)
+        if (mfr.contains("nvidia") || model.contains("shield") || prod.contains("foster") || prod.contains("mdarcy") || prod.contains("sif"))
+            return "SHIELD";
+
+        if (isTV)
+        {
+            // Cheap AndroidTV sticks: Chromecast w/ Google TV (sabrina/boreal),
+            // Onn 4K boxes (dopinder etc.), Walmart-tier devices.
+            if (model.contains("chromecast") || prod.contains("sabrina") || prod.contains("boreal")
+                    || model.contains("onn") || prod.contains("dopinder")
+                    || mfr.contains("amlogic") || mfr.contains("rockchip") || mfr.contains("allwinner")
+                    || mfr.contains("walmart"))
+                return "BUDGET_ATV";
+            // Other TV devices we haven't classified -> treat as budget by default
+            // (safer to TS-bias than to PS-bias on unknown TV hardware).
+            return "BUDGET_ATV";
+        }
+
+        // Foldables: Galaxy Z Fold (q5q/q6q/...), Galaxy Z Flip
+        if (model.contains("fold") || model.contains("flip") || prod.contains("q5q") || prod.contains("q6q") || prod.contains("b6q"))
+            return "FOLDABLE";
+
+        // Tablets: Galaxy Tab S/A series, Pixel Tablet
+        if (model.contains("tab") || model.contains("tablet") || prod.contains("gts") || prod.contains("gta"))
+            return "TABLET";
+
+        // Premium phones: Galaxy S Ultra, Pixel Pro
+        if (model.contains("ultra") || (model.contains("pixel") && model.contains("pro")) || prod.contains("dm3q") || prod.contains("e3q"))
+            return "PREMIUM_PHONE";
+
+        // Pixel non-Pro, Galaxy S non-Ultra, mid-range
+        if (model.contains("pixel") || (mfr.contains("samsung") && model.startsWith("sm-s")))
+            return "MID_PHONE";
+
+        // Budget phones: Galaxy A1x, Moto G
+        if (model.startsWith("moto g") || (mfr.contains("samsung") && (model.startsWith("sm-a1") || model.startsWith("sm-a2"))))
+            return "BUDGET_PHONE";
+
+        return "UNKNOWN";
     }
 
     @Override

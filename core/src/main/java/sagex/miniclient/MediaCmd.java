@@ -75,6 +75,19 @@ public class MediaCmd
     private long lastServerStartTime = -1;
 
     /*
+     * Authoritative recording-relative position of the most recent
+     * MEDIACMD_SEEK from the server (milliseconds), or -1 when no seek is
+     * pending. After a seek the server flushes the push stream and starts
+     * a new mux session whose first PUSHBUFFER.serverMuxTime is the
+     * muxer-internal PTS (typically sub-second) -- NOT a recording-relative
+     * position. If we blindly adopt that as lastServerStartTime, OSD time =
+     * playerPos + lastServerStartTime sticks near 0 forever. Stashing the
+     * MEDIACMD_SEEK target here lets the post-flush PUSHBUFFER handler use
+     * the real seek position as the baseline instead.
+     */
+    private long pendingSeekTargetMs = -1;
+
+    /*
      * Early-push holding buffer.
      *
      * The SageTV server can start firing MEDIACMD_PUSHBUFFER packets BEFORE the
@@ -336,9 +349,24 @@ public class MediaCmd
 
                 if (playa != null && pushMode)
                 {
-                    log.debug("Flush - Flush called on pushMode.  Setting last server time to -1");
-                    playa.flush();
-                    this.setLastServerStartPosition(-1);
+                    if (pendingSeekTargetMs >= 0)
+                    {
+                        // Server flushed in response to MEDIACMD_SEEK. Use the
+                        // authoritative seek target as the new baseline directly
+                        // -- do NOT mark lastServerStartTime = -1 because that
+                        // would let the next PUSHBUFFER overwrite the baseline
+                        // with the muxer's sub-second post-flush PTS.
+                        log.debug("Flush - pushMode flush after MEDIACMD_SEEK; baseline := seek target {} ms", pendingSeekTargetMs);
+                        playa.flush();
+                        this.setLastServerStartPosition(pendingSeekTargetMs);
+                        pendingSeekTargetMs = -1;
+                    }
+                    else
+                    {
+                        log.debug("Flush - Flush called on pushMode.  Setting last server time to -1");
+                        playa.flush();
+                        this.setLastServerStartPosition(-1);
+                    }
                 }
 
                 return 4;
@@ -536,6 +564,35 @@ public class MediaCmd
                 if (playa != null)
                 {
                     log.debug("MEDIACMD_SEEK called: {}", seekTime);
+                    if (pushMode)
+                    {
+                        // Stash the authoritative target so the post-flush
+                        // PUSHBUFFER handler can use it as the baseline (see
+                        // pendingSeekTargetMs field doc).
+                        pendingSeekTargetMs = seekTime;
+
+                        // Legacy server quirk: for FORWARD seeks within its
+                        // pushed-buffer window the server takes the
+                        // seekPull0() path -- it adjusts the source file read
+                        // offset and keeps pushing from the new position, but
+                        // does NOT send MEDIACMD_FLUSH. Our ring buffer and
+                        // IJK decoder queues still hold the pre-seek bytes,
+                        // so without an explicit flush the player just keeps
+                        // showing the old video while OSD jumps forward.
+                        //
+                        // Drive the same flush path here that we would have
+                        // taken on an explicit MEDIACMD_FLUSH so the next
+                        // bytes the player reads are the post-seek bytes the
+                        // server is about to push. We set baseline := target
+                        // directly (do NOT use lastServerStartTime = -1)
+                        // because the post-seek PUSHBUFFER's serverMuxTime
+                        // would otherwise overwrite it with the muxer's
+                        // sub-second value.
+                        log.debug("MEDIACMD_SEEK push-mode: forcing client flush; baseline := {} ms", seekTime);
+                        playa.flush();
+                        this.setLastServerStartPosition(seekTime);
+                        pendingSeekTargetMs = -1;
+                    }
                     playa.seek(seekTime);
                 }
 

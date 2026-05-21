@@ -80,6 +80,34 @@ public class TrickplayController
     private static final long CONVERGENCE_TIMEOUT_MS = 1500;
 
     /**
+     * Pause-resume scrubber monotonicity guard.
+     *
+     * <p>Symptom: pausing then resuming playback can cause the underlying
+     * player to briefly re-report an earlier wallclock-independent position
+     * (re-anchor to the last decoded keyframe, internal pipeline restart,
+     * etc.) before catching up. Because {@link #getReportedTime()} feeds
+     * SageTV's GETMEDIATIME loop straight from {@link #lastPlayerPosMs}
+     * once a mapping is valid, that backward blip can show up as the OSD
+     * scrubber visibly jumping back ~½–2 seconds on resume.</p>
+     *
+     * <p>The guard drops player-position samples whose backward delta from
+     * the previous sample falls inside the
+     * {@code [MIN, MAX]} regression window <em>only when no seek is in
+     * flight or pending</em>. A seek legitimately rewinds the underlying
+     * clock and the existing seek-mapping path handles it.</p>
+     *
+     * <p>Boundaries:
+     * <ul>
+     *   <li>Anything &lt;= {@code MIN} is normal jitter — accept.</li>
+     *   <li>Anything &gt;= {@code MAX} is a real reload / loop / file
+     *       change — accept (and resync from there).</li>
+     *   <li>Anything in between is the pause-resume blip — drop.</li>
+     * </ul>
+     */
+    private static final long MONOTONIC_GUARD_MIN_REGRESSION_MS = 250;
+    private static final long MONOTONIC_GUARD_MAX_REGRESSION_MS = 30_000;
+
+    /**
      * Native push-mode ring buffer capacity, in bytes.
      *
      * <p>Wider buffer = more tolerance for upstream jitter (Wi-Fi, VPN,
@@ -454,6 +482,22 @@ public class TrickplayController
         boolean wakeup = false;
         synchronized (this)
         {
+            // Pause-resume monotonicity guard. See class-level constants.
+            // Only applies when no seek is armed/committed — seeks are
+            // expected to rewind the clock and are handled by the mapping
+            // path below.
+            if (!seekArmed && !seekCommitted && lastPlayerPosMs > 0 && positionMs < lastPlayerPosMs)
+            {
+                long regression = lastPlayerPosMs - positionMs;
+                if (regression > MONOTONIC_GUARD_MIN_REGRESSION_MS
+                        && regression < MONOTONIC_GUARD_MAX_REGRESSION_MS)
+                {
+                    log.debug("Monotonicity guard: dropping backward player pos {} (last {}, delta -{}ms, paused={})",
+                              positionMs, lastPlayerPosMs, regression, paused);
+                    return;
+                }
+            }
+
             lastPlayerPosMs = positionMs;
 
             if (seekCommitted && positionMs > 0)

@@ -60,19 +60,33 @@ To do:
   with a coloured pill on the right of each row (`AUTO·ON` / `AUTO·OFF`
   grey, `ON` green, `OFF` red) plus the title-superscript marker. Tap
   cycles AUTO → ON → OFF → AUTO; long-press resets to AUTO.
-- Convert ExoPlayer FFmpeg Extension setting to tri-state.
-- Codec & Container Settings submenu rebuild — items generated dynamically
-  from the union of `MediaCodecList` (REGULAR_CODECS), IJK FFmpeg software
-  decoders, and ExoPlayer FFmpeg extension decoders. Each row is a
-  `TriStatePreference`. Replaces the largely-commented-out current XML.
-- Audio Passthrough sub-section (AC3 / EAC3 / DTS / TrueHD / Opus),
-  tri-state. Auto = result of `AudioCapabilities.supportsEncoding()`.
-- Wire `MiniClientConnection` capability emission (`PUSH_AV_CONTAINERS`,
-  `PULL_AV_CONTAINERS`, `VIDEO_CODECS`, `AUDIO_CODECS`,
-  `AUDIO_PASSTHROUGH`) to consult tri-state values:
-  - `auto` → include if auto-detection says capable
-  - `on`   → always include
-  - `off`  → always exclude
+- ~~Convert ExoPlayer FFmpeg Extension setting to tri-state.~~ ✅ Done
+  (`exoplayer_prefs.xml` key `exoplayer_ffmpeg_extension_tri`,
+  `defaultValue="auto"`).
+- ~~Codec & Container Settings submenu rebuild.~~ ✅ Done. `CodecContainerFragment`
+  generates rows dynamically for every `Container`, `VideoCodec`, and
+  `AudioCodec` from `CodecCapabilityDetector.is*Supported()`; each row is a
+  `TriStatePreference` with summary showing the auto-detected baseline.
+- ~~Wire `MiniClientConnection` capability emission (`PUSH_AV_CONTAINERS`,
+  `PULL_AV_CONTAINERS`, `VIDEO_CODECS`, `AUDIO_CODECS`) to consult tri-state
+  values.~~ ✅ Done. `AndroidMiniClientOptions.prepareCodecs()` →
+  `getSupportedPushContainers/PullContainers/AudioCodecs/VideoCodecs` each read
+  `TriState.fromPrefValue(prefs.get*Support(name))` and apply
+  `state.resolve(detected)` (auto → include if capable, on → always include,
+  off → always exclude). Verified in field logs (`Audio codec added [AUTO]: DTS`
+  / `Pull Container excluded [AUTO]: AC3`).
+- ~~Audio Passthrough sub-section (AC3 / EAC3 / DTS / TrueHD / AC4 / etc.),
+  tri-state.~~ ✅ Done (1.15.119). Auto = `AudioCapabilities.supportsEncoding()`
+  per codec via `CodecCapabilityDetector.isAudioPassthroughSupported()`.
+  Pref keys `codec/audio_passthrough/<NAME>/support` (default `automatic`).
+  UI: new `audio_passthrough` PreferenceCategory in `codec_container_prefs.xml`
+  populated by `CodecContainerFragment` (skips codecs with no Android encoding
+  constant). Runtime: `AndroidMiniClientOptions.prepareAudioPassthrough()`
+  resolves the tri-state → SageTV codec name list → `MiniClientConnection`
+  field `passthroughCodecs` → new `AUDIO_PASSTHROUGH` GetProperty handler
+  (emits the CSV; `NONE` when empty). Legacy 9.2.x servers ignore the
+  property; NG servers consult it to decide whether compressed surround
+  can be pushed without PCM transcode.
 
 Notes:
 - Default Player stays **manual** (ExoPlayer / IJK radio).
@@ -81,107 +95,140 @@ Notes:
 
 ### Phase 3 — Per-player honest codec advertisement
 
-Today `AndroidMiniClientOptions` advertises one merged codec list to the
-server regardless of which player will actually decode the stream. ExoPlayer
-and IJK have different decoder coverage (e.g. IJK has FFmpeg software
-fallback for things ExoPlayer can't do; ExoPlayer has hardware HEVC the IJK
-build doesn't always pick up). The server then picks a codec the chosen
-player can't actually decode.
+✅ Done (1.15.120). Plumbing-only on the client; legacy 9.2.x servers are
+unaffected (they don't query the new property names). NG-server team can
+opt in by reading the new properties to bias profile selection.
 
-Split into per-player capability sets and advertise the appropriate one
-based on the active player preference / per-stream selection. Best built
-on top of Phase 2's tri-state foundation.
+- `CodecCapabilityDetector` split into per-player static probes:
+  `isContainerSupportedByExo/ByIjk`, `isVideoCodecSupportedByExo/ByIjk`,
+  `isAudioCodecSupportedByExo/ByIjk`. Existing `is*Supported(...)` methods
+  retained as wrappers that dispatch on `default_player` so Phase 2 UI
+  badge logic is unchanged. IJK probes return blanket `true` (libavformat /
+  libavcodec coverage); narrow only if a specific codec proves IJK-broken.
+- `MiniClientOptions.preparePerPlayerCapabilities(Map)` default no-op so
+  non-Android platforms (Desktop) don't have to opt in.
+- `AndroidMiniClientOptions.preparePerPlayerCapabilities()` walks every
+  Container / VideoCodec / AudioCodec, applies the existing tri-state
+  prefs against per-player auto-detection, and emits a map keyed by
+  SageTV property name (eight entries: `EXO_PUSH_AV_CONTAINERS`,
+  `IJK_PUSH_AV_CONTAINERS`, `EXO_PULL_AV_CONTAINERS`,
+  `IJK_PULL_AV_CONTAINERS`, `EXO_VIDEO_CODECS`, `IJK_VIDEO_CODECS`,
+  `EXO_AUDIO_CODECS`, `IJK_AUDIO_CODECS`). Same tri-state, honest auto.
+- `MiniClientConnection.discoverCodecSupport()` now also calls
+  `client.preparePerPlayerCapabilities(perPlayerCapabilities)`.
+- New GetProperty handlers: a generic `EXO_*` / `IJK_*` matcher emits the
+  per-player list as CSV (or `NONE` when empty). Plus a
+  `MINICLIENT_DEFAULT_PLAYER` hint so NG servers can bias profile picks
+  toward the user's preferred player (Exo by default; user-switchable
+  from the OSD long-press menu).
+
+**NG server work (optional, dormant until shipped):**
+- Read `MINICLIENT_DEFAULT_PLAYER` to know which player to bias toward.
+- Read `EXO_VIDEO_CODECS` / `IJK_VIDEO_CODECS` (and the audio /
+  push-container / pull-container counterparts) to build profile
+  candidates per player. Pick the candidate that best matches the
+  declared default player; fall back to the union if no per-player
+  match is found. Existing `VIDEO_CODECS` / `AUDIO_CODECS` /
+  `PUSH_AV_CONTAINERS` / `PULL_AV_CONTAINERS` remain authoritative for
+  legacy compatibility and as a union fallback.
+- No protocol-level handshake change required — these are just additional
+  GetProperty keys.
+
+**Legacy 9.2.x server compatibility:** the new property names are not in
+the stock 9.2.x advertisement vocabulary, so legacy servers never query
+them. Existing `VIDEO_CODECS` / `AUDIO_CODECS` / `PUSH_AV_CONTAINERS` /
+`PULL_AV_CONTAINERS` continue to flow through `legacyAdvertise()` against
+the same `LEGACY_*_UNIVERSE` filters as before — no behaviour change.
 
 ## Phone / non-Leanback mode
 
-The app currently targets Android TV (Leanback) primarily. When run on a
-phone or tablet (non-Leanback launcher), playback has two visible issues:
+The app primarily targets Android TV (Leanback). Phone/tablet/foldable support
+landed via two helpers gated on `PackageManager.FEATURE_LEANBACK`; on Leanback
+both are no-ops so the existing TV pipeline is untouched.
 
-- **Aspect-ratio scaling.** Video is currently stretched to fill the surface
-  on phone, distorting 4:3 SD content and 16:9 HD content alike when the
-  device aspect ratio doesn't match. Should letterbox/pillarbox to preserve
-  the source aspect ratio (black bars top/bottom or left/right as needed).
-  Implementation: detect non-Leanback at startup (`PackageManager.
-  hasSystemFeature(FEATURE_LEANBACK)`); when false, set the video Surface
-  / `AspectRatioFrameLayout` resize mode to `RESIZE_MODE_FIT` (currently
-  `RESIZE_MODE_FILL` or unset). Plumb actual stream aspect ratio via
-  `onVideoSizeChanged()` from both Exo and IJK players. Add a settings
-  toggle (Fit / Fill / Zoom) so users can override per-device.
+- ~~**Aspect-ratio scaling.**~~ ✅ Done.
+  `android-shared/.../video/NonLeanbackAspect.java` implements Fit / Fill / Zoom
+  by transforming the destination rectangle the server hands the client. Mode
+  is persisted under pref `non_leanback_aspect_mode` (default FIT). Applied in
+  `BaseMediaPlayerImpl#updatePlayerView` (line ~669) using the live stream AR
+  from `VideoInfo`. Cycled from the OSD AR button via
+  `NavigationFragment` (line ~390). FILL preserves legacy stretch-to-fit
+  behaviour. Has no effect on menus (UI is rendered on a separate GL/GDX canvas).
 
-- **Screen rotation.** App is currently locked to landscape. On phones
-  users want both landscape and portrait playback (e.g. holding the phone
-  upright when watching a 4:3 newscast or filling the screen sideways for
-  16:9). Implementation: detect non-Leanback; if true, set
-  `screenOrientation="unspecified"` (or `"sensor"`) instead of the current
-  `"landscape"` in the relevant Activity entries. Ensure GDX surface,
-  ExoPlayer surface, and IJK surface all handle configuration changes
-  without tearing down playback (declare `configChanges="orientation|
-  screenSize|screenLayout"` and re-bind surface in `onConfigurationChanged`).
-  Persist last-used orientation per device.
+- ~~**Screen rotation.**~~ ✅ Done.
+  `android-shared/.../video/OrientationController.java` programmatically calls
+  `activity.setRequestedOrientation(...)` with a Leanback guard (no-op on TV).
+  Mode is cycled from `NavigationFragment` (line ~410) and persisted across
+  sessions. AndroidManifest still declares `screenOrientation="landscape"` as
+  the boot default; the controller overrides per-Activity at runtime when
+  not-Leanback. Existing `configChanges="keyboard|keyboardHidden|orientation|
+  screenSize"` declarations on `MiniClientGDXActivity` and
+  `MiniClientOpenGLActivity` keep the GL/Exo/IJK surface alive through rotation.
 
 ## Per-server legacy / NG mode
 
-The global `legacy_server_compat` checkbox is a stop-gap. Households with
-both a 9.2.x server and an SageTV-NG server need different codec/container
-advertisement per server, so this needs to live on the `ServerInfo` record.
+✅ Done (shipped through 1.15.117 → 1.15.118).
 
-Plan:
-- Add `legacyMode` enum (AUTO / LEGACY / NG) to `ServerInfo`, persisted as
+- `ServerInfo.legacyMode` enum (AUTO / LEGACY / NG) persisted as
   `servers/<key>/legacy_mode`. Default AUTO.
+- Long-press a server tile to set Auto / Legacy / NG.
 - `MiniClientConnection` consults `client.getConnectedServerInfo().legacyMode`
-  instead of the global pref. AUTO starts in NG mode.
-- On the **first** OPENURL that fails with `IO_UNSPECIFIED` (or related
-  negotiation-mismatch errors) on an AUTO server, flip that server to
-  LEGACY, drop+rebuild the player, and reload. Sticky from then on.
-- Server-edit UI (where name/IP/port live) gains a 3-way radio: Auto /
-  Legacy (pre-NG, 9.2.x) / NG.
-- Remove the global `legacy_server_compat` checkbox from `prefs.xml` and
-  the corresponding hard branches in `MiniClientConnection`'s
-  `VIDEO_CODECS` / `AUDIO_CODECS` / `PUSH_AV_CONTAINERS` /
-  `PULL_AV_CONTAINERS` handlers — their AUTO branch instead consults the
-  per-capability `TriState` resolver (see Phase 2/3) which uses the
-  per-server legacy mode to pick its baseline.
-- No data migration. New installs and existing installs both start AUTO
-  on every server; the IO_UNSPECIFIED self-heal does the rest.
+  via `isLegacyServerCompat()`. **AUTO now defaults to LEGACY** (was NG-with-
+  self-heal in the original plan — flipped because the IO_UNSPECIFIED path
+  was leaving people stuck mid-stream).
+- **Server self-declaration:** when an NG server sends
+  `SetProperty SAGETV_NG_SERVER=1` during the initial post-auth property
+  exchange, the client promotes the AUTO state to NG and persists it. Stock
+  9.x servers never send this property and stay LEGACY. Spec delivered to and
+  shipped by server team.
+- Device-aware LEGACY codec advertisement: `buildLegacyDeviceAwarePushFormat()`
+  and `buildLegacyDeviceAwareRemuxFormat()` intersect the legacy universe with
+  what the device's HW decoders actually report.
+- The global `legacy_server_compat` checkbox path remains as a manual escape
+  hatch; per-server mode takes precedence when set.
 
 ## Auto player selection (Exo ↔ IJK)
 
 Default player is a manual user choice today (Exo or IJK). For known
-landmines the client should silently pick the right one for that one
-stream so the user doesn't have to know which player handles which codec.
+landmines the client silently picks the right one for that one stream so
+the user doesn't have to know which player handles which codec.
 
-Plan, in priority order:
+1. ~~**Pre-emptive URL inspection (primary).**~~ ✅ Done.
+   `PlayerSelectionUtil` is consulted at OPENURL time by
+   `MiniClientGDXRenderer`, `OpenGLRenderer`, and `Exo2MediaPlayerImpl`.
+   Two landmine patterns recognised:
+   - `isExoPsMpeg4Landmine(url)` — `f=MPEG2-PS` (or `MPEG2-TS`) containing
+     `[bf=vid;f=MPEG4;...]` (MPEG-4 Part 2 in MPEG program/transport
+     stream) — `PsExtractor.H262Reader.parseCsdBuffer` AIOOBE in
+     ExoPlayer 2.18.1; IJK demuxes natively.
+   - `isBarePushUrl(url)` — empty/garbled `push:` URL with no `F=`
+     format descriptor (observed on sagetv-mine NG May 2026 where the
+     server's profile resolver emitted DIRECT_PLAY/REMUX with an empty
+     payload descriptor). Without the hint, ExoPlayer's sniff path
+     partially succeeds on the Fold — audio plays, video stays black.
+     IJK uses libavformat sniff and handles a wider set of input shapes.
+   First swap per process emits a one-shot toast via
+   `PlayerSelectionUtil.notifyLandmineSwap()` so the user knows why we
+   re-routed; subsequent swaps are silent (still logged).
 
-1. **Pre-emptive URL inspection (primary).** At OPENURL, parse the
-   `push:` URL's container and codec hints. If the combination is on the
-   known-Exo-broken list, instantiate IJK for this stream regardless of
-   the user's preference. The first concrete entry on that list:
-   - `f=MPEG2-PS` containing `[bf=vid;f=MPEG4]` (MPEG-4 Part 2 in MPEG
-     program stream) — `PsExtractor.H262Reader.parseCsdBuffer` AIOOBE
-     in ExoPlayer 2.18.1; IJK demuxes natively.
-   No spinner penalty: the player is selected once, before any data
-   flows. Other entries can be added as we hit them.
-
-2. **Reactive error fallback (safety net).** If ExoPlayer surfaces
-   `ERROR_CODE_PARSING_CONTAINER_MALFORMED` (or similar demux-level
-   parse errors) on initial sniff and the URL was *not* on the known
-   list, swap to IJK for this stream and remember the URL
-   container/codec signature so the next play of a similar stream goes
-   straight to IJK without the failed first attempt. Cache lives in
-   `MiniClient` for the session; consider persisting later if the list
-   stabilises.
+2. **Reactive error fallback (safety net).** Still open. If ExoPlayer
+   surfaces `ERROR_CODE_PARSING_CONTAINER_MALFORMED` (or similar
+   demux-level parse errors) on initial sniff and the URL was *not* on
+   the known landmine list, swap to IJK for this stream and remember
+   the URL container/codec signature so the next play of a similar
+   stream goes straight to IJK without the failed first attempt. Cache
+   lives in `MiniClient` for the session; consider persisting later if
+   the list stabilises.
 
 3. **User preference (fallback).** When neither rule fires, use the
-   user-selected default player. Setting label can stay "Default
-   Player"; the auto-swap is invisible unless something on the
-   landmine list shows up.
+   user-selected default player. The auto-swap is invisible unless
+   something on the landmine list shows up.
 
 Non-goals (for v1):
 - No keep-warm second player. Each swap pays the ~300–500 ms cold-start
   cost. Revisit if instrumentation says it matters.
-- No toast / on-screen indication of the swap. If users want to know
-  which player handled a stream, expose it in the existing OSD/info
-  overlay later.
+- ~~No toast.~~ Implemented as one-shot per process to balance "user
+  should know why" against "don't spam a marathon FF session".
 
 ## Network latency resilience
 
@@ -280,6 +327,15 @@ EAC3 natively, which is the expected behaviour.
 
 ### Trickplay polish (low priority)
 
+- ~~**Pause-resume scrubber monotonicity guard.**~~ ✅ Done (1.15.119).
+  `TrickplayController.onPlayerPosition()` now drops player-position
+  samples whose backward delta from the previous sample falls inside
+  `[MONOTONIC_GUARD_MIN_REGRESSION_MS, MONOTONIC_GUARD_MAX_REGRESSION_MS]`
+  (250 ms … 30 s) *when no seek is armed or committed*. Catches the
+  pause→resume re-anchor blip (player re-reports the last decoded
+  keyframe before catching up) without interfering with legitimate
+  seeks (handled by the existing mapping path) or real loops/reloads
+  (regression > 30 s, accepted).
 - Double `TransportDS.open()` quirk on first push session: self-recovers
   on retry, but worth investigating for a cleaner first-frame latency.
 - Native trickplay state-machine transitions are observed only by

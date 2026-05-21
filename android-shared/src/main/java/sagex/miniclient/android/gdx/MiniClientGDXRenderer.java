@@ -856,9 +856,11 @@ public class MiniClientGDXRenderer implements ApplicationListener, UIRenderer<Gd
         }
 
         boolean useExoPlayer = client.properties().getString(PrefStore.Keys.default_player, "exoplayer").equalsIgnoreCase("exoplayer");
+        String swapReason = null;
 
         if (activity.isSwitchingPlayerOneTime()) {
             useExoPlayer = !useExoPlayer;
+            swapReason = "one-time player swap (user-initiated)";
         }
 
         // URL-inspection landmine swap: ExoPlayer 2.18.1's PsExtractor crashes
@@ -867,14 +869,18 @@ public class MiniClientGDXRenderer implements ApplicationListener, UIRenderer<Gd
         // prefers ExoPlayer — avoids 12 wasted retry cycles and a black screen.
         if (useExoPlayer && PlayerSelectionUtil.isExoPsMpeg4Landmine(urlString)) {
             log.warn("ExoPlayer landmine detected (MPEG-4 in MPEG-PS): swapping to IJK for this stream. URL={}", urlString);
+            PlayerSelectionUtil.notifyLandmineSwap(activity.getContext(), "PS+MPEG-4 compat");
             useExoPlayer = false;
+            swapReason = "PS+MPEG-4 compat (ExoPlayer PsExtractor crashes on MPEG-4 Part 2 in MPEG-PS)";
         }
         // NG bare-push landmine: NG server emits OPENURL `push:` with no
         // format hint, ExoPlayer can't pick the right Extractor, audio plays
         // but video stays black. IJK's libavformat sniffs and handles it.
         else if (useExoPlayer && PlayerSelectionUtil.isBarePushUrl(urlString)) {
             log.warn("NG bare-push landmine detected (no format hint): swapping to IJK. URL={}", urlString);
+            PlayerSelectionUtil.notifyLandmineSwap(activity.getContext(), "NG bare-push compat");
             useExoPlayer = false;
+            swapReason = "NG bare-push compat (server emitted push: with no format hint)";
         }
 
         if (useExoPlayer) {
@@ -885,6 +891,8 @@ public class MiniClientGDXRenderer implements ApplicationListener, UIRenderer<Gd
             log.debug("Using iJKPlayer");
             player = new IJKMediaPlayerImpl(activity);
         }
+        sagex.miniclient.android.video.PlaybackDecisionLog.log(
+                client, urlString, useExoPlayer ? "ExoPlayer" : "IJKPlayer", swapReason);
         return player;
     }
 

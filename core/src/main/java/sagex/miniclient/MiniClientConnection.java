@@ -319,6 +319,15 @@ public class MiniClientConnection implements SageTVInputCallback
     private List<String> audioCodecs = new ArrayList<String>();
     private List<String> pushFormats = new ArrayList<String>();
     private List<String> pullFormats = new ArrayList<String>();
+    private List<String> passthroughCodecs = new ArrayList<String>();
+    /**
+     * Phase 3: per-player honest capability lists keyed by SageTV property
+     * name (e.g. {@code EXO_VIDEO_CODECS} / {@code IJK_VIDEO_CODECS}).
+     * Populated alongside the merged lists by
+     * {@code AndroidMiniClientOptions.preparePerPlayerCapabilities()}.
+     * Legacy 9.2.x servers never query these keys; NG servers can opt in.
+     */
+    private final java.util.Map<String, List<String>> perPlayerCapabilities = new java.util.HashMap<>();
 
     private MenuHint menuHint = new MenuHint();
     private Properties profileProperties;
@@ -344,6 +353,17 @@ public class MiniClientConnection implements SageTVInputCallback
      * forced every NG server into legacy advertisement. The fallback is
      * removed; users on legacy-only deployments should long-press their
      * server tile and pin LEGACY explicitly.</p>
+     *
+     * <p><b>AUTO default is LEGACY</b> (as of 1.15.118). Rationale: stock
+     * SageTV 9.2.x is the dominant server population, and its failure mode
+     * is silent — it advertises no codec metadata and the legacy resolver
+     * picks the 2014 "unknown placeshifter" default (MPEG-4 Part 2 ASP +
+     * MP2 + MPEG-PS). NG servers self-declare via {@code SAGETV_NG_SERVER=1}
+     * (SetProperty) during the initial post-auth property exchange; receipt
+     * of that property promotes AUTO → NG mid-handshake (see the
+     * {@code SAGETV_NG_SERVER} handler in the SetProperty switch below).
+     * The handshake completes before any media playback request, so the
+     * promotion always happens in time.</p>
      */
     public boolean isLegacyServerCompat()
     {
@@ -357,10 +377,131 @@ public class MiniClientConnection implements SageTVInputCallback
                 default:     break;
             }
         }
-        // AUTO (or unset): default to NG advertisement.
-        // notifyServerCompatibilityFailure() will flip to LEGACY if the
-        // server proves it can't handle us.
-        return false;
+        // AUTO (or unset): default to LEGACY advertisement.
+        // Receipt of SAGETV_NG_SERVER=1 from the server promotes to NG.
+        return true;
+    }
+
+    /**
+     * When connected to a stock SageTV 9.2.x server ({@link #isLegacyServerCompat()}
+     * is true), the server's profile resolver only consults the modern
+     * {@code PUSH_AV_CONTAINERS} / {@code VIDEO_CODECS} / {@code AUDIO_CODECS}
+     * announces partially — it falls back to its hardcoded "unknown
+     * placeshifter" default (MPEG-4 Part 2 ASP + MP2 + MPEG-PS, the worst
+     * supported combo) whenever the client does not send
+     * {@code FIXED_PUSH_MEDIA_FORMAT}.
+     *
+     * <p>The user-facing pref {@code fixed_encoding/preference=needed} (the
+     * default) is the right answer on the NG server but on legacy 9.2.x it
+     * means "give me your 2014 default" = the bad combo above. To give
+     * legacy-server users a usable picture/sound without forcing them to
+     * flip every device pref to {@code "always"}, this method synthesizes
+     * a device-aware {@code FIXED_PUSH_MEDIA_FORMAT} recipe based on
+     * {@link MiniClientOptions#getDeviceClass()} that maps to the
+     * recommended settings in {@code ClientSettings.md}.</p>
+     *
+     * <p>Returns {@code null} (no auto-promotion, keep existing behavior)
+     * when any of:
+     * <ul>
+     *   <li>not connected to a legacy 9.2.x server</li>
+     *   <li>user explicitly pinned {@code preference=always} (their recipe wins)</li>
+     *   <li>device class is {@code UNKNOWN} (can't pick safe codec ceiling)</li>
+     * </ul></p>
+     *
+     * <p>Note: we DO NOT gate on {@code effectiveStreamingMode}. The legacy
+     * 9.2.x server can still emit a {@code push:} URL even when the negotiated
+     * transport is PULL (its resolver picks per-stream based on the source).
+     * Pull playback simply ignores this property — there is no downside to
+     * advertising it in every mode.</p>
+     *
+     * <p>Side effect on the legacy server: sending {@code FIXED_PUSH_MEDIA_FORMAT}
+     * disables the legacy {@code dynamicRateAdjust}. The recipe bitrates
+     * below are conservative LAN-friendly numbers per device tier.</p>
+     */
+    public String buildLegacyDeviceAwarePushFormat(String effectiveStreamingMode)
+    {
+        if (!isLegacyServerCompat()) return null;
+        if (client == null || client.properties() == null) return null;
+        if ("always".equalsIgnoreCase(client.properties().getFixedEncodingPreference())) return null;
+        String dc = (client.options() != null) ? client.options().getDeviceClass() : "UNKNOWN";
+        if (dc == null || "UNKNOWN".equals(dc)) return null;
+
+        final int videobitrateBps;
+        final int audiobitrateBps;
+        final String audiochannels;
+        switch (dc)
+        {
+            case "SHIELD":
+            case "PREMIUM_PHONE":
+            case "FOLDABLE":
+            case "TABLET":
+                videobitrateBps = 8000000;
+                audiobitrateBps = 384000;
+                audiochannels = "6";
+                break;
+            case "MID_PHONE":
+            case "BUDGET_ATV":
+                videobitrateBps = 6000000;
+                audiobitrateBps = 192000;
+                audiochannels = "2";
+                break;
+            case "BUDGET_PHONE":
+                videobitrateBps = 4000000;
+                audiobitrateBps = 192000;
+                audiochannels = "2";
+                break;
+            default:
+                return null;
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("container=matroska;");
+        sb.append("videocodec=h264;");
+        sb.append("videobitrate=").append(videobitrateBps).append(";");
+        sb.append("fps=SOURCE;");
+        sb.append("resolution=SOURCE;");
+        sb.append("audiocodec=ac3;");
+        sb.append("audiobitrate=").append(audiobitrateBps).append(";");
+        sb.append("audiochannels=").append(audiochannels).append(";");
+        String fmt = sb.toString();
+        log.logInfo("LEGACY FIXED_PUSH_MEDIA_FORMAT auto-promote [DeviceClass=" + dc
+                + " effectiveStreamingMode=" + effectiveStreamingMode + "]: " + fmt);
+        return fmt;
+    }
+
+    /**
+     * Companion to {@link #buildLegacyDeviceAwarePushFormat(String)}: synthesize
+     * a device-aware {@code FIXED_PUSH_REMUX_FORMAT} so HEVC / H.264 sources
+     * that just need container fixing get rewrapped instead of re-transcoded
+     * by the legacy server's default profile.
+     *
+     * <p>Container choice per ClientSettings.md table:
+     * SHIELD + BUDGET_ATV → {@code mpegts} (their MediaCodec stacks are
+     * TS-first); everyone else → {@code matroska}.</p>
+     */
+    public String buildLegacyDeviceAwareRemuxFormat(String effectiveStreamingMode)
+    {
+        if (!isLegacyServerCompat()) return null;
+        if (client == null || client.properties() == null) return null;
+        if ("always".equalsIgnoreCase(client.properties().getFixedRemuxingPreference())) return null;
+        if ("off".equalsIgnoreCase(client.properties().getFixedRemuxingPreference())) return null;
+        String dc = (client.options() != null) ? client.options().getDeviceClass() : "UNKNOWN";
+        if (dc == null || "UNKNOWN".equals(dc)) return null;
+
+        final String container;
+        switch (dc)
+        {
+            case "SHIELD":
+            case "BUDGET_ATV":
+                container = "mpegts";
+                break;
+            default:
+                container = "matroska";
+        }
+        String fmt = "container=" + container + ";videocodec=COPY;audiocodec=COPY;";
+        log.logInfo("LEGACY FIXED_PUSH_REMUX_FORMAT auto-promote [DeviceClass=" + dc
+                + " effectiveStreamingMode=" + effectiveStreamingMode + "]: " + fmt);
+        return fmt;
     }
 
     /**
@@ -653,6 +794,8 @@ public class MiniClientConnection implements SageTVInputCallback
         pushFormats = Container.getAllSageTVNames();
 
         client.prepareCodecs(videoCodecs, audioCodecs, pushFormats, pullFormats);
+        client.prepareAudioPassthrough(passthroughCodecs);
+        client.preparePerPlayerCapabilities(perPlayerCapabilities);
     }
 
     private static final java.util.regex.Pattern COMMA_SPLIT = java.util.regex.Pattern.compile("\\s*,\\s*");
@@ -1176,11 +1319,26 @@ public class MiniClientConnection implements SageTVInputCallback
                     }
                     else if ("INPUT_DEVICES".equals(propName))
                     {
-                        propVal="IR,KEYBOARD";
-                        if (client.options().isDesktopUI()) propVal+=",MOUSE";
-                        if (client.options().isTouchUI()) propVal+=",TOUCH";
-                        if (client.options().isTVUI()) propVal+=",TV";
-                        // propVal = "IR,KEYBOARD,TOUCH"; // MOUSE,KEYBOARD,TOUCH,IR (mouse implies desktop)
+                        // Phase B (stream-copy HD remux): when the user has pinned this
+                        // legacy server to FIXED, advertise as a media-extender (no MOUSE)
+                        // so the upstream MiniPlayer.load() takes the mediaExtender branch
+                        // and emits 'mpeg2psremux' (pure stream copy, -vcodec copy -acodec copy)
+                        // instead of the hardcoded 352x240 'dynamic' transcode.
+                        // [google/SageTV@f55505f:java/sage/MiniClientSageRenderer.java#isMediaExtender]
+                        // [google/SageTV@f55505f:java/sage/MiniPlayer.java#load mediaExtender branch]
+                        if (isPhaseBExtenderRemuxActive(effectiveStreamingMode))
+                        {
+                            propVal = "IR,KEYBOARD";
+                            log.logInfo("PHASE_B: INPUT_DEVICES -> 'IR,KEYBOARD' (extender posture for mpeg2psremux)");
+                        }
+                        else
+                        {
+                            propVal="IR,KEYBOARD";
+                            if (client.options().isDesktopUI()) propVal+=",MOUSE";
+                            if (client.options().isTouchUI()) propVal+=",TOUCH";
+                            if (client.options().isTVUI()) propVal+=",TV";
+                            // propVal = "IR,KEYBOARD,TOUCH"; // MOUSE,KEYBOARD,TOUCH,IR (mouse implies desktop)
+                        }
                     }
                     else if ("DISPLAY_OVERSCAN".equals(propName))
                     {
@@ -1207,7 +1365,22 @@ public class MiniClientConnection implements SageTVInputCallback
                     }
                     else if ("PUSH_BUFFER_SEEKING".equals(propName))
                     {
-                        propVal = "TRUE";
+                        // We do NOT implement client-side seeking inside the push
+                        // ring buffer. IJK/Exo only hold a few seconds of forward
+                        // data, so a seek beyond that window can only be satisfied
+                        // by the server flushing and re-pushing from the new
+                        // position. Advertising TRUE made the legacy server send
+                        // MEDIACMD_SEEK alone (no flush, no restream), which left
+                        // OSD advancing while video kept playing the stale buffer
+                        // (FF "did nothing" on Fold ↔ 100.97.197.107).
+                        //
+                        // See IJKMediaPlayerImpl.seek() push-mode branch — its own
+                        // comment says "The server handles seeking by flushing the
+                        // old data and pushing new data from the seek position",
+                        // i.e. server-driven flush+restream is the contract we
+                        // actually honor. Answer FALSE so the server uses that
+                        // path (MEDIACMD_FLUSH + new PUSHBUFFER stream).
+                        propVal = "FALSE";
                     }
                     else if ("GFX_SUBTITLES".equals(propName))
                     {
@@ -1262,6 +1435,19 @@ public class MiniClientConnection implements SageTVInputCallback
                             // 9.2.x server: device-aware Placeshifter advertisement.
                             // See LEGACY_VIDEO_UNIVERSE comment block for rationale.
                             propVal = legacyAdvertise("VIDEO_CODECS", LEGACY_VIDEO_UNIVERSE, videoCodecs);
+                            // Phase B: when FIXED override is active, the mediaExtender +
+                            // mpeg2psremux selection in upstream MiniPlayer requires
+                            // clientCanDoMPEGHD = isSupportedVideoCodec("MPEG2-VIDEO@HL").
+                            // Force-include it (the recipe is pure stream copy, so the
+                            // client must only RECEIVE the original HD MPEG-2 PS; actual
+                            // decode happens in the player chosen at OPENURL — and the
+                            // ExoPlayer PsExtractor landmine is already routed to IJK by
+                            // PlayerSelectionUtil.isExoPsMpeg4Landmine).
+                            if (isPhaseBExtenderRemuxActive(effectiveStreamingMode))
+                            {
+                                propVal = ensureCsvToken(propVal, "MPEG2-VIDEO@HL");
+                                log.logInfo("PHASE_B: VIDEO_CODECS force-include MPEG2-VIDEO@HL -> " + propVal);
+                            }
                         }
                         else if (client.properties().getFixedEncodingPreference().equalsIgnoreCase("always")
                                 && effectiveStreamingMode.equalsIgnoreCase("fixed"))
@@ -1301,6 +1487,18 @@ public class MiniClientConnection implements SageTVInputCallback
                             }
                         }
                     }
+                    else if ("AUDIO_PASSTHROUGH".equals(propName))
+                    {
+                        // Phase 2: per-codec bitstream-to-sink passthrough advertisement.
+                        // Resolved set is populated by client.prepareAudioPassthrough()
+                        // from the AudioCapabilities.supportsEncoding() probe + per-codec
+                        // tri-state overrides under codec/audio_passthrough/<NAME>/support.
+                        // Legacy 9.2.x servers ignore this property; NG servers consult it
+                        // to decide whether compressed surround can be pushed without
+                        // transcoding to PCM.
+                        propVal = toStringList(passthroughCodecs);
+                        if (propVal == null || propVal.isEmpty()) propVal = "NONE";
+                    }
                     else if ("PUSH_AV_CONTAINERS".equals(propName))
                     {
                         if (isLegacyServerCompat())
@@ -1310,6 +1508,32 @@ public class MiniClientConnection implements SageTVInputCallback
                             // the ExoPlayer-PsExtractor landmine container but the
                             // PlayerSelectionUtil swap routes around that at OPENURL time.
                             propVal = legacyAdvertise("PUSH_AV_CONTAINERS", LEGACY_PUSH_UNIVERSE, pushFormats);
+                            // Phase B: clientDoesMPEG2Push = isSupportedPushContainerFormat("MPEG2-PS")
+                            // is required for the mpeg2psremux branch in upstream MiniPlayer.
+                            // Force-include MPEG2-PS when FIXED override is active so the
+                            // server's "only container unsupported" path can fire.
+                            if (isPhaseBExtenderRemuxActive(effectiveStreamingMode))
+                            {
+                                propVal = ensureCsvToken(propVal, "MPEG2-PS");
+                                log.logInfo("PHASE_B: PUSH_AV_CONTAINERS force-include MPEG2-PS -> " + propVal);
+                            }
+                            else
+                            {
+                                // BUDGET_ATV bias (Chromecast w/ Google TV, Onn 4K, etc.):
+                                // their MediaCodec pipelines are TS-first and stutter on
+                                // MPEG-PS push. Drop MPEG2-PS so the upstream "container
+                                // unsupported" branch picks MPEG2-TS remux instead. We
+                                // keep MPEG2-TS in the advertisement (or fall back to
+                                // MPEG1-PS) so the server still has a push target.
+                                String dc = (client != null && client.options() != null) ? client.options().getDeviceClass() : "UNKNOWN";
+                                if ("BUDGET_ATV".equals(dc) && propVal != null && propVal.toUpperCase(java.util.Locale.ROOT).contains("MPEG2-PS")
+                                        && propVal.toUpperCase(java.util.Locale.ROOT).contains("MPEG2-TS"))
+                                {
+                                    String filtered = removeCsvToken(propVal, "MPEG2-PS");
+                                    log.logInfo("LEGACY PUSH bias [BUDGET_ATV]: dropped MPEG2-PS -> " + filtered);
+                                    propVal = filtered;
+                                }
+                            }
                         }
                         else if (((client.properties().getFixedEncodingPreference().equalsIgnoreCase("always")
                             || client.properties().getFixedRemuxingPreference().equalsIgnoreCase("always"))
@@ -1352,6 +1576,17 @@ public class MiniClientConnection implements SageTVInputCallback
                             // 9.2.x server: device-aware Placeshifter pull container set.
                             if (!canDoPullStreaming)
                                 propVal = "";
+                            else if (isPhaseBExtenderRemuxActive(effectiveStreamingMode))
+                            {
+                                // Phase B: pin PULL_AV_CONTAINERS empty so the upstream
+                                // PULL-vs-PUSH decision in MiniPlayer.load() never picks
+                                // PULL for the source's container. That's what arms the
+                                // "only container unsupported" branch on the push side,
+                                // which is the prerequisite for prefTranscodeMode=
+                                // mpeg2psremux. [google/SageTV@f55505f:java/sage/MiniPlayer.java]
+                                propVal = "";
+                                log.logInfo("PHASE_B: PULL_AV_CONTAINERS -> '' (force PUSH path for extender remux)");
+                            }
                             else
                                 propVal = legacyAdvertise("PULL_AV_CONTAINERS", LEGACY_PULL_UNIVERSE, pullFormats);
                         }
@@ -1375,6 +1610,37 @@ public class MiniClientConnection implements SageTVInputCallback
                             }
                         }
                     }
+                    else if (propName != null
+                            && (propName.startsWith("EXO_") || propName.startsWith("IJK_"))
+                            && perPlayerCapabilities.containsKey(propName))
+                    {
+                        // Phase 3: per-player honest capability advertisement.
+                        // Legacy 9.2.x servers never query these property names
+                        // (they don't know about them), so this branch is dormant
+                        // when isLegacyServerCompat() is true. NG servers can opt
+                        // in to consume EXO_/IJK_ split lists for honest profile
+                        // matching at OPENURL time.
+                        //
+                        // Per the NG server contract (post-e66136e4): return an
+                        // EMPTY STRING (not "NONE") when the list is empty so
+                        // the server falls back to the union VIDEO_CODECS /
+                        // AUDIO_CODECS / PUSH_AV_CONTAINERS / PULL_AV_CONTAINERS
+                        // properties for that key. Returning "NONE" would be
+                        // parsed as a literal codec name and break fallback.
+                        List<String> list = perPlayerCapabilities.get(propName);
+                        propVal = (list == null || list.isEmpty()) ? "" : toStringList(list);
+                    }
+                    else if ("MINICLIENT_DEFAULT_PLAYER".equals(propName))
+                    {
+                        // Phase 3 hint for NG servers: which player the user has
+                        // selected as default. The actual player at OPENURL time
+                        // can be auto-swapped by PlayerSelectionUtil for known
+                        // landmines, but this is the best static hint the server
+                        // can use to bias its profile picks. Legacy servers don't
+                        // query this property.
+                        String dp = client.properties().getString(PrefStore.Keys.default_player, "exoplayer");
+                        propVal = (dp == null || dp.isEmpty()) ? "exoplayer" : dp.toLowerCase(java.util.Locale.ROOT);
+                    }
                     else if ("MEDIA_PLAYER_BUFFER_DELAY".equals(propName))
                     {
                         // MPlayer needs an extra 2 seconds of buffer before it
@@ -1386,7 +1652,16 @@ public class MiniClientConnection implements SageTVInputCallback
                     }
                     else if ("FIXED_PUSH_MEDIA_FORMAT".equals(propName))
                     {
-                        if ("fixed".equalsIgnoreCase(effectiveStreamingMode))
+                        // Legacy 9.2.x auto-promote: if no user-pinned recipe, synthesize
+                        // a device-aware one so the legacy server doesn't fall back to
+                        // its hardcoded MPEG-4 ASP + MP2 + MPEG-PS default. See
+                        // buildLegacyDeviceAwarePushFormat() javadoc for the full rationale.
+                        String legacyFmt = buildLegacyDeviceAwarePushFormat(effectiveStreamingMode);
+                        if (legacyFmt != null)
+                        {
+                            propVal = legacyFmt;
+                        }
+                        else if ("fixed".equalsIgnoreCase(effectiveStreamingMode))
                         {
                             String format = client.properties().getFixedEncodingContainerFormat();
                             
@@ -1460,8 +1735,16 @@ public class MiniClientConnection implements SageTVInputCallback
                     }
                     else if ("FIXED_PUSH_REMUX_FORMAT".equals(propName))
                     {
+                        // Legacy 9.2.x auto-promote: device-aware remux container so
+                        // HEVC / H.264 sources that just need a container wrap get
+                        // remuxed instead of re-transcoded by the legacy server's default.
+                        String legacyRemux = buildLegacyDeviceAwareRemuxFormat(effectiveStreamingMode);
+                        if (legacyRemux != null)
+                        {
+                            propVal = legacyRemux;
+                        }
                         //If we are using fixed streaming mode and
-                        if ("fixed".equalsIgnoreCase(effectiveStreamingMode))
+                        else if ("fixed".equalsIgnoreCase(effectiveStreamingMode))
                         {
                             if(!client.properties().getFixedRemuxingPreference().equalsIgnoreCase("off"))
                             {
@@ -1842,6 +2125,45 @@ public class MiniClientConnection implements SageTVInputCallback
                             log.logInfo("Server resolved client profile: CAP_EFFECTIVE_PROFILE=" + propVal);
                             retval = 0;
                         }
+                        else if ("SAGETV_NG_SERVER".equals(propName))
+                        {
+                            // NG server self-declaration. Emitted by NG-aware
+                            // server builds during the initial post-auth property
+                            // exchange (well before any media OPENURL), so
+                            // promoting AUTO → NG here takes effect for this
+                            // session's first stream.
+                            //
+                            // Stock SageTV 9.2.x servers never emit this
+                            // property; absence implies LEGACY (which is now the
+                            // AUTO default — see isLegacyServerCompat()).
+                            //
+                            // Value semantics: "1" / "true" (case-insensitive)
+                            // = NG. Anything else is ignored (treated as no
+                            // declaration, AUTO default stays).
+                            propVal = new String(cmdbuffer, 4 + nameLen, valLen);
+                            boolean isNg = "1".equals(propVal) || "true".equalsIgnoreCase(propVal);
+                            if (isNg && msi != null && msi.legacyMode == ServerInfo.LegacyMode.AUTO)
+                            {
+                                log.logInfo("Server '" + msi.name + "' self-declared SAGETV_NG_SERVER=" + propVal
+                                        + "; promoting AUTO → NG and persisting.");
+                                msi.legacyMode = ServerInfo.LegacyMode.NG;
+                                try
+                                {
+                                    msi.save(client.properties());
+                                }
+                                catch (Throwable t)
+                                {
+                                    log.logError("Failed to persist SAGETV_NG_SERVER promotion for '" + msi.name + "'", t);
+                                }
+                            }
+                            else
+                            {
+                                log.logInfo("Received SAGETV_NG_SERVER=" + propVal
+                                        + " (msi.legacyMode=" + (msi != null ? msi.legacyMode : "null")
+                                        + ") — no state change.");
+                            }
+                            retval = 0;
+                        }
                         else
                         {
                             retval = 0; // or the error code if it failed the
@@ -2013,6 +2335,67 @@ public class MiniClientConnection implements SageTVInputCallback
      *                      ({@code videoCodecs}, {@code audioCodecs}, etc.)
      * @return comma-separated token string suitable for SageTV propVal
      */
+    /**
+     * Phase B (stream-copy HD remux) gate. True when the user has pinned
+     * the connected server to {@code StreamingModeOverride.FIXED} AND the
+     * server is on the legacy 9.2.x compat path. When true, four capability
+     * advertisements are forced to satisfy the upstream prerequisites for
+     * {@code prefTranscodeMode = "mpeg2psremux"} (pure stream copy):
+     * <ol>
+     *   <li>{@code INPUT_DEVICES} = "IR,KEYBOARD" (no MOUSE) -&gt; server's
+     *       {@code isMediaExtender()} returns true</li>
+     *   <li>{@code VIDEO_CODECS} force-includes "MPEG2-VIDEO@HL" -&gt;
+     *       {@code clientCanDoMPEGHD} = true</li>
+     *   <li>{@code PUSH_AV_CONTAINERS} force-includes "MPEG2-PS" -&gt;
+     *       {@code clientDoesMPEG2Push} = true</li>
+     *   <li>{@code PULL_AV_CONTAINERS} = "" -&gt; forces PUSH path so the
+     *       "only container unsupported" branch fires and selects
+     *       mpeg2psremux instead of dynamic 352x240 transcode.</li>
+     * </ol>
+     * See docs/hdhr-delivery-analysis-v3.md for full provenance.
+     */
+    private boolean isPhaseBExtenderRemuxActive(String effectiveStreamingMode)
+    {
+        return isLegacyServerCompat() && "fixed".equalsIgnoreCase(effectiveStreamingMode);
+    }
+
+    /**
+     * Ensures {@code token} appears in a comma-separated value list.
+     * Case-insensitive presence check; appends if missing. Handles
+     * null/empty CSV by returning {@code token} alone.
+     */
+    private static String ensureCsvToken(String csv, String token)
+    {
+        if (token == null || token.isEmpty()) return csv;
+        if (csv == null || csv.isEmpty()) return token;
+        String lcToken = token.toLowerCase(java.util.Locale.ROOT);
+        for (String part : csv.split(","))
+        {
+            if (part.trim().toLowerCase(java.util.Locale.ROOT).equals(lcToken)) return csv;
+        }
+        return csv + "," + token;
+    }
+
+    /**
+     * Removes {@code token} (case-insensitive, exact match) from a CSV
+     * list, preserving the order of remaining tokens. Returns the
+     * original string unchanged if the token is absent.
+     */
+    private static String removeCsvToken(String csv, String token)
+    {
+        if (csv == null || csv.isEmpty() || token == null || token.isEmpty()) return csv;
+        String lcToken = token.toLowerCase(java.util.Locale.ROOT);
+        StringBuilder out = new StringBuilder();
+        for (String part : csv.split(","))
+        {
+            String trimmed = part.trim();
+            if (trimmed.toLowerCase(java.util.Locale.ROOT).equals(lcToken)) continue;
+            if (out.length() > 0) out.append(",");
+            out.append(trimmed);
+        }
+        return out.toString();
+    }
+
     private String legacyAdvertise(String label, String[] universe, List<String> deviceTokens)
     {
         if (deviceTokens == null || deviceTokens.isEmpty())

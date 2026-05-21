@@ -28,6 +28,32 @@ public final class PlayerSelectionUtil
     {
     }
 
+    // One-shot guard per process for the user-visible landmine swap toast.
+    // We always log the swap; we toast only the first time per process so the
+    // user is told (once) why we silently routed to IJK, without spamming a
+    // toast on every recording in a marathon FF session.
+    private static volatile boolean swapToastShown = false;
+
+    /**
+     * Show a one-shot user-visible toast on the first landmine-driven player
+     * swap of the process. Subsequent swaps are silent (still logged). Safe
+     * to call from any thread; uses {@link android.os.Handler} on the main
+     * Looper. Pass null context to silently skip (e.g. tests).
+     */
+    public static void notifyLandmineSwap(final android.content.Context ctx, final String reason)
+    {
+        if (ctx == null) return;
+        if (swapToastShown) return;
+        swapToastShown = true;
+        final String msg = "Auto-switched to IJK player (" + reason + ")";
+        new android.os.Handler(android.os.Looper.getMainLooper()).post(new Runnable() {
+            @Override public void run() {
+                try { android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_LONG).show(); }
+                catch (Throwable ignored) {}
+            }
+        });
+    }
+
     /**
      * @return true if the URL looks like a SageTV "dynamic Placeshifter"
      *         push of MPEG-4 Part 2 video inside MPEG-PS &mdash; the

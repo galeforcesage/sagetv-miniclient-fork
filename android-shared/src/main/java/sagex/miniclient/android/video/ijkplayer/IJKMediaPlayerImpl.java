@@ -225,10 +225,25 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
         if (player != null && pushMode)
         {
             log.debug("Flush in push mode: reset resume state, new data will arrive at new position");
+            // CRITICAL: TrickplayController.flush() (called from super.flush())
+            // only drains our native ring buffer. It does NOT touch IJK's
+            // internal ffmpeg packet queues / decoder queues, which can hold
+            // many seconds of pre-flush data. Without forcing IJK to drop
+            // those, FF/REW on Fold ↔ legacy server "does nothing" — the OSD
+            // advances but the picture keeps playing the old buffered frames.
+            //
+            // The seekToImpl(Long.MAX_VALUE) trick used in pull mode also
+            // works here as a pure "flush internal queues" signal:
+            // TransportIjkMediaSource.readAt() ignores the position arg and
+            // always returns the next bytes from our ring buffer head, so the
+            // seek itself is a no-op — but the act of starting the seek causes
+            // IJK to flush packet/decoder queues, then resume reading from
+            // our DS which now contains post-flush data from the new position.
+            seekToImpl(Long.MAX_VALUE);
         }
         else if (player != null)
         {
-            if (pushMode)
+            if (VerboseLogging.DETAILED_PLAYER_LOGGING)
             {
                 log.debug("Flush in pull mode: force seek to clear buffers");
             }

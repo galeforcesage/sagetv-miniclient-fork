@@ -258,6 +258,16 @@ public class MiniClient
         options.prepareCodecs(videoCodecs, audioCodecs, pushFormats, pullFormats);
     }
 
+    public void prepareAudioPassthrough(List<String> passthroughCodecs)
+    {
+        options.prepareAudioPassthrough(passthroughCodecs);
+    }
+
+    public void preparePerPlayerCapabilities(java.util.Map<String, List<String>> perPlayerCaps)
+    {
+        options.preparePerPlayerCapabilities(perPlayerCaps);
+    }
+
     public ImageCache getImageCache()
     {
         return imageCache;

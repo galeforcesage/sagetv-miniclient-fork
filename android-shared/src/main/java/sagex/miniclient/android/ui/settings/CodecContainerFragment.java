@@ -65,6 +65,26 @@ public class CodecContainerFragment extends PreferenceFragmentCompat
             row.setSummary(autoLabel(row.getAutoValue()));
             audio.addPreference(row);
         }
+
+        // Phase 2: passthrough sub-section. Only codecs with at least one
+        // Android audio encoding constant are eligible — others have no
+        // way to be passed through and would be permanently "not supported".
+        PreferenceCategory passthrough = findPreference("audio_passthrough");
+        if (passthrough != null)
+        {
+            for (AudioCodec c : AudioCodec.values())
+            {
+                if (c.getAndroidAudioEncodings() == null || c.getAndroidAudioEncodings().length == 0)
+                    continue;
+                TriStatePreference row = new TriStatePreference(getContext());
+                row.setKey("codec/audio_passthrough/" + c.getName() + "/support");
+                row.setTitle(c.getDescription());
+                row.setDefaultValue(TriState.AUTO.toPrefValue());
+                row.setAutoValue(CodecCapabilityDetector.isAudioPassthroughSupported(getContext(), c));
+                row.setSummary(autoLabel(row.getAutoValue()));
+                passthrough.addPreference(row);
+            }
+        }
     }
 
     private static String autoLabel(boolean detected)
