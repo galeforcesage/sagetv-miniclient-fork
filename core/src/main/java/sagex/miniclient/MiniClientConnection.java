@@ -328,6 +328,7 @@ public class MiniClientConnection implements SageTVInputCallback
      * Legacy 9.2.x servers never query these keys; NG servers can opt in.
      */
     private final java.util.Map<String, List<String>> perPlayerCapabilities = new java.util.HashMap<>();
+    private final java.util.Map<String, String> perPlayerConstraintProperties = new java.util.HashMap<>();
 
     private MenuHint menuHint = new MenuHint();
     private Properties profileProperties;
@@ -796,6 +797,153 @@ public class MiniClientConnection implements SageTVInputCallback
         client.prepareCodecs(videoCodecs, audioCodecs, pushFormats, pullFormats);
         client.prepareAudioPassthrough(passthroughCodecs);
         client.preparePerPlayerCapabilities(perPlayerCapabilities);
+        preparePerPlayerConstraintProperties();
+    }
+
+    private void preparePerPlayerConstraintProperties()
+    {
+        perPlayerConstraintProperties.clear();
+        perPlayerConstraintProperties.put("CAP_SCHEMA_VERSION", "2");
+
+        final String deviceClass = (client != null && client.options() != null)
+            ? client.options().getDeviceClass()
+            : "UNKNOWN";
+
+        perPlayerConstraintProperties.put(
+            "EXO_VIDEO_CONSTRAINTS",
+            buildVideoConstraintCsv(perPlayerCapabilities.get("EXO_VIDEO_CODECS"), deviceClass, true));
+        perPlayerConstraintProperties.put(
+            "IJK_VIDEO_CONSTRAINTS",
+            buildVideoConstraintCsv(perPlayerCapabilities.get("IJK_VIDEO_CODECS"), deviceClass, false));
+
+        perPlayerConstraintProperties.put(
+                "EXO_AUDIO_CONSTRAINTS",
+                buildAudioConstraintCsv(perPlayerCapabilities.get("EXO_AUDIO_CODECS"), passthroughCodecs));
+        perPlayerConstraintProperties.put(
+                "IJK_AUDIO_CONSTRAINTS",
+                buildAudioConstraintCsv(perPlayerCapabilities.get("IJK_AUDIO_CODECS"), java.util.Collections.<String>emptyList()));
+
+        perPlayerConstraintProperties.put(
+                "EXO_CONTAINER_CONSTRAINTS",
+                buildContainerConstraintCsv(perPlayerCapabilities.get("EXO_PUSH_AV_CONTAINERS"),
+                        perPlayerCapabilities.get("EXO_PULL_AV_CONTAINERS")));
+        perPlayerConstraintProperties.put(
+                "IJK_CONTAINER_CONSTRAINTS",
+                buildContainerConstraintCsv(perPlayerCapabilities.get("IJK_PUSH_AV_CONTAINERS"),
+                        perPlayerCapabilities.get("IJK_PULL_AV_CONTAINERS")));
+    }
+
+    private String buildVideoConstraintCsv(List<String> codecs, String deviceClass, boolean exoPath)
+    {
+        if (codecs == null || codecs.isEmpty()) return "";
+        final java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
+        final StringBuilder sb = new StringBuilder();
+        final MiniClientOptions options = (client != null) ? client.options() : null;
+
+        for (String raw : codecs)
+        {
+            if (raw == null) continue;
+            final String token = raw.trim();
+            if (token.isEmpty() || !seen.add(token)) continue;
+
+            String scan = "any";
+            String interlaced = "unknown";
+            String decoder = exoPath ? "hw" : "sw_or_hw";
+            final boolean interlacedSafe = (options == null)
+                    || options.isInterlacedVideoSafe(token, exoPath);
+
+            if (interlacedSafe)
+            {
+                scan = "interlaced+progressive";
+                interlaced = "true";
+            }
+            else
+            {
+                scan = "progressive";
+                interlaced = "false";
+            }
+
+            if (sb.length() > 0) sb.append(',');
+                String extras = (options != null) ? options.getVideoConstraintExtras(token, exoPath) : "";
+            sb.append(token)
+                    .append(";scan=").append(scan)
+                    .append(";interlaced=").append(interlaced)
+                    .append(";decoder=").append(decoder);
+                if (extras != null && !extras.isEmpty()) sb.append(extras);
+        }
+        return sb.toString();
+    }
+
+    private static String buildAudioConstraintCsv(List<String> codecs, List<String> passthrough)
+    {
+        if (codecs == null || codecs.isEmpty()) return "";
+        final java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
+        final java.util.HashSet<String> pt = new java.util.HashSet<>();
+        if (passthrough != null)
+        {
+            for (String p : passthrough)
+            {
+                if (p != null && !p.trim().isEmpty()) pt.add(p.trim().toUpperCase(java.util.Locale.ROOT));
+            }
+        }
+
+        final StringBuilder sb = new StringBuilder();
+        for (String raw : codecs)
+        {
+            if (raw == null) continue;
+            final String token = raw.trim();
+            if (token.isEmpty() || !seen.add(token)) continue;
+
+            final boolean pass = pt.contains(token.toUpperCase(java.util.Locale.ROOT));
+            if (sb.length() > 0) sb.append(',');
+            sb.append(token)
+                    .append(";decode=true")
+                    .append(";passthrough=").append(pass ? "true" : "false");
+        }
+        return sb.toString();
+    }
+
+    private static String buildContainerConstraintCsv(List<String> push, List<String> pull)
+    {
+        final java.util.LinkedHashMap<String, StringBuilder> rows = new java.util.LinkedHashMap<>();
+
+        if (push != null)
+        {
+            for (String raw : push)
+            {
+                if (raw == null) continue;
+                final String token = raw.trim();
+                if (token.isEmpty()) continue;
+                rows.put(token, new StringBuilder(token).append(";push=true;pull=false"));
+            }
+        }
+        if (pull != null)
+        {
+            for (String raw : pull)
+            {
+                if (raw == null) continue;
+                final String token = raw.trim();
+                if (token.isEmpty()) continue;
+                StringBuilder row = rows.get(token);
+                if (row == null)
+                {
+                    rows.put(token, new StringBuilder(token).append(";push=false;pull=true"));
+                }
+                else
+                {
+                    int idx = row.indexOf("pull=false");
+                    if (idx >= 0) row.replace(idx, idx + "pull=false".length(), "pull=true");
+                }
+            }
+        }
+
+        final StringBuilder sb = new StringBuilder();
+        for (StringBuilder row : rows.values())
+        {
+            if (sb.length() > 0) sb.append(',');
+            sb.append(row);
+        }
+        return sb.toString();
     }
 
     private static final java.util.regex.Pattern COMMA_SPLIT = java.util.regex.Pattern.compile("\\s*,\\s*");
@@ -1611,6 +1759,11 @@ public class MiniClientConnection implements SageTVInputCallback
                         }
                     }
                     else if (propName != null
+                            && perPlayerConstraintProperties.containsKey(propName))
+                        {
+                        propVal = perPlayerConstraintProperties.get(propName);
+                        }
+                        else if (propName != null
                             && (propName.startsWith("EXO_") || propName.startsWith("IJK_"))
                             && perPlayerCapabilities.containsKey(propName))
                     {
@@ -1639,7 +1792,17 @@ public class MiniClientConnection implements SageTVInputCallback
                         // can use to bias its profile picks. Legacy servers don't
                         // query this property.
                         String dp = client.properties().getString(PrefStore.Keys.default_player, "exoplayer");
-                        propVal = (dp == null || dp.isEmpty()) ? "exoplayer" : dp.toLowerCase(java.util.Locale.ROOT);
+                        String normalized = (dp == null) ? "" : dp.toLowerCase(java.util.Locale.ROOT).trim();
+                        if ("exoplayer".equals(normalized) || "ijkplayer".equals(normalized))
+                        {
+                            propVal = normalized;
+                        }
+                        else
+                        {
+                            // Contract: only exoplayer/ijkplayer enable bias.
+                            // Any other value must fall back to union sets.
+                            propVal = "";
+                        }
                     }
                     else if ("MEDIA_PLAYER_BUFFER_DELAY".equals(propName))
                     {

@@ -414,6 +414,53 @@ public class AndroidMiniClientOptions implements MiniClientOptions {
     }
 
     @Override
+    public boolean isInterlacedVideoSafe(String sageCodecToken, boolean exoPath)
+    {
+        if (!exoPath) return true;
+        if (sageCodecToken == null) return true;
+
+        VideoCodec resolved = null;
+        for (VideoCodec codec : VideoCodec.values())
+        {
+            for (String sageName : codec.sageTVNames())
+            {
+                if (sageName != null && sageName.equalsIgnoreCase(sageCodecToken))
+                {
+                    resolved = codec;
+                    break;
+                }
+            }
+            if (resolved != null) break;
+        }
+
+        if (resolved == null) return true;
+        return CodecCapabilityDetector.isInterlacedVideoSafeByExo(getDeviceClass(), resolved);
+    }
+
+    @Override
+    public String getVideoConstraintExtras(String sageCodecToken, boolean exoPath)
+    {
+        if (!exoPath || sageCodecToken == null) return "";
+
+        VideoCodec resolved = null;
+        for (VideoCodec codec : VideoCodec.values())
+        {
+            for (String sageName : codec.sageTVNames())
+            {
+                if (sageName != null && sageName.equalsIgnoreCase(sageCodecToken))
+                {
+                    resolved = codec;
+                    break;
+                }
+            }
+            if (resolved != null) break;
+        }
+
+        if (resolved == null) return "";
+        return CodecCapabilityDetector.getVideoConstraintExtrasByExo(context, resolved);
+    }
+
+    @Override
     public boolean isUsingAdvancedAspectModes()
     {
         return advancedAspects;

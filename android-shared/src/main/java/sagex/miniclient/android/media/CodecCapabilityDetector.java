@@ -1,6 +1,7 @@
 package sagex.miniclient.android.media;
 
 import android.content.Context;
+import android.os.Build;
 import android.media.MediaCodecInfo;
 import android.media.MediaCodecList;
 
@@ -9,7 +10,9 @@ import com.google.android.exoplayer2.ext.ffmpeg.FfmpegLibrary;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -74,6 +77,133 @@ public final class CodecCapabilityDetector
             if (codec.hasAndroidMimeType(mime)) return true;
         }
         return false;
+    }
+
+    /**
+     * Heuristic scan-type capability used for schema v2 reporting.
+     *
+     * Android exposes codec presence, not deinterlacing guarantees.
+     * We therefore keep this conservative: only Shield-class devices are
+     * marked interlaced-safe for the legacy MPEG-2/MPEG-1/MPEG-4 Part 2
+     * family. Other devices are reported as progressive-only so the
+     * server can avoid direct play on 1080i sources.
+     */
+    public static boolean isInterlacedVideoSafeByExo(String deviceClass, VideoCodec codec)
+    {
+        if (deviceClass != null && "SHIELD".equalsIgnoreCase(deviceClass)) return true;
+
+        switch (codec)
+        {
+            case MPEG1:
+            case MPEG2:
+            case MPEG4:
+                return false;
+            default:
+                return true;
+        }
+    }
+
+    /**
+     * Returns semicolon-prefixed schema-v2 extras for a video codec token.
+     * Includes profile/level pairs, max dimensions/fps/bitrate and selected
+     * feature flags discovered from decoder capabilities.
+     */
+    public static String getVideoConstraintExtrasByExo(Context ctx, VideoCodec codec)
+    {
+        if (codec == null) return "";
+        final String mime = codec.getAndroidMimeType();
+        if (mime == null || mime.isEmpty()) return "";
+
+        int maxW = -1;
+        int maxH = -1;
+        double maxFps = -1;
+        int maxBitrate = -1;
+        boolean adaptive = false;
+        boolean secure = false;
+        boolean tunneled = false;
+        int hwCount = 0;
+        int swCount = 0;
+        final LinkedHashSet<String> profileLevels = new LinkedHashSet<>();
+
+        MediaCodecList codecList = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
+        for (MediaCodecInfo info : codecList.getCodecInfos())
+        {
+            if (info == null || info.isEncoder()) continue;
+
+            boolean supportsMime = false;
+            for (String type : info.getSupportedTypes())
+            {
+                if (type != null && type.equalsIgnoreCase(mime))
+                {
+                    supportsMime = true;
+                    break;
+                }
+            }
+            if (!supportsMime) continue;
+
+            if (Build.VERSION.SDK_INT >= 29)
+            {
+                try
+                {
+                    if (info.isHardwareAccelerated()) hwCount++;
+                    if (info.isSoftwareOnly()) swCount++;
+                }
+                catch (Throwable ignored) { }
+            }
+
+            try
+            {
+                MediaCodecInfo.CodecCapabilities caps = info.getCapabilitiesForType(mime);
+                if (caps == null) continue;
+
+                if (caps.profileLevels != null)
+                {
+                    for (MediaCodecInfo.CodecProfileLevel pl : caps.profileLevels)
+                    {
+                        if (pl == null) continue;
+                        profileLevels.add(pl.profile + ":" + pl.level);
+                    }
+                }
+
+                try { adaptive |= caps.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_AdaptivePlayback); } catch (Throwable ignored) { }
+                try { secure |= caps.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_SecurePlayback); } catch (Throwable ignored) { }
+                try { tunneled |= caps.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_TunneledPlayback); } catch (Throwable ignored) { }
+
+                if (Build.VERSION.SDK_INT >= 21)
+                {
+                    try
+                    {
+                        MediaCodecInfo.VideoCapabilities vc = caps.getVideoCapabilities();
+                        if (vc != null)
+                        {
+                            maxW = Math.max(maxW, vc.getSupportedWidths().getUpper());
+                            maxH = Math.max(maxH, vc.getSupportedHeights().getUpper());
+                            maxBitrate = Math.max(maxBitrate, vc.getBitrateRange().getUpper());
+                            maxFps = Math.max(maxFps, vc.getSupportedFrameRates().getUpper());
+                        }
+                    }
+                    catch (Throwable ignored) { }
+                }
+            }
+            catch (Throwable ignored) { }
+        }
+
+        StringBuilder extras = new StringBuilder();
+        if (maxW > 0) extras.append(";maxW=").append(maxW);
+        if (maxH > 0) extras.append(";maxH=").append(maxH);
+        if (maxFps > 0)
+        {
+            extras.append(";maxFps=").append(String.format(Locale.US, "%.2f", maxFps));
+        }
+        if (maxBitrate > 0) extras.append(";maxBitrate=").append(maxBitrate);
+        if (!profileLevels.isEmpty()) extras.append(";profiles=").append(String.join("|", profileLevels));
+        extras.append(";adaptive=").append(adaptive ? "true" : "false");
+        extras.append(";secure=").append(secure ? "true" : "false");
+        extras.append(";tunneled=").append(tunneled ? "true" : "false");
+        if (hwCount > 0) extras.append(";hwDecoders=").append(hwCount);
+        if (swCount > 0) extras.append(";swDecoders=").append(swCount);
+
+        return extras.toString();
     }
 
     /** Phase 3: IJKPlayer libavcodec covers the project's video codec list. */

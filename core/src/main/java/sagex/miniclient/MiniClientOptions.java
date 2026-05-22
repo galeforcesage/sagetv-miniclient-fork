@@ -72,6 +72,35 @@ public interface MiniClientOptions {
         perPlayerCaps.clear();
     }
 
+    /**
+     * Schema-v2 helper: returns whether the platform/player path can safely
+     * render interlaced content for the given SageTV video codec token.
+     *
+     * <p>Default conservative behavior is {@code true} to avoid changing
+     * behavior for non-Android clients. Android overrides this with a
+     * device-aware detector.</p>
+     *
+     * @param sageCodecToken SageTV codec token (e.g. MPEG2-VIDEO, H.264)
+     * @param exoPath true for Exo path, false for IJK path
+     */
+    default boolean isInterlacedVideoSafe(String sageCodecToken, boolean exoPath)
+    {
+        return true;
+    }
+
+    /**
+     * Schema-v2 helper: optional extra key/value attributes to append to a
+     * video constraint row for the given SageTV codec token and player path.
+     *
+     * <p>Return value must either be empty or begin with ';' and contain
+     * semicolon-delimited key=value pairs (e.g.
+     * ";maxW=3840;maxH=2160;profiles=100:4096|100:8192").</p>
+     */
+    default String getVideoConstraintExtras(String sageCodecToken, boolean exoPath)
+    {
+        return "";
+    }
+
     public boolean isTouchUI();
     public boolean isTVUI();
     public boolean isDesktopUI();
