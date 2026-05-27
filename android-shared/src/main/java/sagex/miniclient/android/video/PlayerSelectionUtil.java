@@ -116,4 +116,26 @@ public final class PlayerSelectionUtil
         // bracket-only, garbage) is a server bug we should route around.
         return !tail.startsWith("F=");
     }
+
+    /**
+     * Exo MPEG-2 decode landmine: stream is PUSH with MPEG-2 video, but this
+     * device does not expose a video/mpeg2 decoder to Exo's MediaCodec path.
+     * In that case Exo commonly yields audio-only playback; route to IJK.
+     */
+    public static boolean isExoMpeg2NoDecoderLandmine(String url, boolean exoCanDecodeMpeg2)
+    {
+        if (exoCanDecodeMpeg2) return false;
+        if (url == null) return false;
+        String u = url.toUpperCase(java.util.Locale.ROOT);
+        if (!u.contains("PUSH:")) return false;
+
+        int vidIdx = u.indexOf("BF=VID");
+        if (vidIdx < 0) return false;
+        int end = Math.min(u.length(), vidIdx + 96);
+        String window = u.substring(vidIdx, end);
+        return window.contains("F=MPEG2-VIDEO;")
+                || window.contains("F=MPEG2-VIDEO]")
+                || window.contains("F=MPEG2-VIDEO@HL;")
+                || window.contains("F=MPEG2-VIDEO@HL]");
+    }
 }

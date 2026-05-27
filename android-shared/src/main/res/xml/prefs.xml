@@ -63,6 +63,14 @@
 
 
 
+    <PreferenceCategory android:key="downloads_category" android:title="Downloads">
+
+        <Preference android:title="Manage Downloads"
+            android:summary="View download queue, manage storage location, and delete downloaded files"
+            android:key="manage_downloads"/>
+
+    </PreferenceCategory>
+
     <PreferenceCategory android:title="@string/application_settings">
 
         <CheckBoxPreference

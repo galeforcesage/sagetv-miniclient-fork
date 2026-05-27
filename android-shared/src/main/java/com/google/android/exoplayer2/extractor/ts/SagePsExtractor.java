@@ -506,6 +506,16 @@ public final class SagePsExtractor implements Extractor {
      * clamped to the original (small) duration.
      */
     /* package */ static final class LinearPsSeekMap implements SeekMap {
+        /**
+         * Safety margin behind the live write-head. When a seek lands within this
+         * window of the current end-of-file on a still-growing recording, the
+         * server's MediaServer thread will block waiting for more bytes to be
+         * written, which the client perceives as a frozen FF. Clamping the
+         * requested timeUs a few seconds behind the head avoids the stall while
+         * remaining imperceptible to the user (resume-on-live-edge / FF-to-end).
+         */
+        private static final long LIVE_EDGE_SAFETY_US = 3_000_000L;
+
         private final long initialDurationUs;
         private final long initialFileSize;
         private final double bytesPerUs;
@@ -549,6 +559,16 @@ public final class SagePsExtractor implements Extractor {
         public SeekMap.SeekPoints getSeekPoints(long timeUs) {
             long durationUs = currentDurationUs();
             long fileSize = currentFileSize();
+            // For live/growing recordings, hold a small safety margin behind the
+            // write head so we never seek into bytes the server hasn't flushed
+            // yet. Without this, FF that lands within ~1s of the head freezes
+            // until enough new data is written.
+            if (liveSizeProvider != null && durationUs > LIVE_EDGE_SAFETY_US) {
+                long maxSeekUs = durationUs - LIVE_EDGE_SAFETY_US;
+                if (timeUs > maxSeekUs) {
+                    timeUs = maxSeekUs;
+                }
+            }
             if (timeUs <= 0) {
                 return new SeekMap.SeekPoints(new SeekPoint(0, 0));
             }

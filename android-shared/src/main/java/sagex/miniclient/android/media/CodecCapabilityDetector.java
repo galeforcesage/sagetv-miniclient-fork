@@ -222,6 +222,16 @@ public final class CodecCapabilityDetector
     {
         int[] encodings = codec.getAndroidAudioEncodings();
         if (encodings == null || encodings.length == 0) return false;
+        // C3 guard: AC-4 advertisement only allowed when the device actually
+        // has an audio/ac4 MediaCodec decoder. Several Shields' audio sinks
+        // (esp. via certain HDMI receivers) falsely advertise AC-4 passthrough
+        // capability even though no decoder is registered; the audio renderer
+        // then fails to init and the video pipeline goes black. Strip AC-4
+        // unless a real decoder is present.
+        if (codec == AudioCodec.AC4 && !hasMediaCodecDecoderForMime("audio/ac4"))
+        {
+            return false;
+        }
         AudioCapabilities caps = AudioCapabilities.getCapabilities(ctx);
         for (int enc : encodings)
         {
@@ -256,6 +266,11 @@ public final class CodecCapabilityDetector
         {
             if (codec.hasAndroidMimeType(mime)) return true;
         }
+        // C3 guard: AC-4 must not fall through to the passthrough probe -
+        // an HDMI sink that advertises AC-4 passthrough is not sufficient
+        // when no MediaCodec / FFmpeg decoder exists, because ExoPlayer's
+        // audio renderer init fails and the video pipeline goes black.
+        if (codec == AudioCodec.AC4) return false;
         // Last resort: passthrough capability (AC3, EAC3, etc. on HDMI sinks).
         AudioCapabilities caps = AudioCapabilities.getCapabilities(ctx);
         for (int enc : codec.getAndroidAudioEncodings())
@@ -286,6 +301,34 @@ public final class CodecCapabilityDetector
             out.addAll(getTypes(info, prefix));
         }
         return out;
+    }
+
+    /**
+     * True when at least one non-encoder MediaCodec on the device supports
+     * decoding the given mime type. Used by the AC-4 advertisement guard
+     * (C3) to refuse advertisement when no real decoder is present.
+     */
+    private static boolean hasMediaCodecDecoderForMime(String mime)
+    {
+        if (mime == null || mime.isEmpty()) return false;
+        try
+        {
+            MediaCodecList codecList = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
+            for (MediaCodecInfo info : codecList.getCodecInfos())
+            {
+                if (info.isEncoder()) continue;
+                for (String s : info.getSupportedTypes())
+                {
+                    if (mime.equalsIgnoreCase(s)) return true;
+                }
+            }
+        }
+        catch (Throwable t)
+        {
+            // MediaCodecList init can throw on broken devices - treat as
+            // "no decoder" to keep us out of the failure-prone path.
+        }
+        return false;
     }
 
     private static Set<String> getTypes(MediaCodecInfo info, String prefix)

@@ -8,6 +8,7 @@ import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.os.Build;
+import android.os.Bundle;
 
 //import org.slf4j.Logger;
 //import org.slf4j.LoggerFactory;
@@ -35,9 +36,14 @@ public class MiniclientApplication extends Application
     private static MiniclientApplication INSTANCE = null;
     private int versionCode;
     private String versionName;
+    private volatile Activity currentActivity;
 
     public static MiniclientApplication get() {
         return INSTANCE;
+    }
+
+    public Activity getCurrentActivity() {
+        return currentActivity;
     }
 
     public static MiniclientApplication get(Context ctx)
@@ -58,6 +64,16 @@ public class MiniclientApplication extends Application
 
         MiniclientApplication.INSTANCE = this;
         AndroidMiniClientOptions options = new AndroidMiniClientOptions(this);
+
+        registerActivityLifecycleCallbacks(new ActivityLifecycleCallbacks() {
+            @Override public void onActivityCreated(Activity a, Bundle s) {}
+            @Override public void onActivityStarted(Activity a) {}
+            @Override public void onActivityResumed(Activity a) { currentActivity = a; }
+            @Override public void onActivityPaused(Activity a) { if (currentActivity == a) currentActivity = null; }
+            @Override public void onActivityStopped(Activity a) {}
+            @Override public void onActivitySaveInstanceState(Activity a, Bundle s) {}
+            @Override public void onActivityDestroyed(Activity a) {}
+        });
 
         try
         {
@@ -97,6 +113,11 @@ public class MiniclientApplication extends Application
 
         // start the client instance
         client = new MiniClient(options, Logger.getLogger("MiniClient"));
+
+        // Initialise download/offline infrastructure if the optional
+        // android-offline module is on the classpath (mobile flavour).
+        // In the online-only flavour this is a no-op.
+        OfflineModuleBridge.init(this, client);
 
         try
         {

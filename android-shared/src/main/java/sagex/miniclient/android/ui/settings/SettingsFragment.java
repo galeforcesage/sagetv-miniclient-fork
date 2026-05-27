@@ -253,6 +253,34 @@ public class SettingsFragment extends PreferenceFragment
                 }
             });
 
+            Preference downloadsPref = this.findPreference("manage_downloads");
+            if (downloadsPref != null)
+            {
+                if (sagex.miniclient.android.OfflineModuleBridge.isAvailable())
+                {
+                    downloadsPref.setOnPreferenceClickListener(new Preference.OnPreferenceClickListener()
+                    {
+                        @Override
+                        public boolean onPreferenceClick(Preference preference)
+                        {
+                            sagex.miniclient.android.OfflineModuleBridge.launchDownloadsActivity(getActivity());
+                            return true;
+                        }
+                    });
+                }
+                else
+                {
+                    // Online-only flavour — hide the Downloads category entirely.
+                    android.preference.PreferenceCategory cat =
+                            (android.preference.PreferenceCategory) findPreference("downloads_category");
+                    if (cat != null) {
+                        getPreferenceScreen().removePreference(cat);
+                    } else {
+                        getPreferenceScreen().removePreference(downloadsPref);
+                    }
+                }
+            }
+
             final Preference memCache = findPreference(Keys.image_cache_size_mb);
             memCache.setOnPreferenceChangeListener(new OnPreferenceChangeListener()
             {

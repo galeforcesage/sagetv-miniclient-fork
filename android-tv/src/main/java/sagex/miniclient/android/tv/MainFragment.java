@@ -52,6 +52,7 @@ import sagex.miniclient.ServerInfo;
 import sagex.miniclient.android.AddServerFragment;
 import sagex.miniclient.android.AddServerFragment.OnAddServerListener;
 import sagex.miniclient.android.MiniclientApplication;
+import sagex.miniclient.android.OfflineModuleBridge;
 import sagex.miniclient.android.ui.settings.SettingsActivity;
 import sagex.miniclient.android.tv.actions.Action;
 import sagex.miniclient.android.tv.actions.ActionPresenter;
@@ -159,6 +160,16 @@ public class MainFragment extends BrowseFragment implements OnAddServerListener 
         action = new Action(R.id.btn_add_server, getString(R.string.add_server));
         action.setBackground(R.drawable.back_film_roll);
         gridRowAdapter.add(action);
+
+        // Show "Offline Library" action only in the mobile flavour (when the
+        // optional android-offline module is present) and only if there is at
+        // least one download in the local store.
+        if (OfflineModuleBridge.hasAnyDownloads(getActivity())) {
+            action = new Action(R.id.offline_library, getString(R.string.offline_library));
+            action.setBackground(R.drawable.back_film_roll);
+            gridRowAdapter.add(action);
+        }
+
         mRowsAdapter.add(new ListRow(actionsHeader, gridRowAdapter));
 
         setAdapter(mRowsAdapter);
@@ -279,6 +290,10 @@ public class MainFragment extends BrowseFragment implements OnAddServerListener 
                     AddServerFragment f = AddServerFragment.newInstance("My Server", "");
                     f.setRetainInstance(true);
                     f.show(getFragmentManager(), "addserver");
+                }
+                else if (action.getActionId() == R.id.offline_library)
+                {
+                    OfflineModuleBridge.launchOfflineLibrary(getActivity());
                 }
                 else
                 {

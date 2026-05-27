@@ -2,4 +2,5 @@
 <resources>
     <item name="preferences" type="id"/>
     <item name="btn_add_server" type="id"/>
+    <item name="offline_library" type="id"/>
 </resources>

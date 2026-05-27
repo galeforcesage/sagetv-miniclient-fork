@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Main offline library layout — matches SageTV7 dark theme layout pattern.
+     Header bar with title, then a scrollable list of media cards. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/offline_bg_primary"
+    android:fitsSystemWindows="true">
+
+    <!-- Header bar — mimics SageTV menu title area -->
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="72dp"
+        android:background="@color/offline_bg_secondary"
+        android:paddingStart="24dp"
+        android:paddingEnd="24dp"
+        android:gravity="center_vertical">
+
+        <ImageView
+            android:id="@+id/offline_header_icon"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:layout_centerVertical="true"
+            android:layout_alignParentStart="true"
+            android:src="@drawable/ic_file_download"
+            android:contentDescription="Downloads"
+            android:tint="@color/offline_text_accent" />
+
+        <TextView
+            android:id="@+id/offline_header_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_centerVertical="true"
+            android:layout_toEndOf="@id/offline_header_icon"
+            android:layout_marginStart="16dp"
+            android:text="My Downloads"
+            android:textColor="@color/offline_text_primary"
+            android:textSize="26sp"
+            android:fontFamily="sans-serif-light" />
+
+        <TextView
+            android:id="@+id/offline_header_count"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_centerVertical="true"
+            android:layout_alignParentEnd="true"
+            android:textColor="@color/offline_text_secondary"
+            android:textSize="16sp" />
+
+    </RelativeLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@color/offline_divider" />
+
+    <!-- Empty state -->
+    <LinearLayout
+        android:id="@+id/offline_empty_state"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:visibility="gone">
+
+        <ImageView
+            android:layout_width="80dp"
+            android:layout_height="80dp"
+            android:src="@drawable/ic_file_download"
+            android:tint="@color/offline_text_secondary"
+            android:contentDescription="No downloads" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="No downloaded videos"
+            android:textColor="@color/offline_text_secondary"
+            android:textSize="20sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Connect to your SageTV server to download media"
+            android:textColor="@color/offline_text_secondary"
+            android:textSize="14sp" />
+
+    </LinearLayout>
+
+    <!-- Media list -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/offline_media_list"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:padding="16dp"
+        android:clipToPadding="false" />
+
+</LinearLayout>

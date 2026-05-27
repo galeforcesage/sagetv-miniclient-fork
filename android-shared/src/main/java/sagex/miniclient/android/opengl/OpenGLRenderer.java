@@ -29,6 +29,7 @@ import sagex.miniclient.MiniClient;
 import sagex.miniclient.MiniClientConnection;
 import sagex.miniclient.MiniPlayerPlugin;
 import sagex.miniclient.android.R;
+import sagex.miniclient.android.media.CodecCapabilityDetector;
 import sagex.miniclient.android.opengl.shapes.FillRectangle;
 import sagex.miniclient.android.opengl.shapes.Line;
 import sagex.miniclient.android.opengl.shapes.LineRectangle;
@@ -38,6 +39,7 @@ import sagex.miniclient.android.video.PlayerSelectionUtil;
 import sagex.miniclient.android.video.exlink.ExternalLinkPlayerImpl;
 import sagex.miniclient.android.video.exoplayer2.Exo2MediaPlayerImpl;
 import sagex.miniclient.android.video.ijkplayer.IJKMediaPlayerImpl;
+import sagex.miniclient.media.VideoCodec;
 import sagex.miniclient.prefs.PrefStore;
 import sagex.miniclient.uibridge.Dimension;
 import sagex.miniclient.uibridge.ImageHolder;
@@ -755,6 +757,18 @@ public class OpenGLRenderer implements UIRenderer<OpenGLTexture>, GLSurfaceView.
             PlayerSelectionUtil.notifyLandmineSwap(activity.getContext(), "NG bare-push compat");
             useExoPlayer = false;
             swapReason = "NG bare-push compat (server emitted push: with no format hint)";
+        }
+        else if (useExoPlayer)
+        {
+            boolean exoCanDecodeMpeg2 = CodecCapabilityDetector.isVideoCodecSupportedByExo(
+                    activity.getContext(), VideoCodec.MPEG2);
+            if (PlayerSelectionUtil.isExoMpeg2NoDecoderLandmine(urlString, exoCanDecodeMpeg2))
+            {
+                log.warn("ExoPlayer lacks MPEG-2 decoder for this PUSH stream: swapping to IJK. URL={}", urlString);
+                PlayerSelectionUtil.notifyLandmineSwap(activity.getContext(), "MPEG2 video compat");
+                useExoPlayer = false;
+                swapReason = "MPEG2 video compat (ExoPlayer has no video/mpeg2 decoder on this device)";
+            }
         }
 
         if (useExoPlayer) {

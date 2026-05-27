@@ -36,6 +36,6 @@ RUN $ANDROID_HOME/tools/bin/sdkmanager --update
 RUN $ANDROID_HOME/tools/bin/sdkmanager "build-tools;29.0.2" \
     "platforms;android-${ANDROID_VERSION}" \
     "platform-tools" \
-    "ndk;21.0.6113669"
+    "ndk;25.2.9519653"
 
 CMD ["/bin/bash"]

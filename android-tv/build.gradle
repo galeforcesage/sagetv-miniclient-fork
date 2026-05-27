@@ -40,7 +40,7 @@ android {
         // versionCode API (2 digits), SCREEN (2 digits), VERSION (3 digits)
         versionCode computeVersionCode()
         versionName "${appVersionName}"
-        ndk.abiFilters 'armeabi-v7a','arm64-v8a','armeabi','x86','x86_64'
+        ndk.abiFilters 'armeabi-v7a','arm64-v8a'
     }
 
     signingConfigs
@@ -118,7 +118,6 @@ android {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.release
-            resValue "string", "app_name", "@string/app_name_release"
         }
         debug
         {
@@ -130,7 +129,6 @@ android {
             //Identify the application as debug, and allow it to be installed along side production
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-DEBUG"
-            resValue "string", "app_name", "@string/app_name_debug"
         }
     }
 
@@ -138,6 +136,40 @@ android {
         resources {
             excludes += ['META-INF/INDEX.LIST', 'META-INF/DEPENDENCIES']
         }
+    }
+
+    // Two product flavors:
+    //  * online — base APK with online streaming only (no download/offline code).
+    //  * mobile — adds the android-offline module: downloads, offline library,
+    //             local playback, sync. Used for phones/tablets/Shield where
+    //             users want to keep media for offline viewing.
+    flavorDimensions "feature"
+    productFlavors {
+        online {
+            dimension "feature"
+            applicationIdSuffix = ".online"
+            versionNameSuffix = "-online"
+            resValue "string", "flavor_name", "Online"
+        }
+        mobile {
+            dimension "feature"
+            applicationIdSuffix = ".mobile"
+            versionNameSuffix = "-mobile"
+            resValue "string", "flavor_name", "Mobile"
+        }
+    }
+
+    // Per-variant app label: combine flavor (online / mobile) with build type
+    // (release / debug) into an app_name resource alias. The actual label
+    // strings live in res/values/strings.xml as app_name_<flavor>_<buildType>.
+    //   online + release -> "SageTV Android Client"
+    //   online + debug   -> "SageTV Android Client (DEBUG)"
+    //   mobile + release -> "SageTV-NG"
+    //   mobile + debug   -> "SageTV-NG (DEBUG)"
+    applicationVariants.all { variant ->
+        def flavor = variant.flavorName
+        def buildType = variant.buildType.name
+        variant.resValue "string", "app_name", "@string/app_name_${flavor}_${buildType}"
     }
 }
 
@@ -151,6 +183,9 @@ dependencies {
     implementation "androidx.appcompat:appcompat:1.3.1"
     implementation "androidx.leanback:leanback:1.0.0"
     api "com.github.bumptech.glide:glide:3.8.0"
+
+    // Offline/download module — only included in the "mobile" flavour APK.
+    mobileImplementation project(":android-offline")
 
     // Import the BoM for the Firebase platform
     //implementation platform('com.google.firebase:firebase-bom:30.0.0')

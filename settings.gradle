@@ -6,4 +6,4 @@ pluginManagement {
     }
 }
 
-include 'core', ':android-shared', ':android-tv'
+include 'core', ':android-shared', ':android-offline', ':android-tv'

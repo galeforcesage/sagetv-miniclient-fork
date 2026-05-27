@@ -235,6 +235,12 @@ public class MediaCmd
                 {
                     urlString = new String(cmddata, 4, strLen - 1);
                     log.debug("JVL - MEDIACMD_OPENURL {}", urlString);
+                    // C5: emit a single human-readable line summarizing what the
+                    // server's PlaybackDecisionEngine actually chose so we can
+                    // diagnose NG quality regressions at a glance (e.g. the
+                    // server falling back to legacy DVD MPEG-2 720x480 instead
+                    // of HEVC COPY remux). One line per OPENURL.
+                    logOpenUrlDecision(urlString);
                 }
                 
                 if (!urlString.startsWith("push:"))
@@ -665,5 +671,127 @@ public class MediaCmd
         }
 
         return lastServerStartTime;
+    }
+
+    /**
+     * C5: parse the OPENURL string and emit a one-line summary of the
+     * server's PlaybackDecisionEngine choice so quality regressions
+     * (legacy DVD MPEG-2 720x480 fallback vs HEVC COPY remux, etc.)
+     * are visible at a glance in logcat / SD-card logs.
+     *
+     * <p>Push URL form (best-effort parse, never throws):
+     * {@code push:f=MPEG2-TS;[bf=vid;f=H.264;...][bf=aud;f=AAC;...]}</p>
+     */
+    private void logOpenUrlDecision(String urlString)
+    {
+        if (urlString == null || urlString.isEmpty()) return;
+        try
+        {
+            String transport;
+            String container = "?";
+            String video = "?";
+            String audio = "?";
+            String videoMode = "";
+            String audioMode = "";
+
+            if (urlString.startsWith("push:"))
+            {
+                transport = "PUSH";
+                String body = urlString.substring("push:".length());
+
+                // Top-level f=CONTAINER (terminated by ';' or '[' or end).
+                int fIdx = body.indexOf("f=");
+                if (fIdx >= 0)
+                {
+                    int end = fIdx + 2;
+                    while (end < body.length())
+                    {
+                        char ch = body.charAt(end);
+                        if (ch == ';' || ch == '[') break;
+                        end++;
+                    }
+                    container = body.substring(fIdx + 2, end);
+                }
+
+                // Per-track blocks: [bf=vid;...] and [bf=aud;...]
+                video = extractTrackFormat(body, "bf=vid");
+                audio = extractTrackFormat(body, "bf=aud");
+                videoMode = extractTrackMode(body, "bf=vid");
+                audioMode = extractTrackMode(body, "bf=aud");
+            }
+            else if (urlString.startsWith("file://"))
+            {
+                transport = "PULL_FILE";
+                int dot = urlString.lastIndexOf('.');
+                if (dot > 0) container = urlString.substring(dot + 1);
+            }
+            else if (urlString.startsWith("http://") || urlString.startsWith("https://"))
+            {
+                transport = "PULL_HTTP";
+            }
+            else if (urlString.startsWith("stv://"))
+            {
+                transport = "PULL_STV";
+            }
+            else if (urlString.startsWith("dvd:"))
+            {
+                transport = "DVD";
+            }
+            else
+            {
+                transport = "UNKNOWN";
+            }
+
+            StringBuilder line = new StringBuilder(128);
+            line.append("NG OPENURL accepted: transport=").append(transport);
+            line.append(" container=").append(container);
+            line.append(" video=").append(video);
+            if (!videoMode.isEmpty()) line.append('(').append(videoMode).append(')');
+            line.append(" audio=").append(audio);
+            if (!audioMode.isEmpty()) line.append('(').append(audioMode).append(')');
+            log.info(line.toString());
+        }
+        catch (RuntimeException e)
+        {
+            log.debug("NG OPENURL decision parse failed for [{}]", urlString, e);
+        }
+    }
+
+    /** Returns the {@code f=} value inside the first {@code [tag;...]} block, or "?" if absent. */
+    private static String extractTrackFormat(String body, String tag)
+    {
+        int blockStart = body.indexOf("[" + tag);
+        if (blockStart < 0) return "?";
+        int blockEnd = body.indexOf(']', blockStart);
+        if (blockEnd < 0) blockEnd = body.length();
+        String block = body.substring(blockStart, blockEnd);
+        // Skip the leading [tag; then find f=
+        int fIdx = block.indexOf(";f=");
+        if (fIdx < 0) return "?";
+        int valStart = fIdx + 3;
+        int valEnd = valStart;
+        while (valEnd < block.length())
+        {
+            char ch = block.charAt(valEnd);
+            if (ch == ';' || ch == ']') break;
+            valEnd++;
+        }
+        return block.substring(valStart, valEnd);
+    }
+
+    /**
+     * Best-effort hint at the per-track operation: returns "COPY" when the
+     * block contains {@code m=copy}, else empty. Server tokens may evolve;
+     * keep this strictly informational.
+     */
+    private static String extractTrackMode(String body, String tag)
+    {
+        int blockStart = body.indexOf("[" + tag);
+        if (blockStart < 0) return "";
+        int blockEnd = body.indexOf(']', blockStart);
+        if (blockEnd < 0) blockEnd = body.length();
+        String block = body.substring(blockStart, blockEnd).toLowerCase();
+        if (block.contains(";m=copy") || block.contains(";copy")) return "COPY";
+        return "";
     }
 }

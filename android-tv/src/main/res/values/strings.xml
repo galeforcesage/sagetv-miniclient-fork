@@ -1,7 +1,12 @@
 <resources>
-    <string name="app_name_release">SageTV Android Client</string>
-    <string name="app_name_debug">SageTV Android Client (DEBUG)</string>
-    <string name="browse_title">SageTV Android Client</string>
+    <!-- Per-flavor app labels. The actual app_name resource is wired up by
+         applicationVariants.all in android-tv/build.gradle, combining the
+         flavor (online / mobile) with the build type (release / debug). -->
+    <string name="app_name_online_release">SageTV Android Client</string>
+    <string name="app_name_online_debug">SageTV Android Client (DEBUG)</string>
+    <string name="app_name_mobile_release">SageTV-NG</string>
+    <string name="app_name_mobile_debug">SageTV-NG (DEBUG)</string>
+    <string name="browse_title">SageTV-NG</string>
     <string name="related_movies">Related Videos</string>
     <string name="vertical_grid_title"><![CDATA[Vertical Video Grid]]></string>
     <string name="error">Error</string>
@@ -41,4 +46,5 @@
     <string name="servers">Servers</string>
     <string name="configure">Configure</string>
     <string name="add_server">Add Server</string>
+    <string name="offline_library">Offline Library</string>
 </resources>

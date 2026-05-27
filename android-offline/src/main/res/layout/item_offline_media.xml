@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Single media item card for the offline library list.
+     Matches the SageTV7 video browser layout: landscape thumbnail on left,
+     title/info on right, progress indicator at bottom. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:background="@drawable/offline_card_bg"
+    android:padding="12dp"
+    android:layout_marginBottom="8dp"
+    android:focusable="true"
+    android:focusableInTouchMode="true"
+    android:descendantFocusability="afterDescendants">
+
+    <!-- Thumbnail placeholder -->
+    <FrameLayout
+        android:layout_width="160dp"
+        android:layout_height="90dp"
+        android:layout_gravity="center_vertical">
+
+        <ImageView
+            android:id="@+id/offline_item_thumbnail"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scaleType="centerCrop"
+            android:contentDescription="Thumbnail"
+            android:background="#20FFFFFF" />
+
+        <!-- Duration badge -->
+        <TextView
+            android:id="@+id/offline_item_duration"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|end"
+            android:background="#B0000000"
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp"
+            android:paddingTop="2dp"
+            android:paddingBottom="2dp"
+            android:textColor="@color/offline_text_primary"
+            android:textSize="11sp" />
+    </FrameLayout>
+
+    <!-- Info area -->
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:orientation="vertical"
+        android:layout_marginStart="16dp"
+        android:layout_gravity="center_vertical">
+
+        <TextView
+            android:id="@+id/offline_item_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/offline_text_primary"
+            android:textSize="18sp"
+            android:maxLines="2"
+            android:ellipsize="end"
+            android:fontFamily="sans-serif" />
+
+        <TextView
+            android:id="@+id/offline_item_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="@color/offline_text_secondary"
+            android:textSize="13sp" />
+
+        <!-- Download progress bar (visible for in-progress downloads) -->
+        <ProgressBar
+            android:id="@+id/offline_item_progress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="4dp"
+            android:layout_marginTop="6dp"
+            android:max="100"
+            android:visibility="gone"
+            android:progressDrawable="@android:drawable/progress_horizontal" />
+
+    </LinearLayout>
+
+    <!-- Status icon -->
+    <ImageView
+        android:id="@+id/offline_item_status_icon"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:layout_gravity="center_vertical"
+        android:layout_marginStart="8dp"
+        android:contentDescription="Status" />
+
+</LinearLayout>

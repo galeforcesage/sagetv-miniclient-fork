@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- SageTV-style offline menu colors matching the server's dark UI theme -->
+    <color name="offline_bg_primary">#FF0D0D1A</color>
+    <color name="offline_bg_secondary">#FF1A1A2E</color>
+    <color name="offline_bg_card">#FF252540</color>
+    <color name="offline_bg_card_focused">#FF354065</color>
+    <color name="offline_text_primary">#FFFFFFFF</color>
+    <color name="offline_text_secondary">#FFB0B0C0</color>
+    <color name="offline_text_accent">#FF87CEEB</color>
+    <color name="offline_focus_border">#FF4488CC</color>
+    <color name="offline_progress_track">#40FFFFFF</color>
+    <color name="offline_progress_fill">#FF4488CC</color>
+    <color name="offline_divider">#30FFFFFF</color>
+    <color name="offline_status_complete">#FF4CAF50</color>
+    <color name="offline_status_downloading">#FF2196F3</color>
+    <color name="offline_status_failed">#FFF44336</color>
+    <color name="offline_status_paused">#FFFFC107</color>
+</resources>

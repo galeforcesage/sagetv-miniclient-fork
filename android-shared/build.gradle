@@ -11,7 +11,7 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
 
-    ndkVersion = "21.0.6113669"
+    ndkVersion = "25.2.9519653"
 
     externalNativeBuild {
         cmake {
@@ -82,11 +82,8 @@ dependencies {
 
     api "com.badlogicgames.gdx:gdx-backend-android:$gdxVersion"
     implementation 'com.google.firebase:firebase-crashlytics:18.2.10'
-    natives "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-armeabi"
     natives "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-armeabi-v7a"
     natives "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-arm64-v8a"
-    natives "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-x86"
-    natives "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-x86_64"
 
     // ExoPlayer
     api "com.google.android.exoplayer:exoplayer-common:${exoVersion}"
@@ -118,8 +115,6 @@ dependencies {
     api(name: "ijkplayer-armv7a-${ijkVersionDev}", ext: "aar")
     //implementation files("../libs/ijkplayer-arm64-${ijkVersionDev}.aar")
     api(name: "ijkplayer-arm64-${ijkVersionDev}", ext: "aar")
-    //implementation files("../libs/ijkplayer-x86-${ijkVersionDev}.aar")
-    api(name: "ijkplayer-x86-${ijkVersionDev}", ext: "aar")
     //implementation 'tv.danmaku.ijk.media:ijkplayer-x86_64:0.8.8'
     //implementation files("../libs/ijkplayer-exo-${ijkVersionDev}.aar")
     api(name: "ijkplayer-exo-${ijkVersionDev}", ext: "aar")
@@ -159,13 +154,14 @@ dependencies {
 // so they get packed with the APK.
 task copyAndroidNatives() {
 
+    ["libs/armeabi", "libs/armeabi-v7a", "libs/arm64-v8a", "libs/x86", "libs/x86_64"].each { abiDir ->
+        delete fileTree(dir: abiDir, include: ["libgdx.so", "libgdx-freetype.so"])
+    }
+
     configurations.getByName("natives").copy().files.each { jar ->
         def outputDir = null
         if (jar.name.endsWith("natives-armeabi-v7a.jar")) outputDir = file("libs/armeabi-v7a")
-        if (jar.name.endsWith("natives-armeabi.jar")) outputDir = file("libs/armeabi")
         if (jar.name.endsWith("natives-arm64-v8a.jar")) outputDir = file("libs/arm64-v8a")
-        if (jar.name.endsWith("natives-x86.jar")) outputDir = file("libs/x86")
-        if (jar.name.endsWith("natives-x86_64.jar")) outputDir = file("libs/x86_64")
         if (outputDir != null) {
             copy {
                 from zipTree(jar)
@@ -175,3 +171,5 @@ task copyAndroidNatives() {
         }
     }
 }
+
+preBuild.dependsOn copyAndroidNatives

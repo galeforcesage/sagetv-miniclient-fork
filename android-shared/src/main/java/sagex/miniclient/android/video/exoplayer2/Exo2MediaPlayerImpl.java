@@ -389,36 +389,28 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     }
 
     @Override
-    public void setSubtitleTrack(final int streamPos)
+    public void setSubtitleTrack(int streamPos)
     {
-        // ExoPlayer is main-thread-only. Like setAudioTrack, this is invoked
-        // from the Media-* dispatch thread, so the changeTrack() call and any
-        // SubtitleView lifecycle changes (which manipulate the View hierarchy)
-        // must run on the UI thread.
-        context.runOnUiThread(new Runnable()
+        // SageTV may send raw MPEG PES stream IDs for subtitle/private streams
+        // (0x2000-0x3FFF). Apply the same mapping used for audio so that
+        // changeTrack receives a zero-based ExoPlayer group index.
+        int mappedIndex = (streamPos == Exo2MediaPlayerImpl.DISABLE_TRACK)
+                ? streamPos
+                : mapSubtitleStreamPosToTrackIndex(streamPos);
+        log.logDebug("Set Subtitle Track Called: " + streamPos + " mapped to: " + mappedIndex);
+
+        if (mappedIndex == Exo2MediaPlayerImpl.DISABLE_TRACK)
         {
-            @Override
-            public void run()
-            {
-                int mappedIndex = (streamPos == Exo2MediaPlayerImpl.DISABLE_TRACK)
-                        ? streamPos
-                        : mapSubtitleStreamPosToTrackIndex(streamPos);
-                log.logDebug("Set Subtitle Track Called: " + streamPos + " mapped to: " + mappedIndex);
+            this.showCaptions = false;
+            this.RemoveSubTitleView();
+        }
+        else
+        {
+            this.showCaptions = true;
+            this.AddSubTitleView();
+        }
 
-                if (mappedIndex == Exo2MediaPlayerImpl.DISABLE_TRACK)
-                {
-                    showCaptions = false;
-                    RemoveSubTitleView();
-                }
-                else
-                {
-                    showCaptions = true;
-                    AddSubTitleView();
-                }
-
-                changeTrack(C.TRACK_TYPE_TEXT, mappedIndex, 0);
-            }
-        });
+        changeTrack(C.TRACK_TYPE_TEXT, mappedIndex, 0);
     }
 
     private int mapSubtitleStreamPosToTrackIndex(int streamPos)
@@ -452,35 +444,24 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     }
 
     @Override
-    public void setAudioTrack(final int streamPos)
+    public void setAudioTrack(int streamPos)
     {
-        // ExoPlayer is main-thread-only. setAudioTrack is invoked from the
-        // Media-* thread (MediaCmd dispatch), so the read of getPlayWhenReady()
-        // and any subsequent changeTrack() call MUST be marshalled to the UI
-        // thread or ExoPlayerImpl.verifyApplicationThread throws.
-        context.runOnUiThread(new Runnable()
-        {
-            @Override
-            public void run()
-            {
-                // SageTV server sends MPEG PES stream IDs (e.g. 0xC000 for first MPEG audio,
-                // 0xBD80 for first AC3 sub-stream of private_stream_1) rather than zero-based
-                // track indices. Map to a zero-based group index that ExoPlayer can use.
-                int mappedIndex = mapStreamPosToTrackIndex(streamPos);
-                log.logDebug("setAudioTrack: streamPos=" + streamPos + " (0x" + Integer.toHexString(streamPos)
-                        + ") mapped to groupIndex=" + mappedIndex);
+        // SageTV server sends MPEG PES stream IDs (e.g. 0xC000 for first MPEG audio,
+        // 0xBD80 for first AC3 sub-stream of private_stream_1) rather than zero-based
+        // track indices. Map to a zero-based group index that ExoPlayer can use.
+        int mappedIndex = mapStreamPosToTrackIndex(streamPos);
+        log.logDebug("setAudioTrack: streamPos=" + streamPos + " (0x" + Integer.toHexString(streamPos)
+                + ") mapped to groupIndex=" + mappedIndex);
 
-                if (!ExoIsPlaying())
-                {
-                    initialAudioTrackIndex = mappedIndex;
-                }
-                else
-                {
-                    initialAudioTrackIndex = -1;
-                    changeTrack(C.TRACK_TYPE_AUDIO, mappedIndex, 0);
-                }
-            }
-        });
+        if (!ExoIsPlaying())
+        {
+            initialAudioTrackIndex = mappedIndex;
+        }
+        else
+        {
+            initialAudioTrackIndex = -1;
+            changeTrack(C.TRACK_TYPE_AUDIO, mappedIndex, 0);
+        }
     }
 
     /**
@@ -493,6 +474,8 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
      *                            0xBD80-0xBDBF -> (streamPos & 0x07)
      *   - DTS (private_stream_1 sub-stream):
      *                            0xBD88-0xBD8F -> (streamPos & 0x07)
+     *   - AC-4 (private_stream_1 sub-stream, SageTV ATSC 3.0 extension):
+     *                            0xBDC0-0xBDCF -> (streamPos & 0x0F)
      *
      * Anything else is assumed to already be a zero-based index. The result is
      * clamped to the actual number of available audio groups (falling back to 0
@@ -510,6 +493,11 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
         else if (streamPos >= 0xBD80 && streamPos <= 0xBDBF)
         {
             mapped = streamPos & 0x07;
+        }
+        else if (streamPos >= 0xBDC0 && streamPos <= 0xBDCF)
+        {
+            // AC-4 sub-stream range (SageTV ATSC 3.0 spec).
+            mapped = streamPos & 0x0F;
         }
         else
         {
@@ -567,11 +555,6 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                         //      one is scheduled, so a burst of 5 flushes
                         //      coalesces into a single rebuild.
                         final com.google.android.exoplayer2.source.MediaSource finalSrc = mediaSource;
-                        // Mark rebuild armed immediately so any malformed
-                        // error from the previous prepare's Loader (cancelled
-                        // by the ring clear in super.flush()) is suppressed.
-                        // Cleared in STATE_READY when the new prepare lands.
-                        pushRebuildInProgress = true;
                         runWhenPrebuffered(new Runnable()
                         {
                             @Override
@@ -607,15 +590,6 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
     /** Pending prebuffer gate, cancelled when a new flush arrives. */
     private Runnable pendingPrebufferGate;
-
-    /**
-     * True from the moment a push-mode flush arms a rebuild until the
-     * next STATE_READY confirms the new prepare has loaded. Any
-     * ERROR_CODE_PARSING_CONTAINER_MALFORMED that fires while this is
-     * true is treated as a transient race with the rebuild and
-     * suppressed.
-     */
-    private volatile boolean pushRebuildInProgress;
 
     /**
      * Schedule {@code action} to run on the UI thread once the native
@@ -763,8 +737,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
         if (FfmpegLibrary.isAvailable())
         {
-            final int preferExtensionDecoders = ((sagex.miniclient.android.prefs.AndroidPrefStore)
-                    MiniclientApplication.get().getClient().properties()).getExoFfmpegExtensionMode();
+            final int preferExtensionDecoders = MiniclientApplication.get().getClient().properties().getInt(PrefStore.Keys.exoplayer_ffmpeg_extension_setting, 1);
 
             switch (preferExtensionDecoders)
             {
@@ -794,15 +767,18 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
         ExoPlayer.Builder builder = new ExoPlayer.Builder(context.getContext(), renderersFactory);
 
         // Tune buffer sizes for streams over slow/variable connections (e.g. Tailscale).
-        // Keep default min/max buffer, but reduce rebuffer threshold so playback
-        // resumes quickly after a stall rather than waiting to refill a large buffer.
+        // C4 (NG cold-start grace): bump minBufferMs to 30s so a slow server
+        // cold-start on the first OPENURL has time to fill the pipeline
+        // before ExoPlayer trips an underflow that would surface as
+        // FORCED_MEDIA_RECONNECT. bufferForPlaybackMs is held modest (5s)
+        // so playback still starts promptly once data is flowing.
         builder.setLoadControl(
                 new com.google.android.exoplayer2.DefaultLoadControl.Builder()
                         .setBufferDurationsMs(
-                                /* minBufferMs= */ 15_000,
-                                /* maxBufferMs= */ 50_000,
-                                /* bufferForPlaybackMs= */ 2_500,
-                                /* bufferForPlaybackAfterRebufferMs= */ 2_500)
+                                /* minBufferMs= */ 30_000,
+                                /* maxBufferMs= */ 60_000,
+                                /* bufferForPlaybackMs= */ 5_000,
+                                /* bufferForPlaybackAfterRebufferMs= */ 5_000)
                         .build());
 
         builder.setTrackSelector(trackSelector);
@@ -817,74 +793,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 log.logDebug("PLAYER ERROR: " + error.getErrorCodeName());
                 error.printStackTrace();
 
-                // AUTO-mode legacy-server detection: ERROR_CODE_IO_UNSPECIFIED
-                // on first OPENURL is the canonical signal that a SageTV 9.2.x
-                // server's profile resolver couldn't match our NG capability
-                // advertisement. Flip the connected ServerInfo to LEGACY and
-                // persist; a one-shot toast tells the user to reconnect.
-                // Only fires once per playback session (retryCount == 0) so
-                // we don't spam during the existing 12-retry loop.
-                //
-                // GUARD: do NOT flip if this URL is the known ExoPlayer-PsExtractor
-                // landmine (MPEG-4 Part 2 in MPEG-PS). That's a *decoder* problem
-                // already routed around by PlayerSelectionUtil at newPlayerPlugin
-                // time on most code paths; if we still got here it means the user
-                // is forcing ExoPlayer for this stream. Flipping AUTO→LEGACY would
-                // tell the server "I can play MPEG-2 raw" which is wrong on devices
-                // without an MPEG-2 hardware decoder (e.g. Galaxy Fold) and would
-                // strand the user with silent video on every subsequent play.
-                if (retryCount == 0
-                        && error.errorCode == PlaybackException.ERROR_CODE_IO_UNSPECIFIED
-                        && !sagex.miniclient.android.video.PlayerSelectionUtil.isExoPsMpeg4Landmine(url)
-                        && !sagex.miniclient.android.video.PlayerSelectionUtil.isBarePushUrl(url)
-                        && context != null && context.getClient() != null
-                        && context.getClient().getCurrentConnection() != null)
-                {
-                    try
-                    {
-                        boolean flipped = context.getClient().getCurrentConnection()
-                                .notifyServerCompatibilityFailure();
-                        if (flipped)
-                        {
-                            context.showErrorMessage(
-                                    "Detected legacy SageTV server. Reconnect to enable compatibility mode.",
-                                    "Exo2MediaPlayer");
-                        }
-                    }
-                    catch (Throwable t)
-                    {
-                        log.logWarning("notifyServerCompatibilityFailure raised: " + t);
-                    }
-                }
-
-                // Push-mode flush-rebuild race: super.flush() clears the
-                // native ring while a previous prepare's Loader is still
-                // sniffing → cancellation surfaces as MALFORMED_CONTAINER.
-                // Suppress the toast ONLY when we know a flush rebuild is in
-                // flight (gate scheduled or super.flush() just ran). Genuine
-                // container errors (no decoder, broken file, etc.) will still
-                // toast so we can see them. Retry path runs unconditionally.
-                boolean transientFlushRace =
-                        pushMode
-                        && (pendingPrebufferGate != null || pushRebuildInProgress)
-                        && error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED;
-
-                if (transientFlushRace) {
-                    // One-line breadcrumb. No stack trace — this fires often
-                    // during FF mash and stack traces flood logcat enough to
-                    // perceptibly slow the UI.
-                    Throwable cause = error.getCause();
-                    log.logWarning("Suppressed transient flush-race container error: "
-                            + error.getErrorCodeName()
-                            + " retryCount=" + retryCount
-                            + " cause=" + (cause != null
-                                    ? cause.getClass().getSimpleName() + ": " + cause.getMessage()
-                                    : "none"));
-                }
-
-                if (retryCount == 0
-                        && !transientFlushRace
-                        && !(error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED
+                if (retryCount == 0 && !(error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED
                         && pushMode))
                 {
                     // For push-mode MPEG-PS startup, the first sniff frequently fails
@@ -926,7 +835,6 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 if (playbackState == Player.STATE_READY)
                 {
                     log.logDebug("Player.STATE_READY - Media loaded and ready for playback");
-                    pushRebuildInProgress = false;
                     if (errorState)
                     {
                         errorState = false;

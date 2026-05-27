@@ -82,13 +82,49 @@ public class LinearPsSeekMapTest {
         LinearPsSeekMap m = new LinearPsSeekMap(60 * ONE_SEC_US, 60_000_000L, provider);
         provider.size = 120_000_000L;
 
-        // Seek to 90s — past the original 60s window but within the new 120s.
+        // Seek to 90s — past the original 60s window but well inside the new
+        // 120s duration (and far enough from the live edge that the safety
+        // margin does not apply).
         SeekMap.SeekPoints points = m.getSeekPoints(90 * ONE_SEC_US);
 
         // Duration is now 120s, file size 120 MB, so 90s -> 90 MB (aligned).
         long expected = 90_000_000L;
         long aligned = (expected / 2048) * 2048;
         assertEquals(aligned, points.first.position);
+    }
+
+    @Test
+    public void liveGrowing_seekNearLiveEdgeIsClampedBehindHead() {
+        // Bug 2 regression: FF that lands within ~1s of the live write-head
+        // freezes because the server's MediaServer thread blocks waiting for
+        // bytes that aren't flushed yet. The seek map must hold a small safety
+        // margin behind the head on live recordings.
+        FixedProvider provider = new FixedProvider(60_000_000L);
+        LinearPsSeekMap m = new LinearPsSeekMap(60 * ONE_SEC_US, 60_000_000L, provider);
+        provider.size = 120_000_000L; // duration now 120s
+
+        // Ask to seek to 119.5s (0.5s behind head) — must clamp to 117s
+        // (3s safety margin) and map to the corresponding byte position.
+        SeekMap.SeekPoints points = m.getSeekPoints(119_500_000L);
+        long clampedUs = 120 * ONE_SEC_US - 3 * ONE_SEC_US;
+        long expectedByte = (long) ((double) clampedUs / (120 * ONE_SEC_US) * 120_000_000L);
+        long aligned = (expectedByte / 2048) * 2048;
+        assertEquals(clampedUs, points.first.timeUs);
+        assertEquals(aligned, points.first.position);
+        // And the byte position must be strictly less than the live file size
+        // so the server never blocks on un-flushed bytes.
+        assertTrue(points.first.position < 120_000_000L);
+    }
+
+    @Test
+    public void frozenSize_seekNearEndIsNotClamped() {
+        // Safety margin must NOT apply to non-live (frozen-size) maps; those
+        // are completed recordings where the entire file is flushed and the
+        // user expects to be able to FF up to the exact end.
+        LinearPsSeekMap m = new LinearPsSeekMap(60 * ONE_SEC_US, 60_000_000L, null);
+        SeekMap.SeekPoints points = m.getSeekPoints(59_500_000L);
+        // No clamp: timeUs is preserved.
+        assertEquals(59_500_000L, points.first.timeUs);
     }
 
     @Test

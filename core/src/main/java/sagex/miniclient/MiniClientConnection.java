@@ -24,6 +24,7 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 
 import sagex.miniclient.events.ConnectionLost;
+import sagex.miniclient.events.DownloadRequestEvent;
 import sagex.miniclient.logging.ILogger;
 import sagex.miniclient.media.Container;
 import sagex.miniclient.media.VideoCodec;
@@ -329,6 +330,17 @@ public class MiniClientConnection implements SageTVInputCallback
      */
     private final java.util.Map<String, List<String>> perPlayerCapabilities = new java.util.HashMap<>();
     private final java.util.Map<String, String> perPlayerConstraintProperties = new java.util.HashMap<>();
+    /**
+     * Server-provided session player hint from CAP_EFFECTIVE_PLAYER.
+     * Advisory only: local runtime decoder safety remains authoritative.
+     */
+    private volatile String serverEffectivePlayerHint = "";
+
+    /**
+     * Pending media download request. Set by PENDING_DOWNLOAD SetProperty,
+     * consumed by FSCMD_DOWNLOAD_FILE to post a DownloadRequestEvent.
+     */
+    private volatile DownloadRequest pendingDownloadRequest = null;
 
     private MenuHint menuHint = new MenuHint();
     private Properties profileProperties;
@@ -430,6 +442,16 @@ public class MiniClientConnection implements SageTVInputCallback
         final int videobitrateBps;
         final int audiobitrateBps;
         final String audiochannels;
+        // True for device tiers whose MediaCodec stack natively decodes HEVC
+        // 4K. For these devices we deliberately OMIT videocodec= and
+        // videobitrate= from the recipe so we don't force the server (legacy
+        // 9.2.x OR an NG server before the AUTO→NG promotion takes effect)
+        // to transcode an HEVC source down to H.264 8 Mbps. Legacy 9.2.x with
+        // no explicit videocodec= falls back to its own default (H.264 in
+        // matroska), preserving prior behavior. NG servers see no override
+        // and apply their own per-stream PlaybackDecisionEngine result —
+        // which is the fix for Bug 3 (HEVC quality regression).
+        final boolean preserveSourceVideo;
         switch (dc)
         {
             case "SHIELD":
@@ -439,17 +461,20 @@ public class MiniClientConnection implements SageTVInputCallback
                 videobitrateBps = 8000000;
                 audiobitrateBps = 384000;
                 audiochannels = "6";
+                preserveSourceVideo = true;
                 break;
             case "MID_PHONE":
             case "BUDGET_ATV":
                 videobitrateBps = 6000000;
                 audiobitrateBps = 192000;
                 audiochannels = "2";
+                preserveSourceVideo = false;
                 break;
             case "BUDGET_PHONE":
                 videobitrateBps = 4000000;
                 audiobitrateBps = 192000;
                 audiochannels = "2";
+                preserveSourceVideo = false;
                 break;
             default:
                 return null;
@@ -457,8 +482,11 @@ public class MiniClientConnection implements SageTVInputCallback
 
         StringBuilder sb = new StringBuilder();
         sb.append("container=matroska;");
-        sb.append("videocodec=h264;");
-        sb.append("videobitrate=").append(videobitrateBps).append(";");
+        if (!preserveSourceVideo)
+        {
+            sb.append("videocodec=h264;");
+            sb.append("videobitrate=").append(videobitrateBps).append(";");
+        }
         sb.append("fps=SOURCE;");
         sb.append("resolution=SOURCE;");
         sb.append("audiocodec=ac3;");
@@ -466,7 +494,8 @@ public class MiniClientConnection implements SageTVInputCallback
         sb.append("audiochannels=").append(audiochannels).append(";");
         String fmt = sb.toString();
         log.logInfo("LEGACY FIXED_PUSH_MEDIA_FORMAT auto-promote [DeviceClass=" + dc
-                + " effectiveStreamingMode=" + effectiveStreamingMode + "]: " + fmt);
+                + " effectiveStreamingMode=" + effectiveStreamingMode
+                + " preserveSourceVideo=" + preserveSourceVideo + "]: " + fmt);
         return fmt;
     }
 
@@ -501,6 +530,50 @@ public class MiniClientConnection implements SageTVInputCallback
         }
         String fmt = "container=" + container + ";videocodec=COPY;audiocodec=COPY;";
         log.logInfo("LEGACY FIXED_PUSH_REMUX_FORMAT auto-promote [DeviceClass=" + dc
+                + " effectiveStreamingMode=" + effectiveStreamingMode + "]: " + fmt);
+        return fmt;
+    }
+
+    /**
+     * NG safety-net REMUX recipe. Sent to NG servers as a guard against the
+     * server's PlaybackDecisionEngine misfiring and falling back to its legacy
+     * DVD-default transcode (MPEG-2 720x480 + MP2). With this recipe in place,
+     * the worst the server can do on PUSH is wrap the source codecs in a
+     * container the device prefers — HEVC / H.264 / etc. remain COPY (no
+     * re-encode, no resolution change).
+     *
+     * <p>NG servers that pick PULL_DIRECT_PLAY (preferred) simply ignore this
+     * hint — it only takes effect on PUSH. So this is a strict safety net,
+     * never a quality cap.</p>
+     *
+     * <p>Container choice mirrors {@link #buildLegacyDeviceAwareRemuxFormat(String)}:
+     * SHIELD + BUDGET_ATV → {@code mpegts} (TS-first decoders);
+     * everyone else → {@code matroska}.</p>
+     *
+     * <p>Returns null when: client is in legacy-server mode (use
+     * {@link #buildLegacyDeviceAwareRemuxFormat(String)} instead); user pinned
+     * remux preference {@code off}; device class is UNKNOWN.</p>
+     */
+    public String buildNgSafetyRemuxFormat(String effectiveStreamingMode)
+    {
+        if (isLegacyServerCompat()) return null;
+        if (client == null || client.properties() == null) return null;
+        if ("off".equalsIgnoreCase(client.properties().getFixedRemuxingPreference())) return null;
+        String dc = (client.options() != null) ? client.options().getDeviceClass() : "UNKNOWN";
+        if (dc == null || "UNKNOWN".equals(dc)) return null;
+
+        final String container;
+        switch (dc)
+        {
+            case "SHIELD":
+            case "BUDGET_ATV":
+                container = "mpegts";
+                break;
+            default:
+                container = "matroska";
+        }
+        String fmt = "container=" + container + ";videocodec=COPY;audiocodec=COPY;";
+        log.logInfo("NG FIXED_PUSH_REMUX_FORMAT safety-net [DeviceClass=" + dc
                 + " effectiveStreamingMode=" + effectiveStreamingMode + "]: " + fmt);
         return fmt;
     }
@@ -803,6 +876,10 @@ public class MiniClientConnection implements SageTVInputCallback
     private void preparePerPlayerConstraintProperties()
     {
         perPlayerConstraintProperties.clear();
+        if (!isCapSchemaV2Enabled())
+        {
+            return;
+        }
         perPlayerConstraintProperties.put("CAP_SCHEMA_VERSION", "2");
 
         final String deviceClass = (client != null && client.options() != null)
@@ -831,6 +908,11 @@ public class MiniClientConnection implements SageTVInputCallback
                 "IJK_CONTAINER_CONSTRAINTS",
                 buildContainerConstraintCsv(perPlayerCapabilities.get("IJK_PUSH_AV_CONTAINERS"),
                         perPlayerCapabilities.get("IJK_PULL_AV_CONTAINERS")));
+    }
+
+    private boolean isCapSchemaV2Enabled()
+    {
+        return !isLegacyServerCompat();
     }
 
     private String buildVideoConstraintCsv(List<String> codecs, String deviceClass, boolean exoPath)
@@ -955,6 +1037,17 @@ public class MiniClientConnection implements SageTVInputCallback
             list.add(s.trim());
         }
         return list;
+    }
+
+    /**
+     * Normalizes player tokens used by negotiation properties.
+     * Contract: only "exoplayer" and "ijkplayer" are concrete values.
+     */
+    private String normalizePlayerToken(String raw)
+    {
+        if (raw == null) return "";
+        String normalized = raw.toLowerCase(java.util.Locale.ROOT).trim();
+        return ("exoplayer".equals(normalized) || "ijkplayer".equals(normalized)) ? normalized : "";
     }
 
     public boolean isConnected() {
@@ -1520,7 +1613,7 @@ public class MiniClientConnection implements SageTVInputCallback
                         // position. Advertising TRUE made the legacy server send
                         // MEDIACMD_SEEK alone (no flush, no restream), which left
                         // OSD advancing while video kept playing the stale buffer
-                        // (FF "did nothing" on Fold ↔ 100.97.197.107).
+                        // (FF "did nothing" on one legacy server deployment).
                         //
                         // See IJKMediaPlayerImpl.seek() push-mode branch — its own
                         // comment says "The server handles seeking by flushing the
@@ -1568,6 +1661,28 @@ public class MiniClientConnection implements SageTVInputCallback
                             propVal = "";
                         }
                     }
+                    else if ("MEDIA_DOWNLOAD_SUPPORT".equals(propName))
+                    {
+                        propVal = "TRUE";
+                    }
+                    else if ("MEDIA_DOWNLOAD_QUEUE_SIZE".equals(propName))
+                    {
+                        propVal = "1";
+                    }
+                    else if (propName != null && propName.startsWith("DOWNLOAD_STATUS_"))
+                    {
+                        String mediaFileID = propName.substring("DOWNLOAD_STATUS_".length());
+                        DownloadStatusProvider dsp = client.getDownloadStatusProvider();
+                        if (dsp != null)
+                        {
+                            String status = dsp.getDownloadStatus(mediaFileID);
+                            propVal = (status != null) ? status : "";
+                        }
+                        else
+                        {
+                            propVal = "";
+                        }
+                    }
                     else if ("GFX_VIDEO_UPDATE".equals(propName))
                     {
                         propVal = "TRUE";
@@ -1582,7 +1697,10 @@ public class MiniClientConnection implements SageTVInputCallback
                         {
                             // 9.2.x server: device-aware Placeshifter advertisement.
                             // See LEGACY_VIDEO_UNIVERSE comment block for rationale.
-                            propVal = legacyAdvertise("VIDEO_CODECS", LEGACY_VIDEO_UNIVERSE, videoCodecs);
+                            // Source of truth is runtime per-player capability detection
+                            // (EXO/IJK union), with legacy flat list as fallback.
+                            propVal = legacyAdvertise("VIDEO_CODECS", LEGACY_VIDEO_UNIVERSE,
+                                    getLegacySourceTokens("EXO_VIDEO_CODECS", "IJK_VIDEO_CODECS", videoCodecs));
                             // Phase B: when FIXED override is active, the mediaExtender +
                             // mpeg2psremux selection in upstream MiniPlayer requires
                             // clientCanDoMPEGHD = isSupportedVideoCodec("MPEG2-VIDEO@HL").
@@ -1618,7 +1736,8 @@ public class MiniClientConnection implements SageTVInputCallback
                             // Drops decoder tokens the device can't actually handle
                             // (e.g. DTS-HD on devices without DTS HW) so the resolver
                             // picks an audio target the client can play.
-                            propVal = legacyAdvertise("AUDIO_CODECS", LEGACY_AUDIO_UNIVERSE, audioCodecs);
+                            propVal = legacyAdvertise("AUDIO_CODECS", LEGACY_AUDIO_UNIVERSE,
+                                    getLegacySourceTokens("EXO_AUDIO_CODECS", "IJK_AUDIO_CODECS", audioCodecs));
                         }
                         else if (client.properties().getFixedEncodingPreference().equalsIgnoreCase("always")
                                 && effectiveStreamingMode.equalsIgnoreCase("fixed"))
@@ -1655,7 +1774,8 @@ public class MiniClientConnection implements SageTVInputCallback
                             // Most modern Android devices handle MPEG2-TS; MPEG2-PS is
                             // the ExoPlayer-PsExtractor landmine container but the
                             // PlayerSelectionUtil swap routes around that at OPENURL time.
-                            propVal = legacyAdvertise("PUSH_AV_CONTAINERS", LEGACY_PUSH_UNIVERSE, pushFormats);
+                            propVal = legacyAdvertise("PUSH_AV_CONTAINERS", LEGACY_PUSH_UNIVERSE,
+                                    getLegacySourceTokens("EXO_PUSH_AV_CONTAINERS", "IJK_PUSH_AV_CONTAINERS", pushFormats));
                             // Phase B: clientDoesMPEG2Push = isSupportedPushContainerFormat("MPEG2-PS")
                             // is required for the mpeg2psremux branch in upstream MiniPlayer.
                             // Force-include MPEG2-PS when FIXED override is active so the
@@ -1736,7 +1856,8 @@ public class MiniClientConnection implements SageTVInputCallback
                                 log.logInfo("PHASE_B: PULL_AV_CONTAINERS -> '' (force PUSH path for extender remux)");
                             }
                             else
-                                propVal = legacyAdvertise("PULL_AV_CONTAINERS", LEGACY_PULL_UNIVERSE, pullFormats);
+                                propVal = legacyAdvertise("PULL_AV_CONTAINERS", LEGACY_PULL_UNIVERSE,
+                                    getLegacySourceTokens("EXO_PULL_AV_CONTAINERS", "IJK_PULL_AV_CONTAINERS", pullFormats));
                         }
                         else if (!canDoPullStreaming
                                 || ((client.properties().getFixedEncodingPreference().equalsIgnoreCase("always")
@@ -1763,7 +1884,8 @@ public class MiniClientConnection implements SageTVInputCallback
                         {
                         propVal = perPlayerConstraintProperties.get(propName);
                         }
-                        else if (propName != null
+                        else if (isCapSchemaV2Enabled()
+                            && propName != null
                             && (propName.startsWith("EXO_") || propName.startsWith("IJK_"))
                             && perPlayerCapabilities.containsKey(propName))
                     {
@@ -1785,24 +1907,13 @@ public class MiniClientConnection implements SageTVInputCallback
                     }
                     else if ("MINICLIENT_DEFAULT_PLAYER".equals(propName))
                     {
-                        // Phase 3 hint for NG servers: which player the user has
-                        // selected as default. The actual player at OPENURL time
-                        // can be auto-swapped by PlayerSelectionUtil for known
-                        // landmines, but this is the best static hint the server
-                        // can use to bias its profile picks. Legacy servers don't
-                        // query this property.
+                        // Phase 3 hint for NG servers: user's preferred default
+                        // player. This is advisory only; server must not treat it
+                        // as a hard constraint, and client may still override at
+                        // OPENURL time for runtime decode safety.
+                        // Legacy servers don't query this property.
                         String dp = client.properties().getString(PrefStore.Keys.default_player, "exoplayer");
-                        String normalized = (dp == null) ? "" : dp.toLowerCase(java.util.Locale.ROOT).trim();
-                        if ("exoplayer".equals(normalized) || "ijkplayer".equals(normalized))
-                        {
-                            propVal = normalized;
-                        }
-                        else
-                        {
-                            // Contract: only exoplayer/ijkplayer enable bias.
-                            // Any other value must fall back to union sets.
-                            propVal = "";
-                        }
+                        propVal = normalizePlayerToken(dp);
                     }
                     else if ("MEDIA_PLAYER_BUFFER_DELAY".equals(propName))
                     {
@@ -1815,6 +1926,16 @@ public class MiniClientConnection implements SageTVInputCallback
                     }
                     else if ("FIXED_PUSH_MEDIA_FORMAT".equals(propName))
                     {
+                        // Legacy fail-safe: only honor explicit user pinning.
+                        // Implicit/auto fixed recipes can cause some 9.2.x servers
+                        // to emit an empty push URL (openURL0(push:)).
+                        if (isLegacyServerCompat()
+                                && !client.properties().getFixedEncodingPreference().equalsIgnoreCase("always"))
+                        {
+                            propVal = "";
+                        }
+                        else
+                        {
                         // Legacy 9.2.x auto-promote: if no user-pinned recipe, synthesize
                         // a device-aware one so the legacy server doesn't fall back to
                         // its hardcoded MPEG-4 ASP + MP2 + MPEG-PS default. See
@@ -1895,9 +2016,19 @@ public class MiniClientConnection implements SageTVInputCallback
                         {
                             propVal = "";
                         }
+                        }
                     }
                     else if ("FIXED_PUSH_REMUX_FORMAT".equals(propName))
                     {
+                        // Legacy fail-safe: only honor explicit user pinning.
+                        // Keep remux hint empty unless user asked for fixed remuxing.
+                        if (isLegacyServerCompat()
+                                && !client.properties().getFixedRemuxingPreference().equalsIgnoreCase("always"))
+                        {
+                            propVal = "";
+                        }
+                        else
+                        {
                         // Legacy 9.2.x auto-promote: device-aware remux container so
                         // HEVC / H.264 sources that just need a container wrap get
                         // remuxed instead of re-transcoded by the legacy server's default.
@@ -1913,6 +2044,21 @@ public class MiniClientConnection implements SageTVInputCallback
                             {
                                 propVal = "container=" + client.properties().getFixedRemuxingFormat() + ";videocodec=COPY;audiocodec=COPY;";
                             }
+                        }
+                        else
+                        {
+                            // NG path safety-net: prevent the server's PlaybackDecisionEngine
+                            // from falling back to its legacy DVD-default transcode
+                            // (MPEG-2 720x480 + MP2) when it misfires on an MP4/HEVC source.
+                            // PULL_DIRECT_PLAY-preferring NG servers will simply ignore this
+                            // hint; only the PUSH path consults it. See
+                            // buildNgSafetyRemuxFormat() javadoc.
+                            String ngRemux = buildNgSafetyRemuxFormat(effectiveStreamingMode);
+                            if (ngRemux != null)
+                            {
+                                propVal = ngRemux;
+                            }
+                        }
                         }
                     }
                     else if ("CRYPTO_ALGORITHMS".equals(propName))
@@ -2288,6 +2434,40 @@ public class MiniClientConnection implements SageTVInputCallback
                             log.logInfo("Server resolved client profile: CAP_EFFECTIVE_PROFILE=" + propVal);
                             retval = 0;
                         }
+                        else if ("CAP_EFFECTIVE_PLAYER".equals(propName))
+                        {
+                            // Optional NG server hint for selected player path.
+                            // Advisory only: we do not rewrite user preference and
+                            // local runtime decoder checks remain authoritative.
+                            propVal = new String(cmdbuffer, 4 + nameLen, valLen);
+                            String normalized = normalizePlayerToken(propVal);
+                            serverEffectivePlayerHint = normalized;
+                            if (normalized.isEmpty())
+                            {
+                                log.logInfo("Server provided empty/unknown CAP_EFFECTIVE_PLAYER='" + propVal
+                                        + "' (advisory hint cleared)");
+                            }
+                            else
+                            {
+                                log.logInfo("Server resolved player hint: CAP_EFFECTIVE_PLAYER=" + normalized
+                                        + " (advisory only; runtime decode checks may override)");
+                            }
+                            retval = 0;
+                        }
+                        else if ("PENDING_DOWNLOAD".equals(propName))
+                        {
+                            propVal = new String(cmdbuffer, 4 + nameLen, valLen);
+                            pendingDownloadRequest = parsePendingDownload(propVal);
+                            if (pendingDownloadRequest != null)
+                            {
+                                log.logInfo("PENDING_DOWNLOAD received: " + pendingDownloadRequest);
+                            }
+                            else
+                            {
+                                log.logError("PENDING_DOWNLOAD: failed to parse JSON: " + propVal, null);
+                            }
+                            retval = 0;
+                        }
                         else if ("SAGETV_NG_SERVER".equals(propName))
                         {
                             // NG server self-declaration. Emitted by NG-aware
@@ -2557,6 +2737,45 @@ public class MiniClientConnection implements SageTVInputCallback
             out.append(trimmed);
         }
         return out.toString();
+    }
+
+    private List<String> getLegacySourceTokens(String exoKey, String ijkKey, List<String> fallback)
+    {
+        java.util.LinkedHashSet<String> merged = new java.util.LinkedHashSet<String>();
+
+        List<String> exo = perPlayerCapabilities.get(exoKey);
+        if (exo != null)
+        {
+            for (String token : exo)
+            {
+                if (token == null) continue;
+                String trimmed = token.trim();
+                if (!trimmed.isEmpty()) merged.add(trimmed);
+            }
+        }
+
+        List<String> ijk = perPlayerCapabilities.get(ijkKey);
+        if (ijk != null)
+        {
+            for (String token : ijk)
+            {
+                if (token == null) continue;
+                String trimmed = token.trim();
+                if (!trimmed.isEmpty()) merged.add(trimmed);
+            }
+        }
+
+        if (merged.isEmpty() && fallback != null)
+        {
+            for (String token : fallback)
+            {
+                if (token == null) continue;
+                String trimmed = token.trim();
+                if (!trimmed.isEmpty()) merged.add(trimmed);
+            }
+        }
+
+        return new java.util.ArrayList<String>(merged);
     }
 
     private String legacyAdvertise(String label, String[] universe, List<String> deviceTokens)
@@ -3257,6 +3476,22 @@ public class MiniClientConnection implements SageTVInputCallback
                 long fileSize = getCmdLong(cmdData, 16);
                 pathName = getSafeFsPath(cmdData, 24);
                 if (pathName == null) { intRv = FS_RV_NO_PERMISSIONS; break; }
+
+                // Check if this is a media download (PENDING_DOWNLOAD was set)
+                if (cmdType == FSCMD_DOWNLOAD_FILE && pendingDownloadRequest != null) {
+                    DownloadRequest req = pendingDownloadRequest;
+                    pendingDownloadRequest = null;
+                    // Fill in protocol-level details from the FS command
+                    req.setServerPath(pathName);
+                    if (req.getFileSize() <= 0) {
+                        req.setFileSize(fileSize);
+                    }
+                    log.logInfo("Media download routed to DownloadManager: " + req);
+                    client.eventbus().post(new DownloadRequestEvent(req));
+                    intRv = FS_RV_SUCCESS;
+                    break;
+                }
+
                 theFile = new java.io.File(pathName);
                 if (cmdType == FSCMD_DOWNLOAD_FILE) {
                     // Make sure we're downloading to a valid file that we can write
@@ -3340,6 +3575,170 @@ public class MiniClientConnection implements SageTVInputCallback
                 eventChannel.writeInt(intRv);
             eventChannel.flush();
         }
+    }
+
+    /**
+     * Parse the PENDING_DOWNLOAD JSON payload into a DownloadRequest.
+     * Expected format: {"mediaFileID":"...","title":"...","serverPath":"...","fileSize":N,"duration":N,"thumbnailUrl":"...","container":"..."}
+     * Uses minimal manual JSON parsing to avoid adding a library dependency to core.
+     */
+    private DownloadRequest parsePendingDownload(String json) {
+        if (json == null || json.isEmpty()) return null;
+        try {
+            DownloadRequest req = new DownloadRequest();
+            req.setMediaFileID(extractJsonString(json, "mediaFileID"));
+            if (req.getMediaFileID() == null || req.getMediaFileID().isEmpty()) {
+                req.setMediaFileID(extractJsonString(json, "recording_id"));
+            }
+            req.setTitle(extractJsonString(json, "title"));
+            if (req.getTitle() == null || req.getTitle().isEmpty()) {
+                req.setTitle(extractJsonString(json, "file_name"));
+            }
+            req.setServerPath(extractJsonString(json, "serverPath"));
+            req.setContainer(extractJsonString(json, "container"));
+            req.setThumbnailUrl(extractJsonString(json, "thumbnailUrl"));
+            req.setFileSize(extractJsonLong(json, "fileSize"));
+            if (req.getFileSize() <= 0) {
+                req.setFileSize(extractJsonLong(json, "total_bytes"));
+            }
+            req.setDuration(extractJsonLong(json, "duration"));
+            req.setRecordingState(extractJsonString(json, "recording_state"));
+
+            req.setSessionToken(extractJsonString(json, "session_token"));
+            req.setDownloadUrl(extractJsonString(json, "download_url"));
+            req.setSessionState(extractJsonString(json, "session_state"));
+            req.setAccountFamily(extractJsonString(json, "app_family"));
+            if (req.getAccountFamily() == null || req.getAccountFamily().isEmpty()) {
+                req.setAccountFamily(extractJsonString(json, "account_family"));
+            }
+            req.setAccountUsername(extractJsonString(json, "username"));
+            req.setAccountPassword(extractJsonString(json, "password"));
+            req.setResumeFromOffset(extractJsonLong(json, "resume_from_offset"));
+            req.setReconnectGraceSeconds(extractJsonLong(json, "reconnect_grace_seconds"));
+            req.setExpiresInSeconds(extractJsonLong(json, "expires_in_seconds"));
+            req.setEffectiveRateKbps(extractJsonLong(json, "effective_rate_kbps"));
+
+            req.setRequestedPolicyJson(extractJsonObject(json, "requested_policy"));
+            req.setAcceptedPolicyJson(extractJsonObject(json, "accepted_policy"));
+            req.setPolicyAdjustmentsJson(extractJsonArray(json, "policy_adjustments"));
+            req.setRecentReasonCodesJson(extractJsonArray(json, "recent_reason_codes"));
+
+            if (req.getMediaFileID() == null || req.getMediaFileID().isEmpty()) return null;
+            return req;
+        } catch (Exception e) {
+            log.logError("parsePendingDownload failed", e);
+            return null;
+        }
+    }
+
+    private static String extractJsonString(String json, String key) {
+        String raw = extractJsonRawValue(json, key);
+        if (raw == null || raw.length() < 2 || raw.charAt(0) != '"') return null;
+        StringBuilder sb = new StringBuilder(raw.length() - 2);
+        boolean escaped = false;
+        for (int i = 1; i < raw.length() - 1; i++) {
+            char c = raw.charAt(i);
+            if (escaped) {
+                if (c == 'n') sb.append('\n');
+                else if (c == 'r') sb.append('\r');
+                else if (c == 't') sb.append('\t');
+                else sb.append(c);
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
+    }
+
+    private static long extractJsonLong(String json, String key) {
+        String raw = extractJsonRawValue(json, key);
+        if (raw == null) return 0;
+        try {
+            return Long.parseLong(raw.trim());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    private static String extractJsonObject(String json, String key) {
+        String raw = extractJsonRawValue(json, key);
+        return raw != null && raw.startsWith("{") ? raw : null;
+    }
+
+    private static String extractJsonArray(String json, String key) {
+        String raw = extractJsonRawValue(json, key);
+        return raw != null && raw.startsWith("[") ? raw : null;
+    }
+
+    private static String extractJsonRawValue(String json, String key) {
+        String search = "\"" + key + "\"";
+        int idx = json.indexOf(search);
+        if (idx < 0) return null;
+        int colonIdx = json.indexOf(':', idx + search.length());
+        if (colonIdx < 0) return null;
+        int start = colonIdx + 1;
+        while (start < json.length() && Character.isWhitespace(json.charAt(start))) start++;
+        if (start >= json.length()) return null;
+
+        char first = json.charAt(start);
+        if (first == '"') {
+            int i = start + 1;
+            boolean escaped = false;
+            while (i < json.length()) {
+                char c = json.charAt(i);
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == '"') {
+                    return json.substring(start, i + 1);
+                }
+                i++;
+            }
+            return null;
+        }
+
+        if (first == '{' || first == '[') {
+            char open = first;
+            char close = open == '{' ? '}' : ']';
+            int depth = 0;
+            boolean inString = false;
+            boolean escaped = false;
+            for (int i = start; i < json.length(); i++) {
+                char c = json.charAt(i);
+                if (inString) {
+                    if (escaped) {
+                        escaped = false;
+                    } else if (c == '\\') {
+                        escaped = true;
+                    } else if (c == '"') {
+                        inString = false;
+                    }
+                    continue;
+                }
+                if (c == '"') {
+                    inString = true;
+                    continue;
+                }
+                if (c == open) depth++;
+                if (c == close) {
+                    depth--;
+                    if (depth == 0) return json.substring(start, i + 1);
+                }
+            }
+            return null;
+        }
+
+        int end = start;
+        while (end < json.length()) {
+            char c = json.charAt(end);
+            if (c == ',' || c == '}' || c == ']') break;
+            end++;
+        }
+        return json.substring(start, end).trim();
     }
 
     // Connects back to the server to initiate a remote FS operation; returns 0

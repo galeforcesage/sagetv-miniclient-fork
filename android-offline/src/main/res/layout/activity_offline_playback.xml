@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Offline playback layout — full-screen ExoPlayer with controller overlay,
+     matching the SageTV placeshifter dark video playback style. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#FF000000">
+
+    <com.google.android.exoplayer2.ui.StyledPlayerView
+        android:id="@+id/offline_player_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        app:show_timeout="5000"
+        app:use_controller="true"
+        app:show_buffering="when_playing"
+        app:resize_mode="fit" />
+
+    <!-- Title overlay at top — matches SageTV OSD info bar style -->
+    <LinearLayout
+        android:id="@+id/offline_playback_title_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:orientation="horizontal"
+        android:background="#80000000"
+        android:padding="16dp"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:id="@+id/offline_playback_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:textColor="#FFFFFFFF"
+            android:textSize="20sp"
+            android:fontFamily="sans-serif-light"
+            android:maxLines="1"
+            android:ellipsize="end" />
+
+    </LinearLayout>
+
+</FrameLayout>

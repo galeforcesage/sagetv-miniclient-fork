@@ -1,0 +1,38 @@
+apply plugin: 'com.android.library'
+
+android {
+    namespace 'sagex.miniclient.android.offline'
+    buildToolsVersion androidBuildToolsVersion
+    compileSdkVersion androidCompileSdkVersion
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    defaultConfig {
+        minSdkVersion androidMinSdkVersion
+        targetSdkVersion androidTargetSdkVersion
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    lint {
+        abortOnError false
+    }
+}
+
+dependencies {
+    // Depends on android-shared (which brings core, ExoPlayer, RecyclerView, DocumentFile, Otto)
+    implementation project(":android-shared")
+
+    implementation "androidx.recyclerview:recyclerview:1.2.1"
+    implementation "androidx.documentfile:documentfile:1.0.1"
+    implementation "androidx.work:work-runtime:2.9.1"
+    implementation "androidx.security:security-crypto:1.1.0-alpha06"
+}

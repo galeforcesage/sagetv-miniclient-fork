@@ -53,6 +53,7 @@ public class MiniClient
     private ExecutorService backgroundService = null;
     private ServerInfo connectedServer;
     private ImageCache imageCache;
+    private volatile DownloadStatusProvider downloadStatusProvider;
 
     public MiniClient(MiniClientOptions options, ILogger logger)
     {
@@ -139,6 +140,14 @@ public class MiniClient
 
     public IBus eventbus() {
         return eventBus;
+    }
+
+    public DownloadStatusProvider getDownloadStatusProvider() {
+        return downloadStatusProvider;
+    }
+
+    public void setDownloadStatusProvider(DownloadStatusProvider provider) {
+        this.downloadStatusProvider = provider;
     }
 
     public String getCryptoFormats() {

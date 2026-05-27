@@ -3,7 +3,6 @@ package sagex.miniclient;
 import java.io.File;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
 
 import sagex.miniclient.prefs.PrefStore;
 
