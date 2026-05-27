@@ -3176,6 +3176,82 @@ public class MiniClientConnection implements SageTVInputCallback
         }
     }
 
+    public void postDownloadRefreshRequest(String mediaFileID, String reasonCode, String correlationId) {
+        if (performingReconnect)
+            return;
+
+        if (eventChannel == null || mediaFileID == null || mediaFileID.isEmpty())
+            return;
+
+        String reason = reasonCode == null ? "" : reasonCode;
+        String corr = correlationId == null ? "" : correlationId;
+        String propName = "DOWNLOAD_REFRESH_REQUEST";
+        String propVal = "{\"mediaFileID\":\"" + escapeJson(mediaFileID) +
+                "\",\"reason\":\"" + escapeJson(reason) +
+                "\",\"correlationId\":\"" + escapeJson(corr) + "\"}";
+
+        byte[] nameBytes;
+        byte[] valueBytes;
+        try {
+            nameBytes = propName.getBytes(MiniClient.BYTE_CHARSET);
+            valueBytes = propVal.getBytes(MiniClient.BYTE_CHARSET);
+        } catch (Exception e) {
+            log.logError("Failed to encode DOWNLOAD_REFRESH_REQUEST", e);
+            return;
+        }
+        int payloadLen = 4 + nameBytes.length + valueBytes.length;
+
+        synchronized (eventChannel) {
+            try {
+                eventChannel.write(SET_PROPERTY_CMD_TYPE);
+                eventChannel.write((payloadLen >> 16) & 0xFF);
+                eventChannel.write((payloadLen >> 8) & 0xFF);
+                eventChannel.write(payloadLen & 0xFF);
+                eventChannel.writeInt(0);
+                eventChannel.writeInt(replyCount++);
+                eventChannel.writeInt(0);
+
+                byte[] body = new byte[payloadLen];
+                body[0] = (byte) ((nameBytes.length >> 8) & 0xFF);
+                body[1] = (byte) (nameBytes.length & 0xFF);
+                body[2] = (byte) ((valueBytes.length >> 8) & 0xFF);
+                body[3] = (byte) (valueBytes.length & 0xFF);
+                System.arraycopy(nameBytes, 0, body, 4, nameBytes.length);
+                System.arraycopy(valueBytes, 0, body, 4 + nameBytes.length, valueBytes.length);
+
+                if (encryptEvents && evtEncryptCipher != null) {
+                    eventChannel.write(evtEncryptCipher.doFinal(body));
+                } else {
+                    eventChannel.write(body);
+                }
+                eventChannel.flush();
+            } catch (Exception e) {
+                log.logError("Failed to post DOWNLOAD_REFRESH_REQUEST", e);
+                eventChannelError();
+            }
+        }
+    }
+
+    private static String escapeJson(String value) {
+        if (value == null) return "";
+        StringBuilder sb = new StringBuilder(value.length() + 8);
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c == '\\' || c == '"') {
+                sb.append('\\').append(c);
+            } else if (c == '\n') {
+                sb.append("\\n");
+            } else if (c == '\r') {
+                sb.append("\\r");
+            } else if (c == '\t') {
+                sb.append("\\t");
+            } else {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
+    }
+
     public void postMouseEvent(final MouseEvent evt) {
         // MiniClientPowerManagement.getInstance().kick();
         if (performingReconnect)
@@ -3622,6 +3698,21 @@ public class MiniClientConnection implements SageTVInputCallback
             req.setAcceptedPolicyJson(extractJsonObject(json, "accepted_policy"));
             req.setPolicyAdjustmentsJson(extractJsonArray(json, "policy_adjustments"));
             req.setRecentReasonCodesJson(extractJsonArray(json, "recent_reason_codes"));
+            req.setServerQueueItemId(extractJsonString(json, "server_queue_item_id"));
+            if (req.getServerQueueItemId() == null || req.getServerQueueItemId().isEmpty()) {
+                req.setServerQueueItemId(extractJsonString(json, "queue_item_id"));
+            }
+            req.setQueuePriority((int) extractJsonLong(json, "queue_priority"));
+            if (req.getQueuePriority() == 0) {
+                req.setQueuePriority((int) extractJsonLong(json, "priority"));
+            }
+            req.setRequestIntent(extractJsonString(json, "request_intent"));
+            if (req.getRequestIntent() == null || req.getRequestIntent().isEmpty()) {
+                req.setRequestIntent(extractJsonString(json, "intent"));
+            }
+            req.setSeriesSelectionMode(extractJsonString(json, "series_selection_mode"));
+            req.setEstimatedSeriesBytes(extractJsonLong(json, "estimated_series_bytes"));
+            req.setEstimatedItemCount((int) extractJsonLong(json, "estimated_item_count"));
 
             if (req.getMediaFileID() == null || req.getMediaFileID().isEmpty()) return null;
             return req;

@@ -117,6 +117,23 @@ public class DownloadsActivity extends Activity {
         saveAccountButton.setOnClickListener(v -> saveDownloadAccount());
         root.addView(saveAccountButton);
 
+        LinearLayout bulkActions = new LinearLayout(this);
+        bulkActions.setOrientation(LinearLayout.HORIZONTAL);
+        bulkActions.setPadding(0, dpToPx(12), 0, dpToPx(4));
+        addActionButton(bulkActions, "Pause All", v -> {
+            downloadManager.pauseAll();
+            refreshList();
+        });
+        addActionButton(bulkActions, "Resume All", v -> {
+            downloadManager.resumeAll();
+            refreshList();
+        });
+        addActionButton(bulkActions, "Clear Completed", v -> {
+            downloadManager.clearCompleted();
+            refreshList();
+        });
+        root.addView(bulkActions);
+
         // Empty text
         emptyText = new TextView(this);
         emptyText.setText("No downloads");
@@ -172,6 +189,18 @@ public class DownloadsActivity extends Activity {
         if (meta.getFileSize() > 0) {
             statusText += " - " + formatBytes(meta.getDownloadedBytes()) + " / " + formatBytes(meta.getFileSize());
         }
+        if (meta.getQueuePriority() != 0) {
+            statusText += "\nPriority: " + meta.getQueuePriority();
+        }
+        if (meta.getMergedRequestCount() > 1) {
+            statusText += "\nMerged requests: " + meta.getMergedRequestCount();
+        }
+        if (meta.getDownloadSpeedBytesPerSec() > 0) {
+            statusText += "\nSpeed: " + formatBytes(meta.getDownloadSpeedBytesPerSec()) + "/s";
+        }
+        if (meta.getEtaSeconds() > 0) {
+            statusText += " ETA: " + formatEta(meta.getEtaSeconds());
+        }
         if (meta.getAcceptedPolicyJson() != null && !meta.getAcceptedPolicyJson().isEmpty()) {
             statusText += "\nAccepted policy: " + meta.getAcceptedPolicyJson();
         }
@@ -190,7 +219,8 @@ public class DownloadsActivity extends Activity {
 
         // Progress bar (for active/queued downloads)
         if (meta.getStatus() == DownloadMetadata.Status.DOWNLOADING
-                || meta.getStatus() == DownloadMetadata.Status.QUEUED) {
+            || meta.getStatus() == DownloadMetadata.Status.QUEUED
+            || meta.getStatus() == DownloadMetadata.Status.PREPARING) {
             ProgressBar progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
             progressBar.setMax(100);
             progressBar.setProgress(meta.getProgressPercent());
@@ -212,17 +242,50 @@ public class DownloadsActivity extends Activity {
                     downloadManager.pause(meta.getMediaFileID());
                     refreshList();
                 });
+                addActionButton(actions, "Move Up", v -> {
+                    downloadManager.moveUp(meta.getMediaFileID());
+                    refreshList();
+                });
+                addActionButton(actions, "Move Down", v -> {
+                    downloadManager.moveDown(meta.getMediaFileID());
+                    refreshList();
+                });
                 addActionButton(actions, "Cancel", v -> {
                     confirmCancel(meta);
                 });
                 break;
             case QUEUED:
+            case PREPARING:
+                addActionButton(actions, "Pause", v -> {
+                    downloadManager.pause(meta.getMediaFileID());
+                    refreshList();
+                });
+                addActionButton(actions, "Move Up", v -> {
+                    downloadManager.moveUp(meta.getMediaFileID());
+                    refreshList();
+                });
+                addActionButton(actions, "Move Down", v -> {
+                    downloadManager.moveDown(meta.getMediaFileID());
+                    refreshList();
+                });
+                addActionButton(actions, "Priority +", v -> {
+                    downloadManager.setPriority(meta.getMediaFileID(), meta.getQueuePriority() + 1);
+                    refreshList();
+                });
+                addActionButton(actions, "Priority -", v -> {
+                    downloadManager.setPriority(meta.getMediaFileID(), meta.getQueuePriority() - 1);
+                    refreshList();
+                });
                 addActionButton(actions, "Cancel", v -> {
                     confirmCancel(meta);
                 });
                 break;
             case PAUSED:
             case FAILED:
+                addActionButton(actions, "Retry", v -> {
+                    downloadManager.retry(meta.getMediaFileID());
+                    refreshList();
+                });
                 addActionButton(actions, "Resume", v -> {
                     downloadManager.resume(meta.getMediaFileID());
                     refreshList();
@@ -392,5 +455,14 @@ public class DownloadsActivity extends Activity {
         if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
         if (bytes < 1024L * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024));
         return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
+    }
+
+    private static String formatEta(long etaSeconds) {
+        if (etaSeconds < 60) return etaSeconds + "s";
+        long minutes = etaSeconds / 60;
+        if (minutes < 60) return minutes + "m";
+        long hours = minutes / 60;
+        long remMinutes = minutes % 60;
+        return hours + "h " + remMinutes + "m";
     }
 }

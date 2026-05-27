@@ -32,6 +32,7 @@ import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -128,6 +129,17 @@ public class DownloadRepository {
                     result.add(meta);
                 }
             }
+            if (status == DownloadMetadata.Status.QUEUED || status == DownloadMetadata.Status.PREPARING) {
+                result.sort(new Comparator<DownloadMetadata>() {
+                    @Override
+                    public int compare(DownloadMetadata a, DownloadMetadata b) {
+                        if (a.getQueuePriority() != b.getQueuePriority()) {
+                            return Integer.compare(b.getQueuePriority(), a.getQueuePriority());
+                        }
+                        return Long.compare(a.getAddedTimestamp(), b.getAddedTimestamp());
+                    }
+                });
+            }
             return result;
         } finally {
             lock.readLock().unlock();
@@ -220,6 +232,13 @@ public class DownloadRepository {
         obj.put("acceptedPolicyJson", meta.getAcceptedPolicyJson());
         obj.put("policyAdjustmentsJson", meta.getPolicyAdjustmentsJson());
         obj.put("recentReasonCodesJson", meta.getRecentReasonCodesJson());
+        obj.put("serverQueueItemId", meta.getServerQueueItemId());
+        obj.put("queuePriority", meta.getQueuePriority());
+        obj.put("mergedRequestCount", meta.getMergedRequestCount());
+        obj.put("downloadSpeedBytesPerSec", meta.getDownloadSpeedBytesPerSec());
+        obj.put("etaSeconds", meta.getEtaSeconds());
+        obj.put("lastProgressTimestampMs", meta.getLastProgressTimestampMs());
+        obj.put("invalidRangeRetried", meta.isInvalidRangeRetried());
         return obj;
     }
 
@@ -255,6 +274,13 @@ public class DownloadRepository {
         meta.setAcceptedPolicyJson(obj.optString("acceptedPolicyJson", null));
         meta.setPolicyAdjustmentsJson(obj.optString("policyAdjustmentsJson", null));
         meta.setRecentReasonCodesJson(obj.optString("recentReasonCodesJson", null));
+        meta.setServerQueueItemId(obj.optString("serverQueueItemId", null));
+        meta.setQueuePriority(obj.optInt("queuePriority", 0));
+        meta.setMergedRequestCount(Math.max(1, obj.optInt("mergedRequestCount", 1)));
+        meta.setDownloadSpeedBytesPerSec(obj.optLong("downloadSpeedBytesPerSec", 0));
+        meta.setEtaSeconds(obj.optLong("etaSeconds", 0));
+        meta.setLastProgressTimestampMs(obj.optLong("lastProgressTimestampMs", 0));
+        meta.setInvalidRangeRetried(obj.optBoolean("invalidRangeRetried", false));
         try {
             meta.setStatus(DownloadMetadata.Status.valueOf(obj.optString("status", "QUEUED")));
         } catch (IllegalArgumentException e) {

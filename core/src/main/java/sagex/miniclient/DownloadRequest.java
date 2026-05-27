@@ -46,6 +46,12 @@ public class DownloadRequest {
     private String acceptedPolicyJson;
     private String policyAdjustmentsJson;
     private String recentReasonCodesJson;
+    private String serverQueueItemId;
+    private int queuePriority;
+    private String requestIntent;
+    private String seriesSelectionMode;
+    private long estimatedSeriesBytes;
+    private int estimatedItemCount;
 
     public DownloadRequest() {
     }
@@ -237,6 +243,54 @@ public class DownloadRequest {
         this.recentReasonCodesJson = recentReasonCodesJson;
     }
 
+    public String getServerQueueItemId() {
+        return serverQueueItemId;
+    }
+
+    public void setServerQueueItemId(String serverQueueItemId) {
+        this.serverQueueItemId = serverQueueItemId;
+    }
+
+    public int getQueuePriority() {
+        return queuePriority;
+    }
+
+    public void setQueuePriority(int queuePriority) {
+        this.queuePriority = queuePriority;
+    }
+
+    public String getRequestIntent() {
+        return requestIntent;
+    }
+
+    public void setRequestIntent(String requestIntent) {
+        this.requestIntent = requestIntent;
+    }
+
+    public String getSeriesSelectionMode() {
+        return seriesSelectionMode;
+    }
+
+    public void setSeriesSelectionMode(String seriesSelectionMode) {
+        this.seriesSelectionMode = seriesSelectionMode;
+    }
+
+    public long getEstimatedSeriesBytes() {
+        return estimatedSeriesBytes;
+    }
+
+    public void setEstimatedSeriesBytes(long estimatedSeriesBytes) {
+        this.estimatedSeriesBytes = estimatedSeriesBytes;
+    }
+
+    public int getEstimatedItemCount() {
+        return estimatedItemCount;
+    }
+
+    public void setEstimatedItemCount(int estimatedItemCount) {
+        this.estimatedItemCount = estimatedItemCount;
+    }
+
     @Override
     public String toString() {
         return "DownloadRequest{" +
@@ -246,10 +300,12 @@ public class DownloadRequest {
                 ", fileSize=" + fileSize +
                 ", duration=" + duration +
                 ", container='" + container + '\'' +
+                ", serverQueueItemId='" + serverQueueItemId + '\'' +
+                ", queuePriority=" + queuePriority +
+                ", requestIntent='" + requestIntent + '\'' +
                 ", sessionToken='" + redact(sessionToken) + '\'' +
                 ", sessionState='" + sessionState + '\'' +
                 ", accountFamily='" + accountFamily + '\'' +
-                ", accountUsername='" + accountUsername + '\'' +
                 '}';
     }
 

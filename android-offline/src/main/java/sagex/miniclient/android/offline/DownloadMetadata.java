@@ -22,6 +22,7 @@ package sagex.miniclient.android.offline;
 public class DownloadMetadata {
     public enum Status {
         QUEUED,
+        PREPARING,
         DOWNLOADING,
         PAUSED,
         COMPLETE,
@@ -61,6 +62,13 @@ public class DownloadMetadata {
     private String acceptedPolicyJson;
     private String policyAdjustmentsJson;
     private String recentReasonCodesJson;
+    private String serverQueueItemId;
+    private int queuePriority = 0;
+    private int mergedRequestCount = 1;
+    private long downloadSpeedBytesPerSec;
+    private long etaSeconds;
+    private long lastProgressTimestampMs;
+    private boolean invalidRangeRetried;
 
     public DownloadMetadata() {
         this.status = Status.QUEUED;
@@ -315,11 +323,69 @@ public class DownloadMetadata {
         this.recentReasonCodesJson = recentReasonCodesJson;
     }
 
+    public String getServerQueueItemId() {
+        return serverQueueItemId;
+    }
+
+    public void setServerQueueItemId(String serverQueueItemId) {
+        this.serverQueueItemId = serverQueueItemId;
+    }
+
+    public int getQueuePriority() {
+        return queuePriority;
+    }
+
+    public void setQueuePriority(int queuePriority) {
+        this.queuePriority = queuePriority;
+    }
+
+    public int getMergedRequestCount() {
+        return mergedRequestCount;
+    }
+
+    public void setMergedRequestCount(int mergedRequestCount) {
+        this.mergedRequestCount = mergedRequestCount;
+    }
+
+    public long getDownloadSpeedBytesPerSec() {
+        return downloadSpeedBytesPerSec;
+    }
+
+    public void setDownloadSpeedBytesPerSec(long downloadSpeedBytesPerSec) {
+        this.downloadSpeedBytesPerSec = downloadSpeedBytesPerSec;
+    }
+
+    public long getEtaSeconds() {
+        return etaSeconds;
+    }
+
+    public void setEtaSeconds(long etaSeconds) {
+        this.etaSeconds = etaSeconds;
+    }
+
+    public long getLastProgressTimestampMs() {
+        return lastProgressTimestampMs;
+    }
+
+    public void setLastProgressTimestampMs(long lastProgressTimestampMs) {
+        this.lastProgressTimestampMs = lastProgressTimestampMs;
+    }
+
+    public boolean isInvalidRangeRetried() {
+        return invalidRangeRetried;
+    }
+
+    public void setInvalidRangeRetried(boolean invalidRangeRetried) {
+        this.invalidRangeRetried = invalidRangeRetried;
+    }
+
     public String getEffectiveSessionState() {
         if (transferSessionState != null && !transferSessionState.isEmpty()) {
             return transferSessionState;
         }
         switch (status) {
+            case PREPARING:
+                return "preparing";
             case DOWNLOADING:
                 return "transferring";
             case PAUSED:

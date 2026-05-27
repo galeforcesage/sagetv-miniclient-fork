@@ -48,6 +48,8 @@ public class DownloadTask {
     public static final String ERROR_AUTH_INVALID_CREDENTIALS = "AUTH_INVALID_CREDENTIALS";
     public static final String ERROR_AUTH_REVOKED = "AUTH_REVOKED";
     public static final String ERROR_SERVER_UNAVAILABLE = "SERVER_UNAVAILABLE";
+    public static final String ERROR_TRANSFER_NOT_FOUND = "TRANSFER_NOT_FOUND";
+    public static final String ERROR_TRANSFER_GONE = "TRANSFER_GONE";
 
     public static final class Result {
         private boolean success;
@@ -174,6 +176,14 @@ public class DownloadTask {
 
             if (code == HttpURLConnection.HTTP_CONFLICT) {
                 result.errorCode = ERROR_PAUSED_BY_SERVER;
+                return result;
+            }
+            if (code == HttpURLConnection.HTTP_NOT_FOUND) {
+                result.errorCode = ERROR_TRANSFER_NOT_FOUND;
+                return result;
+            }
+            if (code == HttpURLConnection.HTTP_GONE) {
+                result.errorCode = ERROR_TRANSFER_GONE;
                 return result;
             }
             if (code == 416) {

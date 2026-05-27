@@ -28,6 +28,7 @@ import org.slf4j.LoggerFactory;
 import sagex.miniclient.DownloadRequest;
 import sagex.miniclient.DownloadStatusProvider;
 import sagex.miniclient.MiniClient;
+import sagex.miniclient.MiniClientConnection;
 import sagex.miniclient.ServerInfo;
 import sagex.miniclient.android.MiniclientApplication;
 
@@ -108,10 +109,9 @@ public class DownloadManager implements DownloadTask.ProgressListener, DownloadS
             log.info("Download already complete: {}", request.getMediaFileID());
             return false;
         }
-        if (existing != null && (existing.getStatus() == DownloadMetadata.Status.QUEUED
-                || existing.getStatus() == DownloadMetadata.Status.DOWNLOADING)) {
-            log.info("Download already in queue: {}", request.getMediaFileID());
-            return false;
+        if (existing != null) {
+            mergeWithExisting(existing, request);
+            return true;
         }
 
         // Check storage space
@@ -148,6 +148,13 @@ public class DownloadManager implements DownloadTask.ProgressListener, DownloadS
         meta.setAcceptedPolicyJson(request.getAcceptedPolicyJson());
         meta.setPolicyAdjustmentsJson(request.getPolicyAdjustmentsJson());
         meta.setRecentReasonCodesJson(request.getRecentReasonCodesJson());
+        meta.setServerQueueItemId(request.getServerQueueItemId());
+        meta.setQueuePriority(request.getQueuePriority());
+        meta.setMergedRequestCount(1);
+        meta.setDownloadSpeedBytesPerSec(0);
+        meta.setEtaSeconds(0);
+        meta.setLastProgressTimestampMs(0);
+        meta.setInvalidRangeRetried(false);
 
         if (request.getAccountUsername() != null && request.getAccountPassword() != null
             && !request.getAccountUsername().trim().isEmpty()
@@ -285,8 +292,11 @@ public class DownloadManager implements DownloadTask.ProgressListener, DownloadS
             return;
         }
 
-        meta.setStatus(DownloadMetadata.Status.DOWNLOADING);
-        meta.setTransferSessionState("transferring");
+        meta.setStatus(DownloadMetadata.Status.PREPARING);
+        meta.setTransferSessionState("preparing");
+        meta.setDownloadSpeedBytesPerSec(0);
+        meta.setEtaSeconds(0);
+        meta.setLastProgressTimestampMs(0);
         repository.update(meta);
 
         try {
@@ -295,6 +305,10 @@ public class DownloadManager implements DownloadTask.ProgressListener, DownloadS
             if (serverInfo == null) {
                 throw new IllegalStateException("Not connected to server");
             }
+
+            meta.setStatus(DownloadMetadata.Status.DOWNLOADING);
+            meta.setTransferSessionState("transferring");
+            repository.update(meta);
 
             String controlPlaneBase = buildControlPlaneBase(serverInfo);
             String family = normalizeAccountFamily(meta.getAccountFamily());
@@ -397,9 +411,24 @@ public class DownloadManager implements DownloadTask.ProgressListener, DownloadS
     public void onProgress(String mediaFileID, long downloadedBytes, long totalBytes) {
         DownloadMetadata meta = repository.getByMediaFileID(mediaFileID);
         if (meta != null) {
+            long previousBytes = Math.max(0, meta.getDownloadedBytes());
+            long now = System.currentTimeMillis();
+            long previousTs = meta.getLastProgressTimestampMs();
+
             meta.setDownloadedBytes(downloadedBytes);
             meta.setResumeFromOffset(downloadedBytes);
             meta.setTransferSessionState("transferring");
+            if (previousTs > 0 && now > previousTs && downloadedBytes > previousBytes) {
+                long elapsedMs = now - previousTs;
+                long deltaBytes = downloadedBytes - previousBytes;
+                long speed = (deltaBytes * 1000L) / elapsedMs;
+                meta.setDownloadSpeedBytesPerSec(Math.max(0, speed));
+                long remaining = Math.max(0, totalBytes - downloadedBytes);
+                if (speed > 0) {
+                    meta.setEtaSeconds(remaining / speed);
+                }
+            }
+            meta.setLastProgressTimestampMs(now);
             repository.update(meta);
         }
         DownloadForegroundService.updateProgress(context, mediaFileID, downloadedBytes, totalBytes);
@@ -413,6 +442,9 @@ public class DownloadManager implements DownloadTask.ProgressListener, DownloadS
             meta.setResumeFromOffset(meta.getFileSize());
             meta.setTransferSessionState("completed");
             meta.setErrorMessage(null);
+            meta.setDownloadSpeedBytesPerSec(0);
+            meta.setEtaSeconds(0);
+            meta.setInvalidRangeRetried(false);
             repository.update(meta);
         }
         log.info("Download complete: {}", mediaFileID);
@@ -433,6 +465,17 @@ public class DownloadManager implements DownloadTask.ProgressListener, DownloadS
         }
 
         if (normalized.startsWith(DownloadTask.ERROR_INVALID_RANGE)) {
+            if (!meta.isInvalidRangeRetried()) {
+                meta.setInvalidRangeRetried(true);
+                meta.setDownloadedBytes(0);
+                meta.setResumeFromOffset(0);
+                meta.setStatus(DownloadMetadata.Status.QUEUED);
+                meta.setTransferSessionState("queued");
+                meta.setErrorMessage("Retry 1: RANGE_RESET");
+                repository.update(meta);
+                processNext();
+                return;
+            }
             if (meta.getFileSize() > 0 && meta.getDownloadedBytes() >= meta.getFileSize()) {
                 markComplete(meta.getMediaFileID());
             } else {
@@ -451,7 +494,56 @@ public class DownloadManager implements DownloadTask.ProgressListener, DownloadS
             return;
         }
 
+        if (normalized.startsWith(DownloadTask.ERROR_TRANSFER_NOT_FOUND)
+                || normalized.startsWith(DownloadTask.ERROR_TRANSFER_GONE)
+                || normalized.startsWith("HTTP_404")
+                || normalized.startsWith("HTTP_410")) {
+            scheduleRefreshRetry(meta, normalized);
+            return;
+        }
+
         scheduleRetry(meta, normalized);
+    }
+
+    private void scheduleRefreshRetry(DownloadMetadata meta, String errorCode) {
+        sendRefreshRequestToServer(meta, errorCode);
+        meta.setRetryCount(meta.getRetryCount() + 1);
+        if (meta.getRetryCount() <= MAX_RETRIES) {
+            meta.setStatus(DownloadMetadata.Status.PREPARING);
+            meta.setTransferSessionState("awaiting_refresh");
+            meta.setErrorMessage("Awaiting refresh " + meta.getRetryCount() + ": " + toUserError(errorCode, meta));
+            repository.update(meta);
+            long delay = RETRY_DELAYS_MS[Math.min(meta.getRetryCount() - 1, RETRY_DELAYS_MS.length - 1)];
+            executor.submit(() -> {
+                sleepQuietly(delay);
+                DownloadMetadata latest = repository.getByMediaFileID(meta.getMediaFileID());
+                if (latest == null) return;
+                latest.setStatus(DownloadMetadata.Status.QUEUED);
+                latest.setTransferSessionState("queued");
+                repository.update(latest);
+                processNext();
+            });
+        } else {
+            meta.setStatus(DownloadMetadata.Status.FAILED);
+            meta.setTransferSessionState("expired");
+            meta.setErrorMessage(toUserError(errorCode, meta));
+            repository.update(meta);
+            DownloadForegroundService.notifyError(context, meta.getMediaFileID(), meta.getErrorMessage());
+            processNext();
+        }
+    }
+
+    private void sendRefreshRequestToServer(DownloadMetadata meta, String errorCode) {
+        try {
+            MiniClient client = MiniclientApplication.get().getClient();
+            if (client == null) return;
+            MiniClientConnection conn = client.getCurrentConnection();
+            if (conn == null || !conn.isConnected()) return;
+            conn.postDownloadRefreshRequest(meta.getMediaFileID(), errorCode, ensureCorrelationId(meta));
+            repository.update(meta);
+        } catch (Exception e) {
+            log.warn("Unable to send download refresh request for mediaFileID={}", meta.getMediaFileID());
+        }
     }
 
     private void scheduleRetry(DownloadMetadata meta, String errorCode) {
@@ -489,8 +581,9 @@ public class DownloadManager implements DownloadTask.ProgressListener, DownloadS
 
     private void stopServiceIfIdle() {
         List<DownloadMetadata> active = repository.getByStatus(DownloadMetadata.Status.QUEUED);
+        List<DownloadMetadata> preparing = repository.getByStatus(DownloadMetadata.Status.PREPARING);
         List<DownloadMetadata> downloading = repository.getByStatus(DownloadMetadata.Status.DOWNLOADING);
-        if (active.isEmpty() && downloading.isEmpty()) {
+        if (active.isEmpty() && preparing.isEmpty() && downloading.isEmpty()) {
             Intent intent = new Intent(context, DownloadForegroundService.class);
             intent.setAction(DownloadForegroundService.ACTION_STOP);
             context.startService(intent);
@@ -522,6 +615,8 @@ public class DownloadManager implements DownloadTask.ProgressListener, DownloadS
         if (meta == null) return null;
         String sessionState = meta.getEffectiveSessionState();
         switch (meta.getStatus()) {
+            case PREPARING:
+                return "PREPARING|" + sessionState;
             case DOWNLOADING:
                 return "DOWNLOADING|" + meta.getProgressPercent() + "|" + sessionState;
             case COMPLETE:
@@ -545,6 +640,11 @@ public class DownloadManager implements DownloadTask.ProgressListener, DownloadS
         boolean hasWork = false;
         for (DownloadMetadata meta : all) {
             if (meta.getStatus() == DownloadMetadata.Status.DOWNLOADING) {
+                meta.setStatus(DownloadMetadata.Status.QUEUED);
+                meta.setTransferSessionState("queued");
+                repository.update(meta);
+                hasWork = true;
+            } else if (meta.getStatus() == DownloadMetadata.Status.PREPARING) {
                 meta.setStatus(DownloadMetadata.Status.QUEUED);
                 meta.setTransferSessionState("queued");
                 repository.update(meta);
@@ -586,6 +686,7 @@ public class DownloadManager implements DownloadTask.ProgressListener, DownloadS
         if (result.getRefreshedDownloadUrl() != null && !result.getRefreshedDownloadUrl().isEmpty()) {
             // Server-provided URL remains authoritative for resume and subsequent requests.
             meta.setDownloadUrl(result.getRefreshedDownloadUrl());
+            meta.setAccountPoolExhausted(false);
         }
         if (result.getRefreshedSessionState() != null && !result.getRefreshedSessionState().isEmpty()) {
             meta.setTransferSessionState(normalizeSessionState(result.getRefreshedSessionState(), "queued"));
@@ -598,6 +699,94 @@ public class DownloadManager implements DownloadTask.ProgressListener, DownloadS
             meta.setResumeFromOffset(Math.max(meta.getResumeFromOffset(), result.getFinalOffset()));
         }
         repository.update(meta);
+    }
+
+    public void retry(String mediaFileID) {
+        DownloadMetadata meta = repository.getByMediaFileID(mediaFileID);
+        if (meta == null) return;
+        meta.setRetryCount(0);
+        meta.setInvalidRangeRetried(false);
+        meta.setErrorMessage(null);
+        meta.setStatus(DownloadMetadata.Status.QUEUED);
+        meta.setTransferSessionState("queued");
+        repository.update(meta);
+        processNext();
+    }
+
+    public void pauseAll() {
+        List<DownloadMetadata> all = repository.getAll();
+        for (DownloadMetadata meta : all) {
+            if (meta.getStatus() == DownloadMetadata.Status.QUEUED
+                    || meta.getStatus() == DownloadMetadata.Status.PREPARING
+                    || meta.getStatus() == DownloadMetadata.Status.DOWNLOADING) {
+                pause(meta.getMediaFileID());
+            }
+        }
+    }
+
+    public void resumeAll() {
+        List<DownloadMetadata> all = repository.getAll();
+        for (DownloadMetadata meta : all) {
+            if (meta.getStatus() == DownloadMetadata.Status.PAUSED
+                    || meta.getStatus() == DownloadMetadata.Status.FAILED) {
+                resume(meta.getMediaFileID());
+            }
+        }
+    }
+
+    public void clearCompleted() {
+        List<DownloadMetadata> complete = repository.getByStatus(DownloadMetadata.Status.COMPLETE);
+        for (DownloadMetadata meta : complete) {
+            if (meta.getLocalUri() != null) {
+                storageHelper.deleteFile(meta.getLocalUri());
+            }
+            repository.remove(meta.getMediaFileID());
+        }
+    }
+
+    public void moveUp(String mediaFileID) {
+        adjustPriority(mediaFileID, 1);
+    }
+
+    public void moveDown(String mediaFileID) {
+        adjustPriority(mediaFileID, -1);
+    }
+
+    public void setPriority(String mediaFileID, int priority) {
+        DownloadMetadata meta = repository.getByMediaFileID(mediaFileID);
+        if (meta == null) return;
+        meta.setQueuePriority(priority);
+        repository.update(meta);
+    }
+
+    private void adjustPriority(String mediaFileID, int delta) {
+        DownloadMetadata meta = repository.getByMediaFileID(mediaFileID);
+        if (meta == null) return;
+        meta.setQueuePriority(meta.getQueuePriority() + delta);
+        repository.update(meta);
+    }
+
+    private void mergeWithExisting(DownloadMetadata existing, DownloadRequest request) {
+        existing.setMergedRequestCount(existing.getMergedRequestCount() + 1);
+        existing.setQueuePriority(Math.max(existing.getQueuePriority(), request.getQueuePriority()));
+        if (request.getServerQueueItemId() != null && !request.getServerQueueItemId().isEmpty()) {
+            existing.setServerQueueItemId(request.getServerQueueItemId());
+        }
+        if (request.getSessionToken() != null && !request.getSessionToken().isEmpty()) {
+            existing.setSessionToken(request.getSessionToken());
+        }
+        if (request.getDownloadUrl() != null && !request.getDownloadUrl().isEmpty()) {
+            existing.setDownloadUrl(request.getDownloadUrl());
+        }
+        if (existing.getStatus() == DownloadMetadata.Status.PAUSED
+                || existing.getStatus() == DownloadMetadata.Status.FAILED) {
+            existing.setStatus(DownloadMetadata.Status.QUEUED);
+            existing.setTransferSessionState("queued");
+            existing.setErrorMessage(null);
+        }
+        repository.update(existing);
+        startServiceIfNeeded();
+        processNext();
     }
 
     private static String toUserError(String errorCode, DownloadMetadata meta) {
