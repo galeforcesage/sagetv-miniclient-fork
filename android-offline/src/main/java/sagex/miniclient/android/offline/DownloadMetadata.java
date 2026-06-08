@@ -29,6 +29,15 @@ public class DownloadMetadata {
         FAILED
     }
 
+    /** Flags passed from {@link OfflineRefreshMenuActivity} to {@link DownloadManager#refreshWithFlags}. */
+    public static final class SidecarFlags {
+        public boolean refreshMetadata;
+        public boolean refreshArtwork;
+        public boolean refreshCaptions;
+        public boolean refreshComskip;
+        public boolean refreshTranscript;
+    }
+
     private String mediaFileID;
     private String title;
     private String serverPath;
@@ -69,6 +78,53 @@ public class DownloadMetadata {
     private long etaSeconds;
     private long lastProgressTimestampMs;
     private boolean invalidRangeRetried;
+
+    // Offline companion content (M2 — see /memories/repo/offline-companion-spec.md)
+    // Absolute path to the on-disk companion directory (sibling to the media file,
+    // ends in ".companion"). Null when companion content is unavailable, e.g.
+    // SAF-only storage where directory creation isn't supported yet.
+    private String companionDirPath;
+    // Raw "offline.metadata" JSON (media_file/airing/show). Stored verbatim so
+    // future server fields survive without a client update.
+    private String offlineMetadataJson;
+    // Raw "offline.artwork" JSON array. Drives the M3 sidecar fetcher.
+    private String artworkManifestJson;
+    // Raw "offline.captions" JSON array.
+    private String captionsManifestJson;
+    // Raw "offline.comskip" JSON object (single sidecar).
+    private String comskipManifestJson;
+    // Raw "offline.transcript" JSON object (single sidecar).
+    private String transcriptManifestJson;
+    // Two-step manifest fetch pointers from transfer ACK.
+    private String offlineMetadataUrl;
+    private String offlineMetadataPath;
+    // "core" means fetch is urgent for complete metadata/art.
+    // "full" means inline is complete enough but refresh is still allowed.
+    private String offlineInlineLevel;
+
+    // Denormalized preview fields for fast list-side detail rendering.
+    private String previewAiredOn;
+    private String previewCategory;
+    private String previewChannel;
+    private String previewDescription;
+    private String previewThumbnailPath;
+
+    // Per-recording options persisted in SQLite.
+    private boolean watched;
+    private boolean autoComskip;
+    // User-selected sidecar refresh function flags. Stored in the per-row
+    // JSON payload in SQLite so refresh can execute checked functions.
+    private boolean sidecarSelectionConfigured;
+    private boolean sidecarRefreshArtwork = true;
+    private boolean sidecarRefreshCaptions;
+    private boolean sidecarRefreshComskip;
+    private boolean sidecarRefreshTranscript;
+    // Sidecar availability flags: tracks which sidecars have been downloaded for this recording.
+    private boolean hasMetadata;
+    private boolean hasArtwork;
+    private boolean hasCaptions;
+    private boolean hasComskip;
+    private boolean hasTranscript;
 
     public DownloadMetadata() {
         this.status = Status.QUEUED;
@@ -377,6 +433,214 @@ public class DownloadMetadata {
 
     public void setInvalidRangeRetried(boolean invalidRangeRetried) {
         this.invalidRangeRetried = invalidRangeRetried;
+    }
+
+    public String getCompanionDirPath() {
+        return companionDirPath;
+    }
+
+    public void setCompanionDirPath(String companionDirPath) {
+        this.companionDirPath = companionDirPath;
+    }
+
+    public String getOfflineMetadataJson() {
+        return offlineMetadataJson;
+    }
+
+    public void setOfflineMetadataJson(String offlineMetadataJson) {
+        this.offlineMetadataJson = offlineMetadataJson;
+    }
+
+    public String getArtworkManifestJson() {
+        return artworkManifestJson;
+    }
+
+    public void setArtworkManifestJson(String artworkManifestJson) {
+        this.artworkManifestJson = artworkManifestJson;
+    }
+
+    public String getCaptionsManifestJson() {
+        return captionsManifestJson;
+    }
+
+    public void setCaptionsManifestJson(String captionsManifestJson) {
+        this.captionsManifestJson = captionsManifestJson;
+    }
+
+    public String getComskipManifestJson() {
+        return comskipManifestJson;
+    }
+
+    public void setComskipManifestJson(String comskipManifestJson) {
+        this.comskipManifestJson = comskipManifestJson;
+    }
+
+    public String getTranscriptManifestJson() {
+        return transcriptManifestJson;
+    }
+
+    public void setTranscriptManifestJson(String transcriptManifestJson) {
+        this.transcriptManifestJson = transcriptManifestJson;
+    }
+
+    public String getOfflineMetadataUrl() {
+        return offlineMetadataUrl;
+    }
+
+    public void setOfflineMetadataUrl(String offlineMetadataUrl) {
+        this.offlineMetadataUrl = offlineMetadataUrl;
+    }
+
+    public String getOfflineMetadataPath() {
+        return offlineMetadataPath;
+    }
+
+    public void setOfflineMetadataPath(String offlineMetadataPath) {
+        this.offlineMetadataPath = offlineMetadataPath;
+    }
+
+    public String getOfflineInlineLevel() {
+        return offlineInlineLevel;
+    }
+
+    public void setOfflineInlineLevel(String offlineInlineLevel) {
+        this.offlineInlineLevel = offlineInlineLevel;
+    }
+
+    public String getPreviewAiredOn() {
+        return previewAiredOn;
+    }
+
+    public void setPreviewAiredOn(String previewAiredOn) {
+        this.previewAiredOn = previewAiredOn;
+    }
+
+    public String getPreviewCategory() {
+        return previewCategory;
+    }
+
+    public void setPreviewCategory(String previewCategory) {
+        this.previewCategory = previewCategory;
+    }
+
+    public String getPreviewChannel() {
+        return previewChannel;
+    }
+
+    public void setPreviewChannel(String previewChannel) {
+        this.previewChannel = previewChannel;
+    }
+
+    public String getPreviewDescription() {
+        return previewDescription;
+    }
+
+    public void setPreviewDescription(String previewDescription) {
+        this.previewDescription = previewDescription;
+    }
+
+    public String getPreviewThumbnailPath() {
+        return previewThumbnailPath;
+    }
+
+    public void setPreviewThumbnailPath(String previewThumbnailPath) {
+        this.previewThumbnailPath = previewThumbnailPath;
+    }
+
+    public boolean isWatched() {
+        return watched;
+    }
+
+    public void setWatched(boolean watched) {
+        this.watched = watched;
+    }
+
+    public boolean isAutoComskip() {
+        return autoComskip;
+    }
+
+    public void setAutoComskip(boolean autoComskip) {
+        this.autoComskip = autoComskip;
+    }
+
+    public boolean isSidecarSelectionConfigured() {
+        return sidecarSelectionConfigured;
+    }
+
+    public void setSidecarSelectionConfigured(boolean sidecarSelectionConfigured) {
+        this.sidecarSelectionConfigured = sidecarSelectionConfigured;
+    }
+
+    public boolean isSidecarRefreshArtwork() {
+        return sidecarRefreshArtwork;
+    }
+
+    public void setSidecarRefreshArtwork(boolean sidecarRefreshArtwork) {
+        this.sidecarRefreshArtwork = sidecarRefreshArtwork;
+    }
+
+    public boolean isSidecarRefreshCaptions() {
+        return sidecarRefreshCaptions;
+    }
+
+    public void setSidecarRefreshCaptions(boolean sidecarRefreshCaptions) {
+        this.sidecarRefreshCaptions = sidecarRefreshCaptions;
+    }
+
+    public boolean isSidecarRefreshComskip() {
+        return sidecarRefreshComskip;
+    }
+
+    public void setSidecarRefreshComskip(boolean sidecarRefreshComskip) {
+        this.sidecarRefreshComskip = sidecarRefreshComskip;
+    }
+
+    public boolean isSidecarRefreshTranscript() {
+        return sidecarRefreshTranscript;
+    }
+
+    public void setSidecarRefreshTranscript(boolean sidecarRefreshTranscript) {
+        this.sidecarRefreshTranscript = sidecarRefreshTranscript;
+    }
+
+    public boolean hasMetadata() {
+        return hasMetadata;
+    }
+
+    public void setHasMetadata(boolean hasMetadata) {
+        this.hasMetadata = hasMetadata;
+    }
+
+    public boolean hasArtwork() {
+        return hasArtwork;
+    }
+
+    public void setHasArtwork(boolean hasArtwork) {
+        this.hasArtwork = hasArtwork;
+    }
+
+    public boolean hasCaptions() {
+        return hasCaptions;
+    }
+
+    public void setHasCaptions(boolean hasCaptions) {
+        this.hasCaptions = hasCaptions;
+    }
+
+    public boolean hasComskip() {
+        return hasComskip;
+    }
+
+    public void setHasComskip(boolean hasComskip) {
+        this.hasComskip = hasComskip;
+    }
+
+    public boolean hasTranscript() {
+        return hasTranscript;
+    }
+
+    public void setHasTranscript(boolean hasTranscript) {
+        this.hasTranscript = hasTranscript;
     }
 
     public String getEffectiveSessionState() {

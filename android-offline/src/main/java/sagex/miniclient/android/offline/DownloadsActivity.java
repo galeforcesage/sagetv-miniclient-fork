@@ -21,11 +21,14 @@ import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.InputType;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
@@ -37,7 +40,12 @@ import android.widget.Toast;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
+import java.text.SimpleDateFormat;
 import java.util.List;
+import java.util.Locale;
+
+import sagex.miniclient.ServerInfo;
 
 /**
  * Activity displaying the download queue with status, progress, and management actions.
@@ -50,12 +58,44 @@ public class DownloadsActivity extends Activity {
     private LinearLayout downloadsList;
     private TextView emptyText;
     private Button storageButton;
+    private CheckBox wifiOnlyCheckbox;
     private EditText accountUsernameInput;
     private EditText accountPasswordInput;
     private ImageButton passwordToggleButton;
     private boolean passwordVisible = false;
     private DownloadManager downloadManager;
     private DownloadCredentialVault credentialVault;
+    private OfflineEpgRepository epgRepository;
+    private SnapshotSyncManager snapshotSyncManager;
+    private Button syncGuideButton;
+    private Button syncScheduleButton;
+    private Button syncFavoritesButton;
+    private TextView snapshotStatusText;
+    private TextView guideStatsText;
+    private TextView scheduleStatsText;
+    private TextView favoritesStatsText;
+    private boolean snapshotSyncInFlight;
+
+    /**
+     * Polling auto-refresh: action buttons like Resume/Retry trigger async work
+     * on the DownloadManager executor; without a periodic refresh the user sees
+     * no UI change after tapping (the failure or progress arrives milliseconds
+     * later, after our single refreshList() call). 1.5s tick is plenty for
+     * status text without burning battery.
+     */
+    private static final long AUTO_REFRESH_INTERVAL_MS = 2500L;
+    private final Handler autoRefreshHandler = new Handler(Looper.getMainLooper());
+    private final Runnable autoRefreshRunnable = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                refreshList();
+            } catch (Throwable t) {
+                log.warn("Auto-refresh failed: {}", t.toString());
+            }
+            autoRefreshHandler.postDelayed(this, AUTO_REFRESH_INTERVAL_MS);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -63,6 +103,8 @@ public class DownloadsActivity extends Activity {
 
         downloadManager = DownloadManager.getInstance(this);
         credentialVault = new DownloadCredentialVault(this);
+        epgRepository = new OfflineEpgRepository(this);
+        snapshotSyncManager = new SnapshotSyncManager(this);
 
         // Build UI programmatically to avoid adding layout resources
         ScrollView scrollView = new ScrollView(this);
@@ -83,6 +125,20 @@ public class DownloadsActivity extends Activity {
         updateStorageButtonText();
         storageButton.setOnClickListener(v -> openStoragePicker());
         root.addView(storageButton);
+
+        // User-controlled network policy: when checked, downloads only run
+        // on Wi-Fi / Ethernet and are queued (waiting_for_wifi) on cellular.
+        // Auto-resume happens via DownloadManager's NetworkCallback. Mirrors
+        // the checkbox in DownloadsFragment so both surfaces share state.
+        wifiOnlyCheckbox = new CheckBox(this);
+        wifiOnlyCheckbox.setText("Download on Wi-Fi only (queue on cellular)");
+        wifiOnlyCheckbox.setChecked(downloadManager.getStorageHelper().isWifiOnlyDownloads());
+        wifiOnlyCheckbox.setOnCheckedChangeListener((btn, isChecked) -> {
+            downloadManager.getStorageHelper().setWifiOnlyDownloads(isChecked);
+            downloadManager.onWifiOnlyPrefChanged();
+            refreshList();
+        });
+        root.addView(wifiOnlyCheckbox);
 
         TextView accountTitle = new TextView(this);
         accountTitle.setText("Download Account");
@@ -134,6 +190,48 @@ public class DownloadsActivity extends Activity {
         });
         root.addView(bulkActions);
 
+        TextView snapshotTitle = new TextView(this);
+        snapshotTitle.setText("Offline Snapshot Sync");
+        snapshotTitle.setTextSize(18);
+        snapshotTitle.setPadding(0, dpToPx(12), 0, dpToPx(4));
+        root.addView(snapshotTitle);
+
+        snapshotStatusText = new TextView(this);
+        snapshotStatusText.setText("Tap a snapshot button to refresh Guide, Schedule, or Favorites.");
+        snapshotStatusText.setTextSize(12);
+        snapshotStatusText.setPadding(0, 0, 0, dpToPx(8));
+        root.addView(snapshotStatusText);
+
+        syncGuideButton = new Button(this);
+        syncGuideButton.setText("Download Guide Snapshot");
+        syncGuideButton.setOnClickListener(v -> startSnapshotSync(SnapshotSyncManager.SnapshotKind.GUIDE));
+        root.addView(syncGuideButton);
+
+        guideStatsText = new TextView(this);
+        guideStatsText.setTextSize(12);
+        guideStatsText.setPadding(dpToPx(8), dpToPx(2), 0, dpToPx(8));
+        root.addView(guideStatsText);
+
+        syncScheduleButton = new Button(this);
+        syncScheduleButton.setText("Download Schedule Snapshot");
+        syncScheduleButton.setOnClickListener(v -> startSnapshotSync(SnapshotSyncManager.SnapshotKind.SCHEDULE));
+        root.addView(syncScheduleButton);
+
+        scheduleStatsText = new TextView(this);
+        scheduleStatsText.setTextSize(12);
+        scheduleStatsText.setPadding(dpToPx(8), dpToPx(2), 0, dpToPx(8));
+        root.addView(scheduleStatsText);
+
+        syncFavoritesButton = new Button(this);
+        syncFavoritesButton.setText("Download Favorites Snapshot");
+        syncFavoritesButton.setOnClickListener(v -> startSnapshotSync(SnapshotSyncManager.SnapshotKind.FAVORITES));
+        root.addView(syncFavoritesButton);
+
+        favoritesStatsText = new TextView(this);
+        favoritesStatsText.setTextSize(12);
+        favoritesStatsText.setPadding(dpToPx(8), dpToPx(2), 0, dpToPx(10));
+        root.addView(favoritesStatsText);
+
         // Empty text
         emptyText = new TextView(this);
         emptyText.setText("No downloads");
@@ -148,12 +246,45 @@ public class DownloadsActivity extends Activity {
 
         scrollView.addView(root);
         setContentView(scrollView);
+        refreshSnapshotStats();
+
+        overlay = new OfflineNavigationOverlay(this);
     }
+
+    private OfflineNavigationOverlay overlay;
 
     @Override
     protected void onResume() {
         super.onResume();
         refreshList();
+        refreshSnapshotStats();
+        autoRefreshHandler.removeCallbacks(autoRefreshRunnable);
+        autoRefreshHandler.postDelayed(autoRefreshRunnable, AUTO_REFRESH_INTERVAL_MS);
+        if (overlay != null) overlay.onResume();
+    }
+
+    @Override
+    public boolean onKeyDown(int keyCode, android.view.KeyEvent event) {
+        if (overlay != null && overlay.onKeyDown(keyCode, event)) return true;
+        return super.onKeyDown(keyCode, event);
+    }
+
+    @Override
+    public boolean onKeyLongPress(int keyCode, android.view.KeyEvent event) {
+        if (overlay != null && overlay.onKeyLongPress(keyCode, event)) return true;
+        return super.onKeyLongPress(keyCode, event);
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, android.view.KeyEvent event) {
+        if (overlay != null && overlay.onKeyUp(keyCode, event)) return true;
+        return super.onKeyUp(keyCode, event);
+    }
+
+    @Override
+    protected void onPause() {
+        autoRefreshHandler.removeCallbacks(autoRefreshRunnable);
+        super.onPause();
     }
 
     private void refreshList() {
@@ -172,6 +303,13 @@ public class DownloadsActivity extends Activity {
         item.setOrientation(LinearLayout.VERTICAL);
         int padding = dpToPx(12);
         item.setPadding(padding, padding, padding, padding);
+        item.setClickable(true);
+        item.setFocusable(true);
+        item.setOnClickListener(v -> showRowActionMenu(meta));
+        item.setOnLongClickListener(v -> {
+            showRowActionMenu(meta);
+            return true;
+        });
 
         // Title
         TextView titleView = new TextView(this);
@@ -210,20 +348,30 @@ public class DownloadsActivity extends Activity {
         if (meta.getPolicyAdjustmentsJson() != null && !meta.getPolicyAdjustmentsJson().isEmpty()) {
             statusText += "\nPolicy adjustments: " + meta.getPolicyAdjustmentsJson();
         }
-        if (meta.getErrorMessage() != null && meta.getStatus() == DownloadMetadata.Status.FAILED) {
-            statusText += "\n" + meta.getErrorMessage();
+        if (meta.getErrorMessage() != null && !meta.getErrorMessage().isEmpty()) {
+            if (meta.getStatus() == DownloadMetadata.Status.FAILED) {
+                statusText += "\nError: " + meta.getErrorMessage();
+            } else {
+                statusText += "\nDetails: " + meta.getErrorMessage();
+            }
         }
         statusView.setText(statusText);
         statusView.setTextSize(12);
         item.addView(statusView);
 
-        // Progress bar (for active/queued downloads)
+        // Progress bar (for active/queued downloads, and while remuxing)
+        int remuxPct = parseRemuxPercent(meta.getEffectiveSessionState());
         if (meta.getStatus() == DownloadMetadata.Status.DOWNLOADING
             || meta.getStatus() == DownloadMetadata.Status.QUEUED
-            || meta.getStatus() == DownloadMetadata.Status.PREPARING) {
+            || meta.getStatus() == DownloadMetadata.Status.PREPARING
+            || remuxPct >= 0 || remuxPct == -2) {
             ProgressBar progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-            progressBar.setMax(100);
-            progressBar.setProgress(meta.getProgressPercent());
+            if (remuxPct == -2) {
+                progressBar.setIndeterminate(true);
+            } else {
+                progressBar.setMax(100);
+                progressBar.setProgress(remuxPct >= 0 ? remuxPct : meta.getProgressPercent());
+            }
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(4));
             lp.setMargins(0, dpToPx(4), 0, 0);
@@ -282,12 +430,21 @@ public class DownloadsActivity extends Activity {
                 break;
             case PAUSED:
             case FAILED:
-                addActionButton(actions, "Retry", v -> {
-                    downloadManager.retry(meta.getMediaFileID());
+                if (canRetryRemux(meta)) {
+                    addActionButton(actions, "Remux", v -> {
+                        downloadManager.retryRemux(meta.getMediaFileID());
+                        Toast.makeText(this, "Remux queued", Toast.LENGTH_SHORT).show();
+                        refreshList();
+                    });
+                }
+                addActionButton(actions, "Restart", v -> {
+                    downloadManager.restart(meta.getMediaFileID());
+                    Toast.makeText(this, "Restart requested", Toast.LENGTH_SHORT).show();
                     refreshList();
                 });
                 addActionButton(actions, "Resume", v -> {
                     downloadManager.resume(meta.getMediaFileID());
+                    Toast.makeText(this, "Resume requested", Toast.LENGTH_SHORT).show();
                     refreshList();
                 });
                 addActionButton(actions, "Delete", v -> {
@@ -295,6 +452,13 @@ public class DownloadsActivity extends Activity {
                 });
                 break;
             case COMPLETE:
+                if (canRetryRemux(meta)) {
+                    addActionButton(actions, "Remux", v -> {
+                        downloadManager.retryRemux(meta.getMediaFileID());
+                        Toast.makeText(this, "Remux queued", Toast.LENGTH_SHORT).show();
+                        refreshList();
+                    });
+                }
                 addActionButton(actions, "Delete", v -> {
                     confirmDelete(meta);
                 });
@@ -316,6 +480,105 @@ public class DownloadsActivity extends Activity {
         wrapper.addView(item);
         wrapper.addView(divider);
         return wrapper;
+    }
+
+    private void showRowActionMenu(DownloadMetadata meta) {
+        if (meta == null) return;
+        List<String> labels = new ArrayList<>();
+        List<Runnable> actions = new ArrayList<>();
+
+        switch (meta.getStatus()) {
+            case DOWNLOADING:
+                labels.add("Pause");
+                actions.add(() -> {
+                    downloadManager.pause(meta.getMediaFileID());
+                    refreshList();
+                });
+                labels.add("Move Up");
+                actions.add(() -> {
+                    downloadManager.moveUp(meta.getMediaFileID());
+                    refreshList();
+                });
+                labels.add("Move Down");
+                actions.add(() -> {
+                    downloadManager.moveDown(meta.getMediaFileID());
+                    refreshList();
+                });
+                labels.add("Cancel");
+                actions.add(() -> confirmCancel(meta));
+                break;
+            case QUEUED:
+            case PREPARING:
+                labels.add("Pause");
+                actions.add(() -> {
+                    downloadManager.pause(meta.getMediaFileID());
+                    refreshList();
+                });
+                labels.add("Move Up");
+                actions.add(() -> {
+                    downloadManager.moveUp(meta.getMediaFileID());
+                    refreshList();
+                });
+                labels.add("Move Down");
+                actions.add(() -> {
+                    downloadManager.moveDown(meta.getMediaFileID());
+                    refreshList();
+                });
+                labels.add("Priority +");
+                actions.add(() -> {
+                    downloadManager.setPriority(meta.getMediaFileID(), meta.getQueuePriority() + 1);
+                    refreshList();
+                });
+                labels.add("Priority -");
+                actions.add(() -> {
+                    downloadManager.setPriority(meta.getMediaFileID(), meta.getQueuePriority() - 1);
+                    refreshList();
+                });
+                labels.add("Cancel");
+                actions.add(() -> confirmCancel(meta));
+                break;
+            case PAUSED:
+            case FAILED:
+                if (canRetryRemux(meta)) {
+                    labels.add("Remux");
+                    actions.add(() -> {
+                        downloadManager.retryRemux(meta.getMediaFileID());
+                        Toast.makeText(this, "Remux queued", Toast.LENGTH_SHORT).show();
+                        refreshList();
+                    });
+                }
+                labels.add("Restart");
+                actions.add(() -> {
+                    downloadManager.restart(meta.getMediaFileID());
+                    Toast.makeText(this, "Restart requested", Toast.LENGTH_SHORT).show();
+                    refreshList();
+                });
+                labels.add("Resume");
+                actions.add(() -> {
+                    downloadManager.resume(meta.getMediaFileID());
+                    Toast.makeText(this, "Resume requested", Toast.LENGTH_SHORT).show();
+                    refreshList();
+                });
+                labels.add("Delete");
+                actions.add(() -> confirmDelete(meta));
+                break;
+            case COMPLETE:
+                Intent intent = new Intent(this, OfflineRefreshMenuActivity.class);
+                intent.putExtra(OfflineRefreshMenuActivity.EXTRA_MEDIA_FILE_ID, meta.getMediaFileID());
+                startActivity(intent);
+                return;
+        }
+
+        if (labels.isEmpty()) return;
+        new AlertDialog.Builder(this)
+                .setTitle(meta.getTitle() != null ? meta.getTitle() : meta.getMediaFileID())
+                .setItems(labels.toArray(new String[0]), (dialog, which) -> {
+                    if (which >= 0 && which < actions.size()) {
+                        actions.get(which).run();
+                    }
+                })
+                .setNegativeButton("Close", null)
+                .show();
     }
 
     private void addActionButton(LinearLayout parent, String text, View.OnClickListener listener) {
@@ -446,6 +709,136 @@ public class DownloadsActivity extends Activity {
         }
     }
 
+    private void startSnapshotSync(SnapshotSyncManager.SnapshotKind kind) {
+        if (snapshotSyncInFlight) {
+            Toast.makeText(this, "Snapshot sync already in progress", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        List<ServerInfo> servers = snapshotSyncManager.getSavedServers();
+        if (servers.isEmpty()) {
+            Toast.makeText(this,
+                    "No servers saved. Add or connect to a server first.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        if (servers.size() == 1) {
+            doSnapshotSync(kind, servers.get(0));
+            return;
+        }
+
+        String[] labels = new String[servers.size()];
+        for (int i = 0; i < servers.size(); i++) {
+            ServerInfo si = servers.get(i);
+            labels[i] = (si.name != null && !si.name.isEmpty())
+                    ? si.name
+                    : si.address + ":" + si.port;
+        }
+
+        String title;
+        if (kind == SnapshotSyncManager.SnapshotKind.GUIDE) {
+            title = "Download Guide Snapshot from...";
+        } else if (kind == SnapshotSyncManager.SnapshotKind.SCHEDULE) {
+            title = "Download Schedule Snapshot from...";
+        } else {
+            title = "Download Favorites Snapshot from...";
+        }
+
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setItems(labels, (dialog, which) -> doSnapshotSync(kind, servers.get(which)))
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void doSnapshotSync(SnapshotSyncManager.SnapshotKind kind, ServerInfo server) {
+        String kindLabel;
+        if (kind == SnapshotSyncManager.SnapshotKind.GUIDE) {
+            kindLabel = "Guide";
+        } else if (kind == SnapshotSyncManager.SnapshotKind.SCHEDULE) {
+            kindLabel = "Schedule";
+        } else {
+            kindLabel = "Favorites";
+        }
+
+        String serverLabel = (server.name != null && !server.name.isEmpty())
+                ? server.name : server.address + ":" + server.port;
+
+        setSnapshotSyncInFlight(true,
+                "Please wait... downloading " + kindLabel + " snapshot from " + serverLabel);
+
+        snapshotSyncManager.syncServer(kind, server, new SnapshotSyncManager.SyncCallback() {
+            @Override
+            public void onSuccess(SnapshotSyncManager.SnapshotKind k, String name) {
+                runOnUiThread(() -> {
+                    setSnapshotSyncInFlight(false,
+                            kindLabel + " snapshot updated from " + name);
+                    refreshSnapshotStats();
+                    Toast.makeText(DownloadsActivity.this,
+                            kindLabel + " snapshot updated",
+                            Toast.LENGTH_SHORT).show();
+                });
+            }
+
+            @Override
+            public void onFailure(SnapshotSyncManager.SnapshotKind k, String name, String message) {
+                runOnUiThread(() -> {
+                    setSnapshotSyncInFlight(false,
+                            kindLabel + " snapshot failed: " + message);
+                    refreshSnapshotStats();
+                    new AlertDialog.Builder(DownloadsActivity.this)
+                            .setTitle("Snapshot sync failed")
+                            .setMessage(message)
+                            .setPositiveButton("OK", null)
+                            .show();
+                });
+            }
+        });
+    }
+
+    private void setSnapshotSyncInFlight(boolean inFlight, String status) {
+        snapshotSyncInFlight = inFlight;
+        if (syncGuideButton != null) syncGuideButton.setEnabled(!inFlight);
+        if (syncScheduleButton != null) syncScheduleButton.setEnabled(!inFlight);
+        if (syncFavoritesButton != null) syncFavoritesButton.setEnabled(!inFlight);
+        if (snapshotStatusText != null) snapshotStatusText.setText(status == null ? "" : status);
+    }
+
+    private void refreshSnapshotStats() {
+        OfflineEpgRepository.SnapshotCounts c = epgRepository.getSnapshotCounts();
+        OfflineEpgRepository.SnapshotMeta guideMeta = epgRepository.getMeta("guide");
+        OfflineEpgRepository.SnapshotMeta schedMeta = epgRepository.getMeta("sched");
+        OfflineEpgRepository.SnapshotMeta favMeta = epgRepository.getMeta("favorites");
+
+        if (guideStatsText != null) {
+            guideStatsText.setText(
+                    "Guide cache: " + c.channels + " channels / " + c.airings + " airings\n"
+                            + "Last updated: " + formatMetaTime(guideMeta));
+        }
+        if (scheduleStatsText != null) {
+            scheduleStatsText.setText(
+                    "Scheduled cache: " + c.scheduled + " shows\n"
+                            + "Last updated: " + formatMetaTime(schedMeta));
+        }
+        if (favoritesStatsText != null) {
+            favoritesStatsText.setText(
+                    "Favorites cache: " + c.favorites + " favorites\n"
+                            + "Last updated: " + formatMetaTime(favMeta));
+        }
+    }
+
+    private static String formatMetaTime(OfflineEpgRepository.SnapshotMeta meta) {
+        if (meta == null || meta.fetchedAtMs <= 0L) {
+            return "never";
+        }
+        SimpleDateFormat fmt = new SimpleDateFormat("yyyy-MM-dd h:mm:ss a", Locale.US);
+        String server = (meta.sourceServerName == null || meta.sourceServerName.isEmpty())
+                ? "unknown"
+                : meta.sourceServerName;
+        return fmt.format(meta.fetchedAtMs) + " (" + server + ")";
+    }
+
     private int dpToPx(int dp) {
         return (int) (dp * getResources().getDisplayMetrics().density);
     }
@@ -457,6 +850,24 @@ public class DownloadsActivity extends Activity {
         return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
     }
 
+    /**
+     * Returns the percent encoded in a "remuxing NN%" session state string,
+     * or -1 when the state is not a remux state. Used to drive the progress
+     * bar after the download phase is complete.
+     */
+    private static int parseRemuxPercent(String sessionState) {
+        if (sessionState == null || !sessionState.startsWith("remuxing")) return -1;
+        if (!sessionState.contains("%")) return -2;
+        int pct = 0;
+        int p = sessionState.indexOf('%');
+        int s = sessionState.indexOf(' ');
+        if (s > 0 && p > s) {
+            try { pct = Integer.parseInt(sessionState.substring(s + 1, p).trim()); }
+            catch (NumberFormatException ignored) {}
+        }
+        return Math.max(0, Math.min(100, pct));
+    }
+
     private static String formatEta(long etaSeconds) {
         if (etaSeconds < 60) return etaSeconds + "s";
         long minutes = etaSeconds / 60;
@@ -464,5 +875,14 @@ public class DownloadsActivity extends Activity {
         long hours = minutes / 60;
         long remMinutes = minutes % 60;
         return hours + "h " + remMinutes + "m";
+    }
+
+    private static boolean canRetryRemux(DownloadMetadata meta) {
+        if (meta == null) return false;
+        long total = meta.getFileSize();
+        boolean primaryComplete = meta.getStatus() == DownloadMetadata.Status.COMPLETE
+                || (total > 0 && (meta.getDownloadedBytes() >= total
+                || meta.getResumeFromOffset() >= total));
+        return primaryComplete && PostDownloadRemux.shouldRemux(meta);
     }
 }

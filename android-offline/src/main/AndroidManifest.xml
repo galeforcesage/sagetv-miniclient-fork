@@ -32,10 +32,51 @@
             android:theme="@style/Theme.PhoneTheme" />
 
         <activity
+            android:name=".OfflineHomeActivity"
+            android:exported="false"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize"
+            android:screenOrientation="landscape"
+            android:theme="@style/Theme.PhoneTheme" />
+
+        <activity
+            android:name=".OfflineGuideActivity"
+            android:exported="false"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize"
+            android:screenOrientation="landscape"
+            android:theme="@style/Theme.PhoneTheme" />
+
+        <activity
+            android:name=".OfflineScheduleActivity"
+            android:exported="false"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize"
+            android:screenOrientation="landscape"
+            android:theme="@style/Theme.PhoneTheme" />
+
+        <activity
             android:name=".OfflinePlaybackActivity"
             android:exported="false"
             android:configChanges="keyboard|keyboardHidden|orientation|screenSize"
             android:screenOrientation="landscape"
+            android:theme="@style/Theme.PhoneTheme" />
+
+        <activity
+            android:name=".OfflineDetailActivity"
+            android:exported="false"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize"
+            android:screenOrientation="landscape"
+            android:theme="@style/Theme.PhoneTheme" />
+
+        <activity
+            android:name=".OfflineRecordingOptionsActivity"
+            android:exported="false"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize"
+            android:screenOrientation="landscape"
+            android:theme="@style/Theme.PhoneTheme" />
+
+        <activity
+            android:name=".OfflineRefreshMenuActivity"
+            android:exported="false"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize"
             android:theme="@style/Theme.PhoneTheme" />
     </application>
 
