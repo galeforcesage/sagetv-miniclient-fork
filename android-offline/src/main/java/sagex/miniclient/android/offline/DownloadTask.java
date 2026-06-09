@@ -20,6 +20,7 @@ import android.content.Context;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.BufferedOutputStream;
 import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -37,10 +38,12 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public class DownloadTask {
     private static final Logger log = LoggerFactory.getLogger(DownloadTask.class);
-    private static final int CHUNK_SIZE = 16384; // 16KB, matching server protocol
-    private static final int CONNECT_TIMEOUT_MS = 30000;
-    private static final int READ_TIMEOUT_MS = 30000;
-    private static final int PROGRESS_INTERVAL_BYTES = 256 * 1024; // report every 256KB
+    private static final int IO_BUFFER_SIZE = 256 * 1024; // 256KB transfer/write buffer
+    // Timeouts sized for VPN use: high-latency / brief stalls must not kill a healthy transfer.
+    private static final int CONNECT_TIMEOUT_MS = 60000;
+    private static final int READ_TIMEOUT_MS = 120000;
+    private static final int ERROR_BODY_READ_LIMIT = 4096;
+    private static final int PROGRESS_INTERVAL_BYTES = 1024 * 1024; // report every 1MB
 
     public static final String ERROR_PAUSED_BY_SERVER = "PAUSED_BY_SERVER";
     public static final String ERROR_INVALID_RANGE = "INVALID_RANGE";
@@ -60,6 +63,8 @@ public class DownloadTask {
         private String refreshedDownloadUrl;
         private String refreshedSessionState;
         private String serverSessionId;
+        private String serverErrorCode;
+        private String serverErrorMessage;
 
         public boolean isSuccess() { return success; }
         public String getErrorCode() { return errorCode; }
@@ -69,6 +74,8 @@ public class DownloadTask {
         public String getRefreshedDownloadUrl() { return refreshedDownloadUrl; }
         public String getRefreshedSessionState() { return refreshedSessionState; }
         public String getServerSessionId() { return serverSessionId; }
+        public String getServerErrorCode() { return serverErrorCode; }
+        public String getServerErrorMessage() { return serverErrorMessage; }
     }
 
     public interface ProgressListener {
@@ -85,6 +92,7 @@ public class DownloadTask {
     private final String controlPlaneBase;
     private final String downloadUrl;
     private final String sessionToken;
+    private final String ngClientId;
     private final String accountUsername;
     private final String accountPassword;
     private final String correlationId;
@@ -98,6 +106,7 @@ public class DownloadTask {
                         long fileSize, long startOffset, String mediaFileID,
                         StorageHelper storageHelper, String outputUri,
                         String controlPlaneBase, String downloadUrl, String sessionToken,
+                        String ngClientId,
                         String accountUsername, String accountPassword, String correlationId,
                         ProgressListener listener) {
         this.serverAddress = serverAddress;
@@ -110,6 +119,7 @@ public class DownloadTask {
         this.controlPlaneBase = controlPlaneBase;
         this.downloadUrl = downloadUrl;
         this.sessionToken = sessionToken;
+        this.ngClientId = ngClientId;
         this.accountUsername = accountUsername;
         this.accountPassword = accountPassword;
         this.correlationId = correlationId;
@@ -151,6 +161,9 @@ public class DownloadTask {
             if (sessionToken != null && !sessionToken.isEmpty()) {
                 conn.setRequestProperty("X-Transfer-Token", sessionToken);
             }
+            if (ngClientId != null && !ngClientId.isEmpty()) {
+                conn.setRequestProperty("x-ng-client-id", ngClientId);
+            }
             if (accountUsername != null && !accountUsername.isEmpty()
                     && accountPassword != null && !accountPassword.isEmpty()) {
                 String basic = accountUsername + ":" + accountPassword;
@@ -176,29 +189,40 @@ public class DownloadTask {
 
             if (code == HttpURLConnection.HTTP_CONFLICT) {
                 result.errorCode = ERROR_PAUSED_BY_SERVER;
+                readServerErrorBody(conn, result);
                 return result;
             }
             if (code == HttpURLConnection.HTTP_NOT_FOUND) {
                 result.errorCode = ERROR_TRANSFER_NOT_FOUND;
+                readServerErrorBody(conn, result);
+                log.warn("Transfer session 404 for mediaFileID={} serverCode={} serverMsg={} correlationId={}",
+                        mediaFileID, safeValue(result.serverErrorCode), safeValue(result.serverErrorMessage), correlationId);
                 return result;
             }
             if (code == HttpURLConnection.HTTP_GONE) {
                 result.errorCode = ERROR_TRANSFER_GONE;
+                readServerErrorBody(conn, result);
+                log.warn("Transfer session 410 for mediaFileID={} serverCode={} serverMsg={} correlationId={}",
+                        mediaFileID, safeValue(result.serverErrorCode), safeValue(result.serverErrorMessage), correlationId);
                 return result;
             }
             if (code == 416) {
                 result.errorCode = ERROR_INVALID_RANGE;
+                readServerErrorBody(conn, result);
                 return result;
             }
             if (code == HttpURLConnection.HTTP_UNAUTHORIZED) {
                 result.errorCode = ERROR_AUTH_INVALID_CREDENTIALS;
+                readServerErrorBody(conn, result);
                 return result;
             }
             if (code == HttpURLConnection.HTTP_FORBIDDEN) {
                 result.errorCode = ERROR_AUTH_REVOKED;
+                readServerErrorBody(conn, result);
                 return result;
             }
             if (code != HttpURLConnection.HTTP_OK && code != HttpURLConnection.HTTP_PARTIAL) {
+                readServerErrorBody(conn, result);
                 if (code >= 500) {
                     result.errorCode = ERROR_SERVER_UNAVAILABLE;
                 } else {
@@ -225,10 +249,12 @@ public class DownloadTask {
                 responseOffset = startOffset;
             }
 
-            in = new BufferedInputStream(conn.getInputStream(), CHUNK_SIZE);
-            localOut = storageHelper.openOutputStream(outputUri, append);
+                in = new BufferedInputStream(conn.getInputStream(), IO_BUFFER_SIZE);
+                localOut = new BufferedOutputStream(
+                    storageHelper.openOutputStream(outputUri, append),
+                    IO_BUFFER_SIZE);
 
-            byte[] buffer = new byte[CHUNK_SIZE];
+                byte[] buffer = new byte[IO_BUFFER_SIZE];
             long downloaded = 0;
             long lastProgressReport = 0;
             while (true) {
@@ -315,6 +341,50 @@ public class DownloadTask {
             return baseTrim + "/" + value;
         }
         return baseTrim + value;
+    }
+
+    private static void readServerErrorBody(HttpURLConnection conn, Result result) {
+        if (conn == null || result == null) return;
+        InputStream err = null;
+        try {
+            err = conn.getErrorStream();
+            if (err == null) return;
+            byte[] buf = new byte[ERROR_BODY_READ_LIMIT];
+            int off = 0;
+            int n;
+            while (off < buf.length && (n = err.read(buf, off, buf.length - off)) > 0) {
+                off += n;
+            }
+            if (off <= 0) return;
+            String body = new String(buf, 0, off, StandardCharsets.UTF_8);
+            result.serverErrorCode = extractJsonString(body, "error_code");
+            result.serverErrorMessage = extractJsonString(body, "message");
+        } catch (Exception ignored) {
+            // Best-effort enrichment only; never let body parsing mask the original error.
+        } finally {
+            if (err != null) {
+                try { err.close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private static String extractJsonString(String body, String field) {
+        if (body == null || field == null) return null;
+        String needle = "\"" + field + "\"";
+        int k = body.indexOf(needle);
+        if (k < 0) return null;
+        int colon = body.indexOf(':', k + needle.length());
+        if (colon < 0) return null;
+        int q1 = body.indexOf('"', colon + 1);
+        if (q1 < 0) return null;
+        StringBuilder out = new StringBuilder();
+        for (int i = q1 + 1; i < body.length(); i++) {
+            char c = body.charAt(i);
+            if (c == '\\' && i + 1 < body.length()) { out.append(body.charAt(i + 1)); i++; continue; }
+            if (c == '"') return out.toString();
+            out.append(c);
+        }
+        return null;
     }
 
     private static long parseStartFromContentRange(String contentRange) {

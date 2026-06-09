@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Focus-aware background for EPG airing cells. The Shield TV / Android TV
+     DPAD navigates between cells; the focused cell is brightly highlighted
+     so it is obvious which airing the OK button will open. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_focused="true" android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#FF5599DD" />
+            <stroke android:width="2dp" android:color="@color/offline_focus_border" />
+        </shape>
+    </item>
+    <item android:state_focused="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#CC4488CC" />
+            <stroke android:width="2dp" android:color="@color/offline_focus_border" />
+        </shape>
+    </item>
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#AA557BA0" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#AA4A505E" />
+        </shape>
+    </item>
+</selector>

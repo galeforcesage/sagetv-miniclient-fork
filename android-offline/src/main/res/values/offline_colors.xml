@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- SageTV-style offline menu colors matching the server's dark UI theme -->
+    <color name="offline_library_canvas">#FF161616</color>
     <color name="offline_bg_primary">#FF0D0D1A</color>
     <color name="offline_bg_secondary">#FF1A1A2E</color>
     <color name="offline_bg_card">#FF252540</color>

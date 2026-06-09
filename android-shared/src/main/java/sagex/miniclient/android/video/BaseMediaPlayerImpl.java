@@ -16,6 +16,7 @@ import sagex.miniclient.android.AppUtil;
 import sagex.miniclient.android.R;
 import sagex.miniclient.android.middleware.TrickplayController;
 import sagex.miniclient.android.ui.AndroidUIController;
+import sagex.miniclient.android.util.AudioUtil;
 import sagex.miniclient.events.VideoInfoRefresh;
 import sagex.miniclient.events.VideoInfoShow;
 import sagex.miniclient.net.HasPushBuffer;
@@ -383,6 +384,8 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     @Override
     public void play()
     {
+        // Only grab audio focus when media playback actually starts.
+        AudioUtil.requestAudioFocus(context.getContext());
         state = PLAY_STATE;
         if (trickplayController != null && trickplayController.isNativeAvailable())
         {

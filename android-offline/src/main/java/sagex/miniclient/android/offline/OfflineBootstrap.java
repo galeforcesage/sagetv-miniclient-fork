@@ -73,6 +73,15 @@ public final class OfflineBootstrap {
         from.startActivity(i);
     }
 
+    /** Launches the SageTV-style offline home shell (Library/Guide/Schedule/etc). */
+    public static void launchOfflineHome(Context from) {
+        Intent i = new Intent(from, OfflineHomeActivity.class);
+        if (!(from instanceof Activity)) {
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        }
+        from.startActivity(i);
+    }
+
     /**
      * Returns true if at least one download exists in the local store
      * (queued, in-progress, paused, failed, or complete). Used by the
@@ -81,6 +90,21 @@ public final class OfflineBootstrap {
     public static boolean hasAnyDownloads(Context ctx) {
         try {
             return !DownloadManager.getInstance(ctx).getQueue().isEmpty();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * Returns true if any offline content is present: downloaded recordings,
+     * guide cache, scheduled recordings snapshot, or favorites snapshot.
+     */
+    public static boolean hasAnyOfflineContent(Context ctx) {
+        try {
+            if (hasAnyDownloads(ctx)) {
+                return true;
+            }
+            return new OfflineEpgRepository(ctx).hasAnySnapshotContent();
         } catch (Throwable t) {
             return false;
         }

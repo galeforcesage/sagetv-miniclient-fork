@@ -118,6 +118,52 @@ public final class PlayerSelectionUtil
     }
 
     /**
+     * HEVC push landmine: the server selected a push stream with HEVC video,
+     * but on this device ExoPlayer can reach a ready state without ever
+     * presenting a visible picture. IJK has been the more reliable renderer
+     * for this specific push shape, so route it up-front.
+     */
+    public static boolean isExoHevcPushLandmine(String url)
+    {
+        if (url == null) return false;
+        String u = url.toUpperCase(java.util.Locale.ROOT);
+        if (!u.contains("PUSH:")) return false;
+
+        int vidIdx = u.indexOf("BF=VID");
+        if (vidIdx < 0) return false;
+        int end = Math.min(u.length(), vidIdx + 96);
+        String window = u.substring(vidIdx, end);
+        return window.contains("F=HEVC;")
+                || window.contains("F=HEVC]")
+                || window.contains("F=H265;")
+                || window.contains("F=H265]");
+    }
+
+    /**
+     * Push-MP4 landmine: server advertises push MP4/H.264/AAC but observed
+     * runtime tracks can resolve to MPEG-2/MP2, which causes Exo source
+     * errors and black-screen audio-only playback on affected devices.
+     * Route this family to IJK preemptively.
+     */
+    public static boolean isExoPushMp4Landmine(String url)
+    {
+        if (url == null) return false;
+        String u = url.toUpperCase(java.util.Locale.ROOT);
+        if (!u.contains("PUSH:")) return false;
+        if (!u.contains("F=MP4")) return false;
+
+        int vidIdx = u.indexOf("BF=VID");
+        if (vidIdx < 0) return false;
+        int end = Math.min(u.length(), vidIdx + 96);
+        String window = u.substring(vidIdx, end);
+
+        return window.contains("F=H.264;")
+                || window.contains("F=H.264]")
+                || window.contains("F=H264;")
+                || window.contains("F=H264]");
+    }
+
+    /**
      * Exo MPEG-2 decode landmine: stream is PUSH with MPEG-2 video, but this
      * device does not expose a video/mpeg2 decoder to Exo's MediaCodec path.
      * In that case Exo commonly yields audio-only playback; route to IJK.

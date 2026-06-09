@@ -27,8 +27,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import sagex.miniclient.DownloadRequest;
+import sagex.miniclient.MiniClient;
+import sagex.miniclient.ServerInfo;
 import sagex.miniclient.android.MiniclientApplication;
+import sagex.miniclient.events.ConnectedEvent;
 import sagex.miniclient.events.DownloadRequestEvent;
+import sagex.miniclient.events.DownloadTransferControlEvent;
+import sagex.miniclient.events.DownloadTransferSessionErrorEvent;
+import sagex.miniclient.events.OfflineGuideSnapshotEvent;
+import sagex.miniclient.events.OfflineScheduleSnapshotEvent;
 
 /**
  * EventBus subscriber that bridges DownloadRequestEvent (fired from core protocol layer)
@@ -38,9 +45,16 @@ public class DownloadEventHandler {
     private static final Logger log = LoggerFactory.getLogger(DownloadEventHandler.class);
 
     private final Context context;
+    private final OfflineEpgRepository epgRepository;
 
     public DownloadEventHandler(Context context) {
         this.context = context.getApplicationContext();
+        this.epgRepository = new OfflineEpgRepository(this.context);
+    }
+
+    @Subscribe
+    public void onConnected(ConnectedEvent event) {
+        OfflinePlaybackStateSync.syncAllCompleteAsync(context, "ng_connect");
     }
 
     @Subscribe
@@ -53,8 +67,10 @@ public class DownloadEventHandler {
 
         log.info("DownloadRequestEvent received: {}", request);
 
-        // Request POST_NOTIFICATIONS permission on API 33+ if not yet granted
-        requestNotificationPermissionIfNeeded();
+        // Keep download starts non-intrusive while user is browsing SageTV menus.
+        // On Android 13+, notification permission may be missing; we log that state
+        // but do not trigger a runtime prompt from this background event path.
+        logNotificationPermissionState();
 
         DownloadManager manager = DownloadManager.getInstance(context);
 
@@ -76,27 +92,78 @@ public class DownloadEventHandler {
         }
     }
 
-    private void requestNotificationPermissionIfNeeded() {
+    @Subscribe
+    public void onTransferControl(DownloadTransferControlEvent event) {
+        if (event == null || event.getAction() == null) {
+            return;
+        }
+        DownloadManager manager = DownloadManager.getInstance(context);
+        switch (event.getAction()) {
+            case PAUSE:
+                manager.onServerPause(event.getSessionToken(), event.getMediaFileID(), event.getBytesTransferred());
+                break;
+            case RESUME:
+                manager.onServerResume(event.getSessionToken(), event.getMediaFileID(), event.getDownloadUrl(),
+                        event.getBytesTransferred(), event.getSessionState());
+                break;
+            case CANCEL:
+                manager.onServerCancel(event.getSessionToken(), event.getMediaFileID());
+                break;
+            default:
+                break;
+        }
+    }
+
+    @Subscribe
+    public void onTransferSessionError(DownloadTransferSessionErrorEvent event) {
+        if (event == null) {
+            return;
+        }
+        DownloadManager manager = DownloadManager.getInstance(context);
+        manager.onTransferSessionError(
+                event.getMediaFileID(),
+                event.getCorrelationId(),
+                event.getErrorCode(),
+                event.getMessage(),
+                event.isRetriable());
+    }
+
+    @Subscribe
+    public void onOfflineGuideSnapshot(OfflineGuideSnapshotEvent event) {
+        if (event == null || event.getJson() == null || event.getJson().isEmpty()) return;
+        String[] server = currentServerIdentity();
+        epgRepository.replaceGuideSnapshot(server[0], server[1], event.getJson());
+        log.info("Offline guide snapshot persisted");
+    }
+
+    @Subscribe
+    public void onOfflineScheduleSnapshot(OfflineScheduleSnapshotEvent event) {
+        if (event == null || event.getJson() == null || event.getJson().isEmpty()) return;
+        String[] server = currentServerIdentity();
+        epgRepository.replaceScheduleSnapshot(server[0], server[1], event.getJson());
+        log.info("Offline schedule snapshot persisted");
+    }
+
+    private static String[] currentServerIdentity() {
+        MiniClient client = MiniclientApplication.get().getClient();
+        ServerInfo si = client != null ? client.getConnectedServerInfo() : null;
+        if (si == null) return new String[]{"legacy", "Unknown Server"};
+        String address = si.address == null ? "" : si.address;
+        String id = address + ":" + si.port;
+        String name = si.name == null || si.name.trim().isEmpty() ? id : si.name.trim();
+        return new String[]{id, name};
+    }
+
+    private void logNotificationPermissionState() {
         if (Build.VERSION.SDK_INT < 33) return; // POST_NOTIFICATIONS only required on API 33+
 
         if (context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                 == PackageManager.PERMISSION_GRANTED) {
-            return; // Already granted
+            return;
         }
-
-        // Find the current foreground activity to request permission
-        try {
-            Activity activity = MiniclientApplication.get().getCurrentActivity();
-            if (activity != null) {
-                activity.requestPermissions(
-                        new String[]{Manifest.permission.POST_NOTIFICATIONS}, 9002);
-                log.info("Requested POST_NOTIFICATIONS permission");
-            } else {
-                log.warn("No foreground activity to request notification permission; "
-                        + "notifications may be suppressed until granted via settings");
-            }
-        } catch (Exception e) {
-            log.warn("Failed to request notification permission: {}", e.getMessage());
-        }
+        Activity activity = MiniclientApplication.get().getCurrentActivity();
+        String activityName = activity != null ? activity.getClass().getSimpleName() : "none";
+        log.info("POST_NOTIFICATIONS not granted; continuing without prompt (activity={}). "
+                + "Grant via system settings if foreground notifications are desired.", activityName);
     }
 }

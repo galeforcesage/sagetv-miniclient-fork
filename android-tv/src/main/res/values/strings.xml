@@ -46,5 +46,5 @@
     <string name="servers">Servers</string>
     <string name="configure">Configure</string>
     <string name="add_server">Add Server</string>
-    <string name="offline_library">Offline Library</string>
+    <string name="offline_library">Offline Player</string>
 </resources>

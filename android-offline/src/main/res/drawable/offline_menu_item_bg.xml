@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Focus-aware background for offline menu items. Used across the offline
+     shell so that Shield TV remote (or any DPAD) navigation produces a
+     visible selection highlight on rail items, list rows, and grid cells. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_focused="true" android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#66FFFFFF" />
+            <stroke android:width="2dp" android:color="@color/offline_focus_border" />
+        </shape>
+    </item>
+    <item android:state_focused="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#4DFFFFFF" />
+            <stroke android:width="2dp" android:color="@color/offline_focus_border" />
+        </shape>
+    </item>
+    <item android:state_selected="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#33FFFFFF" />
+            <stroke android:width="1dp" android:color="@color/offline_focus_border" />
+        </shape>
+    </item>
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#33FFFFFF" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@android:color/transparent" />
+        </shape>
+    </item>
+</selector>

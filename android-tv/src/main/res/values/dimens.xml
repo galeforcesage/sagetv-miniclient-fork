@@ -11,5 +11,6 @@
 
     <!-- adding these because android is complaining -->
     <dimen name="nav_icon_size">55dp</dimen>
+    <dimen name="nav_icon_padding">6dp</dimen>
     <string name="layout">w820dp</string>
 </resources>

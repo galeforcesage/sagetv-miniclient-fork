@@ -433,18 +433,6 @@ public class DownloadsFragment extends DialogFragment {
                             meta.getMediaFileID(),
                             DownloadManager.ActionOptions.restartOnly());
                     Toast.makeText(activity, "Restart requested", Toast.LENGTH_SHORT).show(); refreshList(); });
-                if (canRetryRemux(meta)) {
-                    labels.add("Remux to MKV");
-                    actions.add(() -> { downloadManager.executeAction(
-                                meta.getMediaFileID(),
-                                DownloadManager.ActionOptions.remux(DownloadManager.RemuxMode.MKV));
-                        Toast.makeText(activity, "Remux to MKV queued", Toast.LENGTH_SHORT).show(); refreshList(); });
-                    labels.add("Remux to MP4");
-                    actions.add(() -> { downloadManager.executeAction(
-                                meta.getMediaFileID(),
-                                DownloadManager.ActionOptions.remux(DownloadManager.RemuxMode.MP4));
-                        Toast.makeText(activity, "Remux to MP4 queued", Toast.LENGTH_SHORT).show(); refreshList(); });
-                }
                 labels.add("Delete");
                 actions.add(() -> confirmDelete(meta));
                 break;

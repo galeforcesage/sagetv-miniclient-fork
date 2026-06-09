@@ -44,6 +44,19 @@
         android:banner="@drawable/banner_v2"
         >
 
+        <!-- Keep Firebase telemetry disabled by default (including fresh installs).
+             If/when Firebase is re-enabled, collection remains opt-in unless code
+             or settings explicitly turns it on. -->
+        <meta-data
+            android:name="firebase_data_collection_default_enabled"
+            android:value="false" />
+        <meta-data
+            android:name="firebase_analytics_collection_enabled"
+            android:value="false" />
+        <meta-data
+            android:name="firebase_crashlytics_collection_enabled"
+            android:value="false" />
+
         <meta-data android:name="android.max_aspect" android:value="2.1" />
 
         <activity

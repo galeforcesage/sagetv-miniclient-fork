@@ -627,6 +627,7 @@ public class DownloadManager implements DownloadTask.ProgressListener, DownloadS
         if (meta == null) {
             return false;
         }
+        OfflinePlaybackStateSync.syncAllCompleteAsync(context, "metadata_refresh");
         String pointer = firstNonBlank(meta.getOfflineMetadataUrl(), meta.getOfflineMetadataPath());
         if (pointer == null) {
             meta.setTransferSessionState("metadata_refresh_unavailable");
@@ -1006,18 +1007,32 @@ public class DownloadManager implements DownloadTask.ProgressListener, DownloadS
             }
         }
         log.info("Download complete: {}", mediaFileID);
-        DownloadForegroundService.notifyComplete(context, mediaFileID);
 
         // Trans-mux TS / MPEG-PS recordings to MP4 so playback can seek and
-        // report duration. Runs on its own thread; the next download in the
-        // queue can start in parallel.
-        if (meta != null && PostDownloadRemux.shouldRemux(meta)) {
+        // report duration. For MPEG-PS with AC3 this also avoids ExoPlayer's
+        // PsExtractor AC3 crash path. Runs on its own thread; the next
+        // download in the queue can start in parallel. Notify completion only
+        // after remux finishes so "complete" means ready for offline playback.
+        boolean remuxStarted = false;
+        if (meta != null && PostDownloadRemux.shouldRemux(context, meta)) {
             try {
-                new PostDownloadRemux(context, repository).start(meta, null);
+                new PostDownloadRemux(context, repository).start(meta,
+                        finished -> {
+                            String state = finished != null ? finished.getTransferSessionState() : null;
+                            if (state != null && state.startsWith("remux_failed")) {
+                                log.warn("Post-download remux failed for {}; not notifying ready", mediaFileID);
+                                return;
+                            }
+                            DownloadForegroundService.notifyComplete(context, mediaFileID);
+                        });
+                remuxStarted = true;
             } catch (Throwable t) {
                 log.warn("Post-download remux dispatch failed for {}: {}",
                         mediaFileID, t.toString());
             }
+        }
+        if (!remuxStarted) {
+            DownloadForegroundService.notifyComplete(context, mediaFileID);
         }
         processNext();
     }

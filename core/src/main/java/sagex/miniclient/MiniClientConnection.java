@@ -25,6 +25,10 @@ import java.util.concurrent.BlockingQueue;
 
 import sagex.miniclient.events.ConnectionLost;
 import sagex.miniclient.events.DownloadRequestEvent;
+import sagex.miniclient.events.DownloadTransferControlEvent;
+import sagex.miniclient.events.DownloadTransferSessionErrorEvent;
+import sagex.miniclient.events.OfflineGuideSnapshotEvent;
+import sagex.miniclient.events.OfflineScheduleSnapshotEvent;
 import sagex.miniclient.logging.ILogger;
 import sagex.miniclient.media.Container;
 import sagex.miniclient.media.VideoCodec;
@@ -185,6 +189,8 @@ public class MiniClientConnection implements SageTVInputCallback
     //   NG version property is absent, so this is a one-line client cutover.
     // -------------------------------------------------------------------------
     public static final String SAGETV_NG_VERSION = "1.0.1";
+    public static final String CAP_PROFILE_ANDROID_MODERN = "android_modern";
+    public static final String CAP_PROFILE_ANDROID_LEGACY = "android_legacy";
     public static final String GIF = "GIF";
     public static final String PNG = "PNG";
     public static final String BMP = "BMP";
@@ -212,6 +218,24 @@ public class MiniClientConnection implements SageTVInputCallback
     public static final int SUBTITLE_UPDATE_REPLY_TYPE = 225;
     public static final int IMAGE_UNLOAD_REPLY_TYPE = 226;
     public static final int OFFLINE_CACHE_CHANGE_REPLY_TYPE = 227;
+    /**
+     * Client-initiated event posted on the event channel asking the SageTV
+     * server to re-issue a fresh TRANSFER_SESSION_ACK (download_url +
+     * session_token) for a download whose token has expired. Payload is a
+     * UTF-8 JSON document of the shape:
+     *
+     * <pre>
+     * {"mediaFileID":"&lt;id&gt;","reason":"&lt;code&gt;","correlationId":"&lt;uuid&gt;"}
+     * </pre>
+     *
+     * The wire framing is the same canonical 16-byte header used by every
+     * other client→server event (1B opcode + 1B pad + 2B body length + 4B
+     * timestamp + 4B replyCount + 4B pad), followed by the body bytes
+     * (encrypted with {@code evtEncryptCipher} when {@code encryptEvents}
+     * is true). The server responds asynchronously by pushing a fresh
+     * CMD_DOWNLOAD_REQUEST back through the event channel.
+     */
+    public static final int DOWNLOAD_REFRESH_REQUEST_REPLY_TYPE = 228;
     // Tells the GFX channel to force the media channel to reconnect
     public static final int GFXCMD_MEDIA_RECONNECT = 131;
     public static final int FS_RV_SUCCESS = 0;
@@ -335,12 +359,6 @@ public class MiniClientConnection implements SageTVInputCallback
      * Advisory only: local runtime decoder safety remains authoritative.
      */
     private volatile String serverEffectivePlayerHint = "";
-
-    /**
-     * Pending media download request. Set by PENDING_DOWNLOAD SetProperty,
-     * consumed by FSCMD_DOWNLOAD_FILE to post a DownloadRequestEvent.
-     */
-    private volatile DownloadRequest pendingDownloadRequest = null;
 
     private MenuHint menuHint = new MenuHint();
     private Properties profileProperties;
@@ -1050,6 +1068,31 @@ public class MiniClientConnection implements SageTVInputCallback
         return ("exoplayer".equals(normalized) || "ijkplayer".equals(normalized)) ? normalized : "";
     }
 
+    private static boolean containsToken(List<String> list, String token)
+    {
+        if (list == null || token == null) return false;
+        for (String raw : list)
+        {
+            if (raw == null) continue;
+            if (token.equalsIgnoreCase(raw.trim())) return true;
+        }
+        return false;
+    }
+
+    private String resolveCapProfileId()
+    {
+        if (!isCapSchemaV2Enabled()) return "";
+
+        // Prefer modern when the detected codec stack includes newer Android-era
+        // capabilities. Fall back to legacy for older/uncertain devices.
+        boolean hevcCapable = containsToken(perPlayerCapabilities.get("EXO_VIDEO_CODECS"), "HEVC")
+                || containsToken(perPlayerCapabilities.get("IJK_VIDEO_CODECS"), "HEVC");
+        boolean ac4Capable = containsToken(perPlayerCapabilities.get("EXO_AUDIO_CODECS"), "AC4")
+                || containsToken(perPlayerCapabilities.get("IJK_AUDIO_CODECS"), "AC4");
+
+        return (hevcCapable || ac4Capable) ? CAP_PROFILE_ANDROID_MODERN : CAP_PROFILE_ANDROID_LEGACY;
+    }
+
     public boolean isConnected() {
         return alive;
     }
@@ -1598,6 +1641,121 @@ public class MiniClientConnection implements SageTVInputCallback
                         // audioonly transcode); legacy 9.x servers ignore unknown props.
                         // See constant declaration above for back-out path.
                         propVal = SAGETV_NG_VERSION;
+                    }
+                    else if ("CAP_PROFILE_ID".equals(propName))
+                    {
+                        // Under schema-v2 always send an explicit profile id so NG
+                        // servers do not fall back to generic desktop profile selection.
+                        propVal = resolveCapProfileId();
+                    }
+                    else if ("CAP_OVERRIDES".equals(propName))
+                    {
+                        // Optional schema-v2 JSON payload for explicit user/profile
+                        // policy overrides only (server parses simple key/value map,
+                        // e.g. allow_hevc / auto_remux).
+                        //
+                        // Default is empty: capability truth should come from the
+                        // per-player codec/container/constraint payloads, and we only
+                        // populate CAP_OVERRIDES when a user intentionally pins a
+                        // profile-level policy override.
+                        //
+                        // Return empty string (not "null") so negotiation logs and
+                        // parser behavior remain deterministic.
+                        propVal = "";
+                    }
+                    else if ("SAGETV_NG_CAPABILITIES".equals(propName))
+                    {
+                        // NG capability advertisement. Server
+                        // (MiniClientSageRenderer) parses this as tokenized
+                        // text (comma/semicolon/pipe/space delimited) and
+                        // uses it to gate features the client opts into.
+                        //
+                        // Token naming convention:
+                        //   DOWNLOAD_*  - protocol verb the client can emit
+                        //                 or accept on the control channel.
+                        //   OFFLINE_*   - additional payload the client can
+                        //                 receive alongside the downloaded
+                        //                 media file and persist locally.
+                        //
+                        // RULE: only advertise tokens for which the client
+                        // can actually CONSUME the corresponding server
+                        // payload. Advertising a token without parser +
+                        // persistence means the server may send data we
+                        // then silently drop, which is worse than not
+                        // asking. As features ship, add the token here in
+                        // the same release as the parser/store code.
+                        //
+                        // Currently supported:
+                        //   DOWNLOAD          - accept CMD_DOWNLOAD_REQUEST
+                        //                       and run the queue (gated on
+                        //                       DownloadStatusProvider being
+                        //                       wired up by the host module).
+                        //   DOWNLOAD_REFRESH  - emit opcode 228
+                        //                       DOWNLOAD_REFRESH_REQUEST on
+                        //                       stale-token detection and on
+                        //                       user retry; expects a fresh
+                        //                       CMD_DOWNLOAD_REQUEST back.
+                        //
+                        // Reserved tokens (NG roadmap; do NOT advertise
+                        // until the corresponding client-side parser and
+                        // local-store land):
+                        //   OFFLINE_METADATA   - structured MediaFile +
+                        //                        Airing + Show JSON blob in
+                        //                        CMD_DOWNLOAD_REQUEST.
+                        //                        Includes artwork URLs and
+                        //                        any other Wiz.bin-derived
+                        //                        descriptors; the artwork
+                        //                        BYTES are fetched under
+                        //                        OFFLINE_ARTWORK below.
+                        //   OFFLINE_ARTWORK    - binary fetch of poster /
+                        //                        fanart / banner image files
+                        //                        referenced by the metadata
+                        //                        JSON. One token covers all
+                        //                        three variants; the server
+                        //                        decides which ones to ship.
+                        //   OFFLINE_CAPTIONS   - captions/subtitles delivered
+                        //                        as a sidecar for containers
+                        //                        that don't carry them
+                        //                        inline. Covers EIA-608/708
+                        //                        CC extracted from the source
+                        //                        and any foreign-language
+                        //                        track that the server
+                        //                        externalizes. (For Sage
+                        //                        recordings this is typically
+                        //                        just CC; multi-language
+                        //                        tracks normally remain inside
+                        //                        the container and ride along
+                        //                        with the media file.)
+                        //   OFFLINE_COMSKIP    - commercial-skip cuts
+                        //                        (.edl preferred; .txt
+                        //                        comskip format accepted).
+                        //                        Note: SageTV has no separate
+                        //                        chapter concept; the seek-bar
+                        //                        "chapter" marks some STVs
+                        //                        render are derived from
+                        //                        comskip cuts.
+                        //   OFFLINE_TRANSCRIPT - speech-to-text transcript
+                        //                        (.vtt or .json with word
+                        //                        timestamps).
+                        StringBuilder caps = new StringBuilder();
+                        if (client.getDownloadStatusProvider() != null)
+                        {
+                            caps.append("DOWNLOAD,DOWNLOAD_REFRESH,OFFLINE_METADATA,OFFLINE_ARTWORK");
+                            if (client.properties().getBoolean(PrefStore.Keys.offline_cap_captions, true))
+                            {
+                                caps.append(",OFFLINE_CAPTIONS");
+                            }
+                            if (client.properties().getBoolean(PrefStore.Keys.offline_cap_comskip, true))
+                            {
+                                caps.append(",OFFLINE_COMSKIP");
+                            }
+                            if (client.properties().getBoolean(PrefStore.Keys.offline_cap_transcript, true))
+                            {
+                                caps.append(",OFFLINE_TRANSCRIPT");
+                            }
+                        }
+                        propVal = caps.toString();
+                        log.logInfo("SAGETV_NG_CAPABILITIES -> '" + propVal + "'");
                     }
                     else if ("DETAILED_BUFFER_STATS".equals(propName))
                     {
@@ -2454,18 +2612,97 @@ public class MiniClientConnection implements SageTVInputCallback
                             }
                             retval = 0;
                         }
-                        else if ("PENDING_DOWNLOAD".equals(propName))
+                        else if ("CMD_DOWNLOAD_REQUEST".equals(propName)
+                                || "TRANSFER_SESSION_ACK".equals(propName))
                         {
                             propVal = new String(cmdbuffer, 4 + nameLen, valLen);
-                            pendingDownloadRequest = parsePendingDownload(propVal);
-                            if (pendingDownloadRequest != null)
+                            String type = extractJsonString(propVal, "type");
+                            if ("TRANSFER_SESSION_ACK".equals(type)
+                                    || "TRANSFER_SESSION_ACK".equals(propName))
                             {
-                                log.logInfo("PENDING_DOWNLOAD received: " + pendingDownloadRequest);
+                                DownloadRequest req = parseTransferSessionAck(propVal);
+                                if (req != null)
+                                {
+                                    log.logInfo(propName + " TRANSFER_SESSION_ACK received: " + req);
+                                    client.eventbus().post(new DownloadRequestEvent(req));
+                                }
+                                else
+                                {
+                                    log.logError(propName + ": failed to parse ACK payload", null);
+                                }
                             }
                             else
                             {
-                                log.logError("PENDING_DOWNLOAD: failed to parse JSON: " + propVal, null);
+                                String retriable = extractJsonRawValue(propVal, "retriable");
+                                if ("TRANSFER_SESSION_ERROR".equals(type))
+                                {
+                                    String mediaFileID = extractJsonString(propVal, "recording_id");
+                                    if (mediaFileID == null || mediaFileID.isEmpty()) {
+                                        mediaFileID = extractJsonString(propVal, "mediaFileID");
+                                    }
+                                    String correlationId = extractJsonString(propVal, "correlationId");
+                                    String errorCode = extractJsonString(propVal, "error_code");
+                                    String message = extractJsonString(propVal, "message");
+                                    boolean retriableBool = "true".equalsIgnoreCase(retriable);
+                                    client.eventbus().post(new DownloadTransferSessionErrorEvent(
+                                            mediaFileID,
+                                            correlationId,
+                                            errorCode,
+                                            message,
+                                            retriableBool));
+                                    log.logWarning(propName + " TRANSFER_SESSION_ERROR code=" + errorCode
+                                            + " retriable=" + retriable
+                                            + " corr=" + correlationId
+                                            + " mediaFileID=" + mediaFileID);
+                                }
+                                else
+                                {
+                                    log.logWarning(propName + " ignored type=" + type + " retriable=" + retriable);
+                                }
                             }
+                            retval = 0;
+                        }
+                        else if ("CMD_TRANSFER_PAUSE".equals(propName)
+                                || "CMD_TRANSFER_RESUME".equals(propName)
+                                || "CMD_TRANSFER_CANCEL".equals(propName))
+                        {
+                            propVal = new String(cmdbuffer, 4 + nameLen, valLen);
+                            DownloadTransferControlEvent.Action action = "CMD_TRANSFER_PAUSE".equals(propName)
+                                    ? DownloadTransferControlEvent.Action.PAUSE
+                                    : ("CMD_TRANSFER_RESUME".equals(propName)
+                                    ? DownloadTransferControlEvent.Action.RESUME
+                                    : DownloadTransferControlEvent.Action.CANCEL);
+                            String sessionToken = extractJsonString(propVal, "session_token");
+                            String mediaFileID = extractJsonString(propVal, "recording_id");
+                            String downloadUrl = extractJsonString(propVal, "download_url");
+                            String sessionState = extractJsonString(propVal, "session_state");
+                            long bytesTransferred = extractJsonLong(propVal, "bytes_transferred");
+                            client.eventbus().post(new DownloadTransferControlEvent(
+                                    action,
+                                    sessionToken,
+                                    mediaFileID,
+                                    downloadUrl,
+                                    bytesTransferred,
+                                    sessionState));
+                            log.logInfo("" + propName + " received sessionToken="
+                                    + redactForLog(sessionToken)
+                                    + " mediaFileID=" + (mediaFileID == null ? "" : mediaFileID)
+                                    + " state=" + (sessionState == null ? "" : sessionState)
+                                    + " bytesTransferred=" + bytesTransferred);
+                            retval = 0;
+                        }
+                        else if ("CMD_OFFLINE_GUIDE_SNAPSHOT".equals(propName))
+                        {
+                            propVal = new String(cmdbuffer, 4 + nameLen, valLen);
+                            client.eventbus().post(new OfflineGuideSnapshotEvent(propVal));
+                            log.logInfo("CMD_OFFLINE_GUIDE_SNAPSHOT received (bytes=" + valLen + ")");
+                            retval = 0;
+                        }
+                        else if ("CMD_OFFLINE_SCHED_SNAPSHOT".equals(propName))
+                        {
+                            propVal = new String(cmdbuffer, 4 + nameLen, valLen);
+                            client.eventbus().post(new OfflineScheduleSnapshotEvent(propVal));
+                            log.logInfo("CMD_OFFLINE_SCHED_SNAPSHOT received (bytes=" + valLen + ")");
                             retval = 0;
                         }
                         else if ("SAGETV_NG_SERVER".equals(propName))
@@ -3005,6 +3242,10 @@ public class MiniClientConnection implements SageTVInputCallback
         return eventChannel != null;
     }
 
+    public String getClientId() {
+        return myID;
+    }
+
     public void postResizeEvent(Dimension size) {
         if (performingReconnect)
             return;
@@ -3176,57 +3417,113 @@ public class MiniClientConnection implements SageTVInputCallback
         }
     }
 
+    /**
+     * Client→server hint requesting a refreshed transfer session for a
+     * download whose token has expired.
+     *
+     * <p><strong>Status:</strong> the SageTV server-side wire format for this
+     * request has not yet been agreed between client and server. The previous
+     * implementation in this method wrote a malformed SET_PROPERTY packet to
+     * the event channel using opcode 1, but opcode 1 is a server→client
+     * command — the server's event-reply parser only accepts client→server
+     * opcodes in the 128–227 range (see *_REPLY_TYPE constants above). Sending
+     * opcode 1 from the client corrupts the event stream and triggers a full
+     * GFX/event reconnect, which in turn desyncs the renderer's menu state.
+     *
+     * <p>Until a dedicated outbound reply-type is added on both sides
+     * (e.g. {@code DOWNLOAD_REFRESH_REQUEST_REPLY_TYPE = 228}) and the server
+     * is updated to parse it, this method intentionally does NOT touch
+     * {@code eventChannel}. Callers should treat the absence of a server
+     * response as "refresh not supported" rather than racing a 20s timeout.
+     *
+     * <p>The {@code mediaFileID}/{@code reasonCode}/{@code correlationId}
+     * arguments are logged for traceability and so that callers wiring this
+     * up later don't need to change their call sites.
+     */
+    /**
+     * Client→server hint requesting a refreshed transfer session for a
+     * download whose token has expired. See
+     * {@link #DOWNLOAD_REFRESH_REQUEST_REPLY_TYPE} for the wire format.
+     *
+     * <p>The server responds asynchronously by pushing a fresh
+     * CMD_DOWNLOAD_REQUEST / TRANSFER_SESSION_ACK back through the event
+     * channel (new download_url + session_token), which the existing inbound
+     * handler routes to {@code DownloadEventHandler → DownloadManager.enqueue
+     * → mergeWithExisting}, updating sessionToken/downloadUrl/
+     * transferSessionState and resuming the queue.
+     *
+     * <p>Historical note: an earlier revision of this method used opcode
+     * {@link #SET_PROPERTY_CMD_TYPE} (a server→client command code) for the
+     * send, which the server's event-reply parser rejected and which
+     * triggered a full GFX/event reconnect cycle on every call. The current
+     * implementation uses {@link #DOWNLOAD_REFRESH_REQUEST_REPLY_TYPE} in
+     * the valid client→server reply-type range (128–255) and the same
+     * canonical 16-byte header layout as {@link #postOfflineCacheChange}.
+     */
     public void postDownloadRefreshRequest(String mediaFileID, String reasonCode, String correlationId) {
+        postDownloadRefreshRequest(mediaFileID, reasonCode, correlationId, null, -1);
+    }
+
+    public void postDownloadRefreshRequest(String mediaFileID,
+                                           String reasonCode,
+                                           String correlationId,
+                                           String sessionToken,
+                                           long bytesTransferred) {
         if (performingReconnect)
             return;
-
         if (eventChannel == null || mediaFileID == null || mediaFileID.isEmpty())
             return;
 
         String reason = reasonCode == null ? "" : reasonCode;
         String corr = correlationId == null ? "" : correlationId;
-        String propName = "DOWNLOAD_REFRESH_REQUEST";
-        String propVal = "{\"mediaFileID\":\"" + escapeJson(mediaFileID) +
-                "\",\"reason\":\"" + escapeJson(reason) +
-                "\",\"correlationId\":\"" + escapeJson(corr) + "\"}";
+        String token = sessionToken == null ? "" : sessionToken;
+        String clientId = getClientId();
+        if (clientId == null) clientId = "";
+        StringBuilder payload = new StringBuilder(192);
+        payload.append("{\"mediaFileID\":\"").append(escapeJson(mediaFileID)).append("\"")
+                .append(",\"reason\":\"").append(escapeJson(reason)).append("\"")
+                .append(",\"correlationId\":\"").append(escapeJson(corr)).append("\"");
+        if (!token.isEmpty()) {
+            payload.append(",\"sessionToken\":\"").append(escapeJson(token)).append("\"");
+        }
+        if (!clientId.isEmpty()) {
+            payload.append(",\"clientId\":\"").append(escapeJson(clientId)).append("\"");
+        }
+        if (bytesTransferred >= 0) {
+            payload.append(",\"bytesTransferred\":").append(bytesTransferred);
+        }
+        payload.append("}");
+        String json = payload.toString();
 
-        byte[] nameBytes;
-        byte[] valueBytes;
+        byte[] jsonBytes;
         try {
-            nameBytes = propName.getBytes(MiniClient.BYTE_CHARSET);
-            valueBytes = propVal.getBytes(MiniClient.BYTE_CHARSET);
+            jsonBytes = json.getBytes(MiniClient.BYTE_CHARSET);
         } catch (Exception e) {
-            log.logError("Failed to encode DOWNLOAD_REFRESH_REQUEST", e);
+            log.logError("Failed to encode DOWNLOAD_REFRESH_REQUEST payload", e);
             return;
         }
-        int payloadLen = 4 + nameBytes.length + valueBytes.length;
 
         synchronized (eventChannel) {
             try {
-                eventChannel.write(SET_PROPERTY_CMD_TYPE);
-                eventChannel.write((payloadLen >> 16) & 0xFF);
-                eventChannel.write((payloadLen >> 8) & 0xFF);
-                eventChannel.write(payloadLen & 0xFF);
-                eventChannel.writeInt(0);
+                eventChannel.write(DOWNLOAD_REFRESH_REQUEST_REPLY_TYPE);
+                eventChannel.write(0);
+                eventChannel.writeShort(jsonBytes.length);
+                eventChannel.writeInt(0); // timestamp
                 eventChannel.writeInt(replyCount++);
-                eventChannel.writeInt(0);
-
-                byte[] body = new byte[payloadLen];
-                body[0] = (byte) ((nameBytes.length >> 8) & 0xFF);
-                body[1] = (byte) (nameBytes.length & 0xFF);
-                body[2] = (byte) ((valueBytes.length >> 8) & 0xFF);
-                body[3] = (byte) (valueBytes.length & 0xFF);
-                System.arraycopy(nameBytes, 0, body, 4, nameBytes.length);
-                System.arraycopy(valueBytes, 0, body, 4 + nameBytes.length, valueBytes.length);
-
+                eventChannel.writeInt(0); // pad
                 if (encryptEvents && evtEncryptCipher != null) {
-                    eventChannel.write(evtEncryptCipher.doFinal(body));
+                    eventChannel.write(evtEncryptCipher.doFinal(jsonBytes));
                 } else {
-                    eventChannel.write(body);
+                    eventChannel.write(jsonBytes);
                 }
                 eventChannel.flush();
+                log.logInfo("Posted DOWNLOAD_REFRESH_REQUEST mediaFileID=" + mediaFileID
+                    + " reason=" + reason + " corr=" + corr
+                    + " hasToken=" + (!token.isEmpty())
+                    + " bytesTransferred=" + bytesTransferred);
             } catch (Exception e) {
-                log.logError("Failed to post DOWNLOAD_REFRESH_REQUEST", e);
+                log.logError("Failed to post DOWNLOAD_REFRESH_REQUEST: "
+                        + e.getClass().getName() + ": " + e.getMessage(), e);
                 eventChannelError();
             }
         }
@@ -3553,21 +3850,6 @@ public class MiniClientConnection implements SageTVInputCallback
                 pathName = getSafeFsPath(cmdData, 24);
                 if (pathName == null) { intRv = FS_RV_NO_PERMISSIONS; break; }
 
-                // Check if this is a media download (PENDING_DOWNLOAD was set)
-                if (cmdType == FSCMD_DOWNLOAD_FILE && pendingDownloadRequest != null) {
-                    DownloadRequest req = pendingDownloadRequest;
-                    pendingDownloadRequest = null;
-                    // Fill in protocol-level details from the FS command
-                    req.setServerPath(pathName);
-                    if (req.getFileSize() <= 0) {
-                        req.setFileSize(fileSize);
-                    }
-                    log.logInfo("Media download routed to DownloadManager: " + req);
-                    client.eventbus().post(new DownloadRequestEvent(req));
-                    intRv = FS_RV_SUCCESS;
-                    break;
-                }
-
                 theFile = new java.io.File(pathName);
                 if (cmdType == FSCMD_DOWNLOAD_FILE) {
                     // Make sure we're downloading to a valid file that we can write
@@ -3654,23 +3936,26 @@ public class MiniClientConnection implements SageTVInputCallback
     }
 
     /**
-     * Parse the PENDING_DOWNLOAD JSON payload into a DownloadRequest.
-     * Expected format: {"mediaFileID":"...","title":"...","serverPath":"...","fileSize":N,"duration":N,"thumbnailUrl":"...","container":"..."}
+     * Parse the transfer-session payload into a DownloadRequest.
+     * Canonical payload is CMD_DOWNLOAD_REQUEST with type=TRANSFER_SESSION_ACK.
      * Uses minimal manual JSON parsing to avoid adding a library dependency to core.
      */
-    private DownloadRequest parsePendingDownload(String json) {
+    private DownloadRequest parseTransferSessionAck(String json) {
         if (json == null || json.isEmpty()) return null;
         try {
             DownloadRequest req = new DownloadRequest();
-            req.setMediaFileID(extractJsonString(json, "mediaFileID"));
+            req.setMediaFileID(extractJsonString(json, "recording_id"));
             if (req.getMediaFileID() == null || req.getMediaFileID().isEmpty()) {
-                req.setMediaFileID(extractJsonString(json, "recording_id"));
+                req.setMediaFileID(extractJsonString(json, "mediaFileID"));
             }
             req.setTitle(extractJsonString(json, "title"));
             if (req.getTitle() == null || req.getTitle().isEmpty()) {
                 req.setTitle(extractJsonString(json, "file_name"));
             }
             req.setServerPath(extractJsonString(json, "serverPath"));
+            if (req.getServerPath() == null || req.getServerPath().isEmpty()) {
+                req.setServerPath(extractJsonString(json, "download_path"));
+            }
             req.setContainer(extractJsonString(json, "container"));
             req.setThumbnailUrl(extractJsonString(json, "thumbnailUrl"));
             req.setFileSize(extractJsonLong(json, "fileSize"));
@@ -3682,6 +3967,9 @@ public class MiniClientConnection implements SageTVInputCallback
 
             req.setSessionToken(extractJsonString(json, "session_token"));
             req.setDownloadUrl(extractJsonString(json, "download_url"));
+            if (req.getDownloadUrl() == null || req.getDownloadUrl().isEmpty()) {
+                req.setDownloadUrl(extractJsonString(json, "download_path"));
+            }
             req.setSessionState(extractJsonString(json, "session_state"));
             req.setAccountFamily(extractJsonString(json, "app_family"));
             if (req.getAccountFamily() == null || req.getAccountFamily().isEmpty()) {
@@ -3713,6 +4001,16 @@ public class MiniClientConnection implements SageTVInputCallback
             req.setSeriesSelectionMode(extractJsonString(json, "series_selection_mode"));
             req.setEstimatedSeriesBytes(extractJsonLong(json, "estimated_series_bytes"));
             req.setEstimatedItemCount((int) extractJsonLong(json, "estimated_item_count"));
+
+            // Optional offline companion content (M2 — see
+            // /memories/repo/offline-companion-spec.md). The "offline" object
+            // contains rich metadata, artwork, captions, comskip and transcript
+            // sidecar references. Stored verbatim so future server fields
+            // survive without a client update.
+            req.setOfflineCompanionJson(extractJsonObject(json, "offline"));
+            req.setOfflineMetadataUrl(extractJsonString(json, "offline_metadata_url"));
+            req.setOfflineMetadataPath(extractJsonString(json, "offline_metadata_path"));
+            req.setOfflineInlineLevel(extractJsonString(json, "offline_inline_level"));
 
             if (req.getMediaFileID() == null || req.getMediaFileID().isEmpty()) return null;
             return req;
@@ -3762,6 +4060,12 @@ public class MiniClientConnection implements SageTVInputCallback
     private static String extractJsonArray(String json, String key) {
         String raw = extractJsonRawValue(json, key);
         return raw != null && raw.startsWith("[") ? raw : null;
+    }
+
+    private static String redactForLog(String value) {
+        if (value == null || value.isEmpty()) return "";
+        if (value.length() <= 8) return "***";
+        return value.substring(0, 4) + "..." + value.substring(value.length() - 4);
     }
 
     private static String extractJsonRawValue(String json, String key) {

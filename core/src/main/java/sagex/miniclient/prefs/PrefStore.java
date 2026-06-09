@@ -308,5 +308,13 @@ public interface PrefStore
          * Send DebugSageCommandEvent before sending SageCommand to SageTV
          */
         String debug_sage_commands = "debug_sage_commands";
+
+        /**
+         * NG download companion capability toggles. These directly control
+         * which OFFLINE_* capability tokens are advertised during handshake.
+         */
+        String offline_cap_captions = "offline_cap_captions";
+        String offline_cap_comskip = "offline_cap_comskip";
+        String offline_cap_transcript = "offline_cap_transcript";
     }
 }

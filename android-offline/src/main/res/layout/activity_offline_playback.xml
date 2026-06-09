@@ -14,7 +14,19 @@
         app:show_timeout="5000"
         app:use_controller="true"
         app:show_buffering="when_playing"
-        app:resize_mode="fit" />
+        app:resize_mode="fit"
+        app:played_color="#FF00E676"
+        app:scrubber_color="#FF00E676"
+        app:buffered_color="#8000E676"
+        app:unplayed_color="#66FFFFFF"
+        app:ad_marker_color="#FFFF7043"
+        app:played_ad_marker_color="#FFD84315" />
+
+    <SurfaceView
+        android:id="@+id/offline_ijk_surface"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
 
     <!-- Title overlay at top — matches SageTV OSD info bar style -->
     <LinearLayout
@@ -39,5 +51,26 @@
             android:ellipsize="end" />
 
     </LinearLayout>
+
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:fillViewport="true"
+        android:background="#66000000"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="10dp"
+        android:paddingBottom="10dp"
+        android:scrollbars="none"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical" />
+
+    </HorizontalScrollView>
 
 </FrameLayout>

@@ -195,14 +195,22 @@ public class DownloadForegroundService extends Service {
         intent.putExtra(EXTRA_MEDIA_FILE_ID, mediaFileID);
         intent.putExtra(EXTRA_DOWNLOADED_BYTES, downloadedBytes);
         intent.putExtra(EXTRA_TOTAL_BYTES, totalBytes);
-        context.startService(intent);
+        try {
+            context.startService(intent);
+        } catch (Exception ignored) {
+            // App may be in background during long remux; progress update is non-critical.
+        }
     }
 
     public static void notifyComplete(Context context, String mediaFileID) {
         Intent intent = new Intent(context, DownloadForegroundService.class);
         intent.setAction(ACTION_COMPLETE);
         intent.putExtra(EXTRA_MEDIA_FILE_ID, mediaFileID);
-        context.startService(intent);
+        try {
+            context.startService(intent);
+        } catch (Exception ignored) {
+            // App may be in background; best-effort notification.
+        }
     }
 
     public static void notifyError(Context context, String mediaFileID, String errorMessage) {
@@ -210,6 +218,10 @@ public class DownloadForegroundService extends Service {
         intent.setAction(ACTION_ERROR);
         intent.putExtra(EXTRA_MEDIA_FILE_ID, mediaFileID);
         intent.putExtra(EXTRA_ERROR_MESSAGE, errorMessage);
-        context.startService(intent);
+        try {
+            context.startService(intent);
+        } catch (Exception ignored) {
+            // App may be in background; best-effort notification.
+        }
     }
 }

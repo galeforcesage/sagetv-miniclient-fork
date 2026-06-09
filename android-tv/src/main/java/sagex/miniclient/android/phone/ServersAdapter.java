@@ -22,6 +22,7 @@ import java.util.Date;
 
 import sagex.miniclient.ServerInfo;
 import sagex.miniclient.android.MiniclientApplication;
+import sagex.miniclient.android.OfflineModuleBridge;
 import sagex.miniclient.android.tv.R;
 import sagex.miniclient.android.util.ServerInfoUtil;
 import sagex.miniclient.android.util.ServerInfoUtil.OnAfterCommands;
@@ -32,6 +33,9 @@ import sagex.miniclient.util.Utils;
  */
 public class ServersAdapter extends RecyclerView.Adapter<ServersAdapter.ViewHolder> {
     private static final Logger log = LoggerFactory.getLogger(ServersAdapter.class);
+    private static final String OFFLINE_TILE_ADDRESS = "offline-tile";
+    private static final int OFFLINE_TILE_PORT = 0;
+    private static final String OFFLINE_TILE_NAME = "Offline Player";
 
     public class ViewHolder extends RecyclerView.ViewHolder implements View.OnClickListener, View.OnLongClickListener, PopupMenu.OnMenuItemClickListener {
         // each data item is just a string in this case
@@ -82,11 +86,18 @@ public class ServersAdapter extends RecyclerView.Adapter<ServersAdapter.ViewHold
 
         @Override
         public void onClick(View v) {
+            if (isOfflineTile(serverInfo)) {
+                OfflineModuleBridge.launchOfflineHome(context);
+                return;
+            }
             ServerInfoUtil.connect(context, serverInfo);
         }
 
         @Override
         public boolean onLongClick(View v) {
+            if (isOfflineTile(serverInfo)) {
+                return false;
+            }
             if (menu == null) {
                 menu = ServerInfoUtil.createContextMenu(context, v, this);
             }
@@ -98,6 +109,9 @@ public class ServersAdapter extends RecyclerView.Adapter<ServersAdapter.ViewHold
 
         @Override
         public boolean onMenuItemClick(MenuItem item) {
+            if (isOfflineTile(serverInfo)) {
+                return false;
+            }
             return ServerInfoUtil.onMenuItemClick(context, item, serverInfo, afterDelete);
         }
     }
@@ -139,16 +153,20 @@ public class ServersAdapter extends RecyclerView.Adapter<ServersAdapter.ViewHold
 
         log.debug("Begin Adding Saved Servers");
         addAll(MiniclientApplication.get(ctx.getApplicationContext()).getClient().getServers().getSavedServers());
+        refreshOfflineTilePresence();
         log.debug("End Adding Saved Servers");
     }
 
     public void addAll(Collection<ServerInfo> newItems) {
         items.beginBatchedUpdates();
         for (ServerInfo item : newItems) {
-            items.add(item);
-            log.debug("ADDED SERVER: {}", item);
+            if (!isOfflineTile(item)) {
+                items.add(item);
+                log.debug("ADDED SERVER: {}", item);
+            }
         }
         items.endBatchedUpdates();
+        refreshOfflineTilePresence();
     }
 
     // Create new views (invoked by the codec_selection manager)
@@ -169,6 +187,17 @@ public class ServersAdapter extends RecyclerView.Adapter<ServersAdapter.ViewHold
         // - get element from your dataset at this position
         // - replace the contents of the view with that element
         ServerInfo si = getCastedItem(position);
+        if (isOfflineTile(si)) {
+            holder.serverName.setText(OFFLINE_TILE_NAME);
+            holder.serverAddress.setVisibility(View.VISIBLE);
+            holder.serverAddress.setText("Open your cached offline library");
+            holder.serverLocator.setVisibility(View.GONE);
+            holder.serverLastConnected.setText("No server connection required");
+            holder.icon.setImageResource(R.drawable.ic_tv_white_60dp);
+            holder.serverInfo = si;
+            return;
+        }
+
         holder.serverName.setText(si.name);
         if (!Utils.isEmpty(si.address)) {
             holder.serverAddress.setVisibility(View.VISIBLE);
@@ -213,6 +242,9 @@ public class ServersAdapter extends RecyclerView.Adapter<ServersAdapter.ViewHold
     }
 
     public void addServer(ServerInfo si) {
+        if (isOfflineTile(si)) {
+            return;
+        }
         log.debug("Attempting to add server: {}", si);
         int size = items.size();
         for (int i = 0; i < size; i++) {
@@ -223,5 +255,45 @@ public class ServersAdapter extends RecyclerView.Adapter<ServersAdapter.ViewHold
         }
         log.debug("Adding Server to List, since it does not exist: {}", si);
         items.add(si);
+    }
+
+    public void refreshOfflineTilePresence() {
+        int offlinePos = findOfflineTilePosition();
+        boolean shouldShow = OfflineModuleBridge.isAvailable()
+                && OfflineModuleBridge.hasAnyOfflineContent(context.getApplicationContext());
+
+        if (shouldShow) {
+            if (offlinePos < 0) {
+                items.add(createOfflineTile());
+            }
+        } else {
+            if (offlinePos >= 0) {
+                items.removeItemAt(offlinePos);
+            }
+        }
+    }
+
+    private int findOfflineTilePosition() {
+        for (int i = 0; i < items.size(); i++) {
+            if (isOfflineTile(items.get(i))) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static boolean isOfflineTile(ServerInfo si) {
+        return si != null
+                && OFFLINE_TILE_PORT == si.port
+                && OFFLINE_TILE_ADDRESS.equals(si.address);
+    }
+
+    private static ServerInfo createOfflineTile() {
+        ServerInfo si = new ServerInfo();
+        si.name = OFFLINE_TILE_NAME;
+        si.address = OFFLINE_TILE_ADDRESS;
+        si.port = OFFLINE_TILE_PORT;
+        si.lastConnectTime = Long.MAX_VALUE;
+        return si;
     }
 }

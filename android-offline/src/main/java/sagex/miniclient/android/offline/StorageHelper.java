@@ -39,6 +39,8 @@ public class StorageHelper {
     private static final Logger log = LoggerFactory.getLogger(StorageHelper.class);
     private static final String PREFS_NAME = "download_storage";
     private static final String KEY_STORAGE_URI = "storage_uri";
+    private static final String KEY_WIFI_ONLY = "wifi_only_downloads";
+    private static final boolean DEFAULT_WIFI_ONLY = true;
     private static final long MIN_FREE_SPACE_BYTES = 500L * 1024 * 1024; // 500 MB minimum
 
     private final Context context;
@@ -70,6 +72,23 @@ public class StorageHelper {
      */
     public void setStorageUri(Uri treeUri) {
         prefs.edit().putString(KEY_STORAGE_URI, treeUri.toString()).apply();
+    }
+
+    /**
+     * Whether the user has restricted downloads to Wi-Fi (or Ethernet) only.
+     * Defaults to {@code true} to avoid surprise cellular data charges.
+     */
+    public boolean isWifiOnlyDownloads() {
+        return prefs.getBoolean(KEY_WIFI_ONLY, DEFAULT_WIFI_ONLY);
+    }
+
+    /**
+     * Update the user-controlled Wi-Fi-only preference. Downloads currently
+     * running on a metered/cellular link will be re-evaluated by the caller
+     * (see {@link DownloadManager#onWifiOnlyPrefChanged()}).
+     */
+    public void setWifiOnlyDownloads(boolean wifiOnly) {
+        prefs.edit().putBoolean(KEY_WIFI_ONLY, wifiOnly).apply();
     }
 
     private static final String SAGETV_FOLDER = "SageTV-NG";

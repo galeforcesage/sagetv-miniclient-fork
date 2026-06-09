@@ -46,7 +46,6 @@ import sagex.miniclient.android.ui.MiniclientTouchListener;
 import sagex.miniclient.android.ui.keymaps.DebugKeyEvent;
 import sagex.miniclient.android.ui.keymaps.DebugKeyPressWindow;
 import sagex.miniclient.android.ui.keymaps.KeyMapProcessor;
-import sagex.miniclient.android.util.AudioUtil;
 import sagex.miniclient.android.video.PlayerSurfaceView;
 import sagex.miniclient.events.ConnectionLost;
 import sagex.miniclient.events.DebugSageCommandEvent;
@@ -83,6 +82,7 @@ public class UIActivityLifeCycleHandler<UIRenderType extends UIRenderer> impleme
 
     protected boolean keyboardVisible = false;
     public static final String ARG_SERVER_INFO = "server_info";
+
     protected static final Logger log = LoggerFactory.getLogger(UIActivityLifeCycleHandler.class);
     protected FrameLayout uiFrameHolder;
     protected PlayerSurfaceView videoHolder;
@@ -128,8 +128,6 @@ public class UIActivityLifeCycleHandler<UIRenderType extends UIRenderer> impleme
         this.activity = activity;
 
         log.debug("MiniClient UI onResume() called");
-
-        AudioUtil.requestAudioFocus(activity);
 
         // setup to handle events
         client.eventbus().register(UIActivityLifeCycleHandler.this);

@@ -82,6 +82,9 @@ public class ServerInfoUtil {
             }
             Intent i = new Intent(ctx, start);
             i.putExtra(UIActivityLifeCycleHandler.ARG_SERVER_INFO, si);
+            if (!(ctx instanceof Activity)) {
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            }
 
             /*
             Removed to make sure the code passes the Amazon App Store testing.  They do not approve of this functionallity for some reason

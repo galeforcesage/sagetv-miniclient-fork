@@ -36,6 +36,7 @@ import sagex.miniclient.android.events.HideNavigationEvent;
 import sagex.miniclient.android.events.HideSystemUIEvent;
 import sagex.miniclient.android.events.ToggleAspectRatioEvent;
 import sagex.miniclient.android.preferences.MediaMappingPreferences;
+import sagex.miniclient.android.ui.DownloadMenuLauncher;
 import sagex.miniclient.android.video.NonLeanbackAspect;
 import sagex.miniclient.android.video.OrientationController;
 import sagex.miniclient.events.ShowKeyboardEvent;
@@ -275,6 +276,25 @@ public class NavigationFragment extends DialogFragment
             });
         }
 
+        // Optional downloads icon (present only in builds that ship the
+        // android-offline module). Look up by tag so this fragment in
+        // android-shared does not depend on a resource id that may not exist
+        // in every flavor's R class. If the activity is not part of the build
+        // (online-only flavor), the launcher is a silent no-op so the button
+        // is harmless if the layout is updated independently.
+        View navDownloads = navView.findViewWithTag("_downloads");
+        if (navDownloads != null)
+        {
+            navDownloads.setOnClickListener(new OnClickListener()
+            {
+                @Override
+                public void onClick(View v)
+                {
+                    buttonClickInternal(v);
+                }
+            });
+        }
+
         if (client == null || client.getCurrentConnection() == null) return navView;
 
         if (client.getCurrentConnection().getMenuHint().isOSDMenuNoPopup() && (client.isVideoPlaying() || client.isVideoPaused()))
@@ -480,6 +500,16 @@ public class NavigationFragment extends DialogFragment
         else if ("_hide".equalsIgnoreCase(tag))
         {
             client.eventbus().post(HideNavigationEvent.INSTANCE);
+        }
+        else if ("_downloads".equalsIgnoreCase(tag))
+        {
+            // Launch the offline downloads manager without disconnecting from
+            // SageTV. The renderer activity stays in the back stack; when the
+            // user finishes/cancels DownloadsActivity, Android returns them to
+            // the renderer whose onResume posts a repaint event so the server
+            // restores the prior menu position.
+            dismiss();
+            DownloadMenuLauncher.launch(getActivity());
         }
         else
         {

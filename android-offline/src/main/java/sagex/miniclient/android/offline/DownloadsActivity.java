@@ -430,13 +430,6 @@ public class DownloadsActivity extends Activity {
                 break;
             case PAUSED:
             case FAILED:
-                if (canRetryRemux(meta)) {
-                    addActionButton(actions, "Remux", v -> {
-                        downloadManager.retryRemux(meta.getMediaFileID());
-                        Toast.makeText(this, "Remux queued", Toast.LENGTH_SHORT).show();
-                        refreshList();
-                    });
-                }
                 addActionButton(actions, "Restart", v -> {
                     downloadManager.restart(meta.getMediaFileID());
                     Toast.makeText(this, "Restart requested", Toast.LENGTH_SHORT).show();
@@ -452,13 +445,6 @@ public class DownloadsActivity extends Activity {
                 });
                 break;
             case COMPLETE:
-                if (canRetryRemux(meta)) {
-                    addActionButton(actions, "Remux", v -> {
-                        downloadManager.retryRemux(meta.getMediaFileID());
-                        Toast.makeText(this, "Remux queued", Toast.LENGTH_SHORT).show();
-                        refreshList();
-                    });
-                }
                 addActionButton(actions, "Delete", v -> {
                     confirmDelete(meta);
                 });
@@ -539,14 +525,6 @@ public class DownloadsActivity extends Activity {
                 break;
             case PAUSED:
             case FAILED:
-                if (canRetryRemux(meta)) {
-                    labels.add("Remux");
-                    actions.add(() -> {
-                        downloadManager.retryRemux(meta.getMediaFileID());
-                        Toast.makeText(this, "Remux queued", Toast.LENGTH_SHORT).show();
-                        refreshList();
-                    });
-                }
                 labels.add("Restart");
                 actions.add(() -> {
                     downloadManager.restart(meta.getMediaFileID());
@@ -883,6 +861,10 @@ public class DownloadsActivity extends Activity {
         boolean primaryComplete = meta.getStatus() == DownloadMetadata.Status.COMPLETE
                 || (total > 0 && (meta.getDownloadedBytes() >= total
                 || meta.getResumeFromOffset() >= total));
+        // Cheap path here: extension/container heuristic only. We deliberately
+        // avoid probing the file from a list-row predicate to keep scrolling
+        // smooth — the actual remux entry point still does the codec probe
+        // and bails out for MPEG-2 sources.
         return primaryComplete && PostDownloadRemux.shouldRemux(meta);
     }
 }

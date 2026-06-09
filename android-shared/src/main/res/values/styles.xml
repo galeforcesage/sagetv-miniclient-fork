@@ -18,6 +18,26 @@
         <item name="android:background">@android:color/transparent</item>
     </style>
 
+    <!--
+        Full-screen, non-floating, fully opaque dialog theme for the Downloads
+        overlay. Same DoNotDim semantics (no scrim) but the window fills the
+        screen and has a solid background so the underlying GL renderer
+        cannot bleed through and confuse the user with a corrupted-looking
+        mash-up of two UIs.
+    -->
+    <style name="Theme.Dialog.OpaqueFullscreen" parent="android:style/Theme.Holo.NoActionBar.Fullscreen">
+        <item name="windowActionBar">false</item>
+        <item name="windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowFrame">@null</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowIsFloating">false</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:background">@android:color/black</item>
+    </style>
+
     <style name="Theme.Dialog.NoBar" parent="Theme.AppCompat.Light.NoActionBar">
     </style>
 

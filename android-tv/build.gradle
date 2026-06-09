@@ -9,6 +9,29 @@ def computeVersionCode()
     return appVersionCode
 }
 
+def safeGitShortSha()
+{
+    try {
+        def p = ["git", "rev-parse", "--short", "HEAD"].execute(null, rootDir)
+        p.waitFor()
+        if (p.exitValue() == 0) {
+            def sha = p.in.text.trim()
+            if (sha != null && !sha.isEmpty()) return sha
+        }
+    } catch (Throwable ignored) {}
+    return "nogit"
+}
+
+def buildStampUtc()
+{
+    return new Date().format("yyyyMMdd.HHmm", TimeZone.getTimeZone("UTC"))
+}
+
+def computeVersionName()
+{
+    return "${appVersionName}"
+}
+
 Properties signingProps = new Properties()
 def propFile = file("../keystore.properties")
 
@@ -39,7 +62,7 @@ android {
         targetSdkVersion androidTargetSdkVersion
         // versionCode API (2 digits), SCREEN (2 digits), VERSION (3 digits)
         versionCode computeVersionCode()
-        versionName "${appVersionName}"
+        versionName computeVersionName()
         ndk.abiFilters 'armeabi-v7a','arm64-v8a'
     }
 

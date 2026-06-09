@@ -16,8 +16,9 @@
 package sagex.miniclient;
 
 /**
- * Represents a media download request received from the SageTV server.
- * Parsed from the PENDING_DOWNLOAD SetProperty JSON payload.
+ * Represents a media download transfer-session contract received from the
+ * SageTV server. Parsed from CMD_DOWNLOAD_REQUEST payloads where
+ * type=TRANSFER_SESSION_ACK.
  */
 public class DownloadRequest {
     private String mediaFileID;
@@ -52,6 +53,20 @@ public class DownloadRequest {
     private String seriesSelectionMode;
     private long estimatedSeriesBytes;
     private int estimatedItemCount;
+
+    // Optional offline-companion content payload (raw JSON of the server's
+    // "offline" object inside CMD_DOWNLOAD_REQUEST). Includes rich metadata
+    // (media_file / airing / show), artwork manifest, captions, comskip and
+    // transcript sidecar references. Persisted verbatim by the client so
+    // future server fields survive without a client update. May be null when
+    // the connected server does not advertise the OFFLINE_* capabilities.
+    private String offlineCompanionJson;
+    // Two-step offline manifest delivery pointers. Inline offline content is
+    // first-paint data; when URL/path is present client should fetch full
+    // manifest and replace snapshot content.
+    private String offlineMetadataUrl;
+    private String offlineMetadataPath;
+    private String offlineInlineLevel;
 
     public DownloadRequest() {
     }
@@ -291,6 +306,42 @@ public class DownloadRequest {
         this.estimatedItemCount = estimatedItemCount;
     }
 
+    /**
+     * Raw JSON of the server's "offline" object inside CMD_DOWNLOAD_REQUEST.
+     * Null when the server did not include companion content.
+     */
+    public String getOfflineCompanionJson() {
+        return offlineCompanionJson;
+    }
+
+    public void setOfflineCompanionJson(String offlineCompanionJson) {
+        this.offlineCompanionJson = offlineCompanionJson;
+    }
+
+    public String getOfflineMetadataUrl() {
+        return offlineMetadataUrl;
+    }
+
+    public void setOfflineMetadataUrl(String offlineMetadataUrl) {
+        this.offlineMetadataUrl = offlineMetadataUrl;
+    }
+
+    public String getOfflineMetadataPath() {
+        return offlineMetadataPath;
+    }
+
+    public void setOfflineMetadataPath(String offlineMetadataPath) {
+        this.offlineMetadataPath = offlineMetadataPath;
+    }
+
+    public String getOfflineInlineLevel() {
+        return offlineInlineLevel;
+    }
+
+    public void setOfflineInlineLevel(String offlineInlineLevel) {
+        this.offlineInlineLevel = offlineInlineLevel;
+    }
+
     @Override
     public String toString() {
         return "DownloadRequest{" +
@@ -303,6 +354,7 @@ public class DownloadRequest {
                 ", serverQueueItemId='" + serverQueueItemId + '\'' +
                 ", queuePriority=" + queuePriority +
                 ", requestIntent='" + requestIntent + '\'' +
+                ", offlineInlineLevel='" + offlineInlineLevel + '\'' +
                 ", sessionToken='" + redact(sessionToken) + '\'' +
                 ", sessionState='" + sessionState + '\'' +
                 ", accountFamily='" + accountFamily + '\'' +

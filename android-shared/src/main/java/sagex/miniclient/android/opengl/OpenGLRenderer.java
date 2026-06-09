@@ -758,6 +758,18 @@ public class OpenGLRenderer implements UIRenderer<OpenGLTexture>, GLSurfaceView.
             useExoPlayer = false;
             swapReason = "NG bare-push compat (server emitted push: with no format hint)";
         }
+        else if (useExoPlayer && PlayerSelectionUtil.isExoHevcPushLandmine(urlString)) {
+            log.warn("ExoPlayer HEVC push landmine detected: swapping to IJK. URL={}", urlString);
+            PlayerSelectionUtil.notifyLandmineSwap(activity.getContext(), "HEVC push compat");
+            useExoPlayer = false;
+            swapReason = "HEVC push compat (ExoPlayer video did not render reliably)";
+        }
+        else if (useExoPlayer && PlayerSelectionUtil.isExoPushMp4Landmine(urlString)) {
+            log.warn("ExoPlayer push-MP4 landmine detected: swapping to IJK. URL={}", urlString);
+            PlayerSelectionUtil.notifyLandmineSwap(activity.getContext(), "Push MP4 compat");
+            useExoPlayer = false;
+            swapReason = "Push MP4 compat (ExoPlayer source mismatch on affected streams)";
+        }
         else if (useExoPlayer)
         {
             boolean exoCanDecodeMpeg2 = CodecCapabilityDetector.isVideoCodecSupportedByExo(

@@ -69,6 +69,24 @@
             android:summary="View download queue, manage storage location, and delete downloaded files"
             android:key="manage_downloads"/>
 
+        <CheckBoxPreference
+            android:defaultValue="true"
+            android:key="offline_cap_transcript"
+            android:title="Request Transcript Sidecars"
+            android:summary="Advertise OFFLINE_TRANSCRIPT to the server for NG download sessions."/>
+
+        <CheckBoxPreference
+            android:defaultValue="true"
+            android:key="offline_cap_captions"
+            android:title="Request CC/Captions Sidecars"
+            android:summary="Advertise OFFLINE_CAPTIONS to the server for NG download sessions."/>
+
+        <CheckBoxPreference
+            android:defaultValue="true"
+            android:key="offline_cap_comskip"
+            android:title="Request Comskip Sidecars"
+            android:summary="Advertise OFFLINE_COMSKIP to the server for NG download sessions."/>
+
     </PreferenceCategory>
 
     <PreferenceCategory android:title="@string/application_settings">

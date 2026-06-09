@@ -82,9 +82,22 @@ public final class OfflineModuleBridge {
                 new Object[]{from});
     }
 
+    public static void launchOfflineHome(Context from) {
+        if (!isAvailable()) return;
+        invoke("launchOfflineHome", new Class<?>[]{Context.class},
+                new Object[]{from});
+    }
+
     public static boolean hasAnyDownloads(Context ctx) {
         if (!isAvailable()) return false;
         Object result = invoke("hasAnyDownloads", new Class<?>[]{Context.class},
+                new Object[]{ctx});
+        return Boolean.TRUE.equals(result);
+    }
+
+    public static boolean hasAnyOfflineContent(Context ctx) {
+        if (!isAvailable()) return false;
+        Object result = invoke("hasAnyOfflineContent", new Class<?>[]{Context.class},
                 new Object[]{ctx});
         return Boolean.TRUE.equals(result);
     }

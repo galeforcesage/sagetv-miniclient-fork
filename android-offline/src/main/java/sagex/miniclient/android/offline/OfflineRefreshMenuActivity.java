@@ -17,15 +17,10 @@ import android.widget.Toast;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import sagex.miniclient.MiniClient;
-import sagex.miniclient.android.MiniclientApplication;
-import sagex.miniclient.android.prefs.AndroidPrefStore;
-import sagex.miniclient.prefs.PrefStore;
-
 /**
  * Full-screen submenu with two sections:
  * 1) Download sidecar refresh selections + Refresh button
- * 2) Remux format selections + Remux button
+ * 2) Remux format selections + immediate Remux button
  */
 public class OfflineRefreshMenuActivity extends Activity {
     private static final Logger log = LoggerFactory.getLogger(OfflineRefreshMenuActivity.class);
@@ -48,14 +43,12 @@ public class OfflineRefreshMenuActivity extends Activity {
     private TextView cbComskip;
     private TextView cbTranscript;
 
-    // Remux selection: null = none
-    private String selectedRemuxFormat = null;
+    private DownloadManager.RemuxMode selectedRemuxMode = DownloadManager.RemuxMode.AUTO;
 
     // Remux radio indicators
-    private TextView rbNone;
+    private TextView rbAuto;
     private TextView rbMkv;
-    private TextView rbDvd;
-    private TextView rbMpegTs;
+    private TextView rbMp4;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -80,9 +73,6 @@ public class OfflineRefreshMenuActivity extends Activity {
             finish();
             return;
         }
-
-        // Use current app setting as initial remux selection.
-        selectedRemuxFormat = readInitialRemuxSelection();
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -215,28 +205,24 @@ public class OfflineRefreshMenuActivity extends Activity {
 
     private void buildRemuxSection(LinearLayout parent) {
         parent.addView(sectionLabel("Muxing"));
-        parent.addView(sectionHint("Choose remux output format, then apply."));
+        parent.addView(sectionHint("Choose an output format, then remux this recording now."));
 
-        rbNone = addRadioRow(parent, "None",
-                "Disable fixed remuxing",
-                null, v -> selectRemuxFormat(null));
+        rbAuto = addRadioRow(parent, "Auto",
+            "Use MKV for MPEG inputs that need remuxing",
+            DownloadManager.RemuxMode.AUTO, v -> selectRemuxMode(DownloadManager.RemuxMode.AUTO));
 
         rbMkv = addRadioRow(parent, "Matroska (MKV)",
                 "Use Matroska container format",
-                "matroska", v -> selectRemuxFormat("matroska"));
+            DownloadManager.RemuxMode.MKV, v -> selectRemuxMode(DownloadManager.RemuxMode.MKV));
 
-        rbDvd = addRadioRow(parent, "DVD (MPEG-PS)",
-                "Use MPEG Program Stream (DVD-compatible)",
-                "dvd", v -> selectRemuxFormat("dvd"));
+        rbMp4 = addRadioRow(parent, "MP4",
+            "Use MP4 when the stream is compatible",
+            DownloadManager.RemuxMode.MP4, v -> selectRemuxMode(DownloadManager.RemuxMode.MP4));
 
-        rbMpegTs = addRadioRow(parent, "MPEG-TS",
-                "Use MPEG Transport Stream",
-                "mpegts", v -> selectRemuxFormat("mpegts"));
+        selectRemuxMode(selectedRemuxMode);
 
-        selectRemuxFormat(selectedRemuxFormat);
-
-        Button remuxBtn = primarySectionButton("Apply Remux Setting");
-        remuxBtn.setOnClickListener(v -> applyRemuxSelection());
+        Button remuxBtn = primarySectionButton("Remux Now");
+        remuxBtn.setOnClickListener(v -> runRemuxNow());
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -244,50 +230,19 @@ public class OfflineRefreshMenuActivity extends Activity {
         parent.addView(remuxBtn, lp);
     }
 
-    private String readInitialRemuxSelection() {
+    private void runRemuxNow() {
         try {
-            MiniClient client = MiniclientApplication.get().getClient();
-            if (client == null) return null;
-            PrefStore prefs = client.properties();
-            if (prefs == null) return null;
-            String remuxPref = prefs.getString(AndroidPrefStore.FIXED_REMUXING_PREFERENCE,
-                    AndroidPrefStore.FIXED_REMUXING_PREFERENCE_DEFAULT);
-            if ("off".equalsIgnoreCase(remuxPref)) {
-                return null;
-            }
-            return prefs.getString(AndroidPrefStore.FIXED_REMUXING_FORMAT,
-                    AndroidPrefStore.FIXED_REMUXING_FORMAT_DEFAULT);
-        } catch (Exception e) {
-            log.warn("Failed to read initial remux setting", e);
-            return null;
-        }
-    }
-
-    private void applyRemuxSelection() {
-        try {
-            MiniClient client = MiniclientApplication.get().getClient();
-            if (client == null || client.properties() == null) {
-                Toast.makeText(this, "Remux setting unavailable right now", Toast.LENGTH_SHORT).show();
+            if (meta == null || meta.getMediaFileID() == null) {
+                Toast.makeText(this, "Recording unavailable", Toast.LENGTH_SHORT).show();
                 return;
             }
-
-            PrefStore prefs = client.properties();
-            if (selectedRemuxFormat == null) {
-                prefs.setString(AndroidPrefStore.FIXED_REMUXING_PREFERENCE, "off");
-                Toast.makeText(this, "Remux set to None", Toast.LENGTH_SHORT).show();
-                finish();
-            } else {
-                prefs.setString(AndroidPrefStore.FIXED_REMUXING_PREFERENCE, "always");
-                prefs.setString(AndroidPrefStore.FIXED_REMUXING_FORMAT, selectedRemuxFormat);
-                String label = "matroska".equals(selectedRemuxFormat) ? "MKV"
-                        : "dvd".equals(selectedRemuxFormat) ? "DVD (MPEG-PS)"
-                        : "MPEG-TS";
-                Toast.makeText(this, "Remux set to " + label, Toast.LENGTH_SHORT).show();
-                finish();
-            }
+            DownloadManager.getInstance(this).executeAction(meta.getMediaFileID(),
+                    DownloadManager.ActionOptions.remux(selectedRemuxMode));
+            Toast.makeText(this, remuxLabel(selectedRemuxMode) + " remux queued", Toast.LENGTH_SHORT).show();
+            finish();
         } catch (Exception e) {
-            log.error("Failed to apply remux setting", e);
-            Toast.makeText(this, "Failed to save remux setting", Toast.LENGTH_SHORT).show();
+            log.error("Failed to queue remux", e);
+            Toast.makeText(this, "Failed to queue remux", Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -381,7 +336,7 @@ public class OfflineRefreshMenuActivity extends Activity {
     }
 
     private TextView addRadioRow(LinearLayout parent, String label, String description,
-                                 String formatCode, View.OnClickListener toggle) {
+                                 DownloadManager.RemuxMode mode, View.OnClickListener toggle) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -396,7 +351,7 @@ public class OfflineRefreshMenuActivity extends Activity {
         rb.setTextSize(14f);
         rb.setTypeface(null, Typeface.BOLD);
         rb.setBackgroundColor(0xFF0D1117);
-        updateRb(rb, eq(formatCode, selectedRemuxFormat));
+        updateRb(rb, mode == selectedRemuxMode);
 
         LinearLayout textBlock = new LinearLayout(this);
         textBlock.setOrientation(LinearLayout.VERTICAL);
@@ -444,16 +399,17 @@ public class OfflineRefreshMenuActivity extends Activity {
         rb.setBackgroundColor(selected ? 0xFF0D3D66 : 0xFF0D1117);
     }
 
-    private void selectRemuxFormat(String formatCode) {
-        selectedRemuxFormat = formatCode;
-        if (rbNone != null) updateRb(rbNone, selectedRemuxFormat == null);
-        if (rbMkv != null) updateRb(rbMkv, "matroska".equals(selectedRemuxFormat));
-        if (rbDvd != null) updateRb(rbDvd, "dvd".equals(selectedRemuxFormat));
-        if (rbMpegTs != null) updateRb(rbMpegTs, "mpegts".equals(selectedRemuxFormat));
+    private void selectRemuxMode(DownloadManager.RemuxMode mode) {
+        selectedRemuxMode = mode == null ? DownloadManager.RemuxMode.AUTO : mode;
+        if (rbAuto != null) updateRb(rbAuto, selectedRemuxMode == DownloadManager.RemuxMode.AUTO);
+        if (rbMkv != null) updateRb(rbMkv, selectedRemuxMode == DownloadManager.RemuxMode.MKV);
+        if (rbMp4 != null) updateRb(rbMp4, selectedRemuxMode == DownloadManager.RemuxMode.MP4);
     }
 
-    private boolean eq(String a, String b) {
-        return (a == null && b == null) || (a != null && a.equals(b));
+    private String remuxLabel(DownloadManager.RemuxMode mode) {
+        if (mode == DownloadManager.RemuxMode.MKV) return "MKV";
+        if (mode == DownloadManager.RemuxMode.MP4) return "MP4";
+        return "Auto";
     }
 
     private void runRefresh() {

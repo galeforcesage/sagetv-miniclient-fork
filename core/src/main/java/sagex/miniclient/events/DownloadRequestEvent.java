@@ -18,8 +18,9 @@ package sagex.miniclient.events;
 import sagex.miniclient.DownloadRequest;
 
 /**
- * Posted to the EventBus when the server sends a PENDING_DOWNLOAD property
- * followed by FSCMD_DOWNLOAD_FILE. Android layer subscribes to enqueue the download.
+ * Posted to the EventBus when the server sends CMD_DOWNLOAD_REQUEST
+ * (type=TRANSFER_SESSION_ACK). Android layer subscribes to enqueue or update
+ * the download contract.
  */
 public class DownloadRequestEvent {
     private final DownloadRequest request;

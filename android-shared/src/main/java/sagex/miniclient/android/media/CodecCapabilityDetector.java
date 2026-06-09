@@ -97,6 +97,7 @@ public final class CodecCapabilityDetector
             case MPEG1:
             case MPEG2:
             case MPEG4:
+            case HEVC:
                 return false;
             default:
                 return true;

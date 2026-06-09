@@ -38,6 +38,8 @@ import sagex.miniclient.util.Utils;
 public class SettingsFragment extends PreferenceFragment
 {
     PrefStore prefs;
+    private Preference downloadsPref;
+    private android.preference.PreferenceCategory downloadsCategory;
 
 
     @Override
@@ -253,7 +255,8 @@ public class SettingsFragment extends PreferenceFragment
                 }
             });
 
-            Preference downloadsPref = this.findPreference("manage_downloads");
+            downloadsPref = this.findPreference("manage_downloads");
+            downloadsCategory = (android.preference.PreferenceCategory) findPreference("downloads_category");
             if (downloadsPref != null)
             {
                 if (sagex.miniclient.android.OfflineModuleBridge.isAvailable())
@@ -271,10 +274,8 @@ public class SettingsFragment extends PreferenceFragment
                 else
                 {
                     // Online-only flavour — hide the Downloads category entirely.
-                    android.preference.PreferenceCategory cat =
-                            (android.preference.PreferenceCategory) findPreference("downloads_category");
-                    if (cat != null) {
-                        getPreferenceScreen().removePreference(cat);
+                    if (downloadsCategory != null) {
+                        getPreferenceScreen().removePreference(downloadsCategory);
                     } else {
                         getPreferenceScreen().removePreference(downloadsPref);
                     }
@@ -386,6 +387,14 @@ public class SettingsFragment extends PreferenceFragment
         {
             t.printStackTrace();
         }
+    }
+
+    @Override
+    public void onResume()
+    {
+        super.onResume();
+        // Downloads category remains visible with Manage Downloads and the
+        // sidecar capability toggles only.
     }
     
     void updateClientIDSummary(Preference clientid, String value, ClientIDGenerator gen)

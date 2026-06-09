@@ -93,6 +93,15 @@ public class MainFragment extends BrowseFragment implements OnAddServerListener 
         refreshServers();
     }
 
+    @Override
+    public void onResume() {
+        super.onResume();
+        // Rebuild rows so the Offline Player action can appear immediately
+        // after snapshot sync/download activity updates local cache.
+        loadRows();
+        refreshServers();
+    }
+
     public void refreshServers() {
         // refresh the data in case last connected changed, etc
         serversAdapter.notifyArrayItemRangeChanged(0, serversAdapter.size());
@@ -161,10 +170,10 @@ public class MainFragment extends BrowseFragment implements OnAddServerListener 
         action.setBackground(R.drawable.back_film_roll);
         gridRowAdapter.add(action);
 
-        // Show "Offline Library" action only in the mobile flavour (when the
-        // optional android-offline module is present) and only if there is at
-        // least one download in the local store.
-        if (OfflineModuleBridge.hasAnyDownloads(getActivity())) {
+        // Show offline action only when the offline module is present AND there is
+        // at least one offline content source: recording, guide, schedule, favorites.
+        if (OfflineModuleBridge.isAvailable()
+            && OfflineModuleBridge.hasAnyOfflineContent(getActivity().getApplicationContext())) {
             action = new Action(R.id.offline_library, getString(R.string.offline_library));
             action.setBackground(R.drawable.back_film_roll);
             gridRowAdapter.add(action);
@@ -293,7 +302,7 @@ public class MainFragment extends BrowseFragment implements OnAddServerListener 
                 }
                 else if (action.getActionId() == R.id.offline_library)
                 {
-                    OfflineModuleBridge.launchOfflineLibrary(getActivity());
+                    OfflineModuleBridge.launchOfflineHome(getActivity());
                 }
                 else
                 {

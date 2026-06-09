@@ -1,0 +1,260 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Offline soft remote overlay - media playback controls only.
+  Simplified for playback context: top-left quick actions and bottom transport controls.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="0dp"
+    android:clickable="false"
+    android:focusable="false">
+
+    <LinearLayout
+        android:id="@+id/offline_remote_top_left"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="start|top"
+        android:layout_marginStart="4dp"
+        android:layout_marginTop="4dp"
+        android:orientation="horizontal"
+        android:background="#80000000"
+        android:padding="4dp">
+
+        <ImageButton
+            android:id="@+id/offline_remote_menu"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:src="@drawable/ic_menu_white_24dp"
+            android:scaleType="centerInside"
+            android:contentDescription="Menu"
+            android:background="@drawable/offline_menu_item_bg" />
+
+        <ImageButton
+            android:id="@+id/offline_remote_info"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="4dp"
+            android:src="@drawable/ic_info_outline_white_24dp"
+            android:scaleType="centerInside"
+            android:contentDescription="Info"
+            android:background="@drawable/offline_menu_item_bg" />
+
+        <ImageButton
+            android:id="@+id/offline_remote_back"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="4dp"
+            android:src="@drawable/ic_undo_white_24dp"
+            android:scaleType="centerInside"
+            android:contentDescription="Back"
+            android:background="@drawable/offline_menu_item_bg" />
+
+        <ImageButton
+            android:id="@+id/offline_remote_home"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="4dp"
+            android:src="@drawable/ic_home_white_24dp"
+            android:scaleType="centerInside"
+            android:contentDescription="Home"
+            android:background="@drawable/offline_menu_item_bg" />
+
+        <ImageButton
+            android:id="@+id/offline_remote_help"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="4dp"
+            android:src="@drawable/ic_help_outline_white_24dp"
+            android:scaleType="centerInside"
+            android:contentDescription="Help"
+            android:background="@drawable/offline_menu_item_bg" />
+
+        <ImageButton
+            android:id="@+id/offline_remote_close"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="4dp"
+            android:src="@drawable/ic_close_white_24dp"
+            android:scaleType="centerInside"
+            android:contentDescription="Close"
+            android:background="@drawable/offline_menu_item_bg" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/offline_remote_top_right"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="end|top"
+        android:layout_marginEnd="4dp"
+        android:layout_marginTop="4dp"
+        android:orientation="horizontal"
+        android:background="#80000000"
+        android:padding="4dp">
+
+        <ImageButton
+            android:id="@+id/offline_remote_enter"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:src="@drawable/ic_exit_to_app_green_24dp"
+            android:scaleType="centerInside"
+            android:contentDescription="Close popup"
+            android:background="@drawable/offline_menu_item_bg" />
+    </LinearLayout>
+
+    <!--
+      Timebar host: free-floating sibling pinned to the bottom of the
+      popup. The activity (OfflinePlaybackActivity) reparents its
+      OfflineTimeBarView into this host whenever the overlay is attached,
+      and the OfflineNavigationOverlay sets its bottom margin at runtime
+      to position the bar at ~20% of screen height up from the bottom so
+      it doesn't overlap the transport row below.
+    -->
+    <FrameLayout
+        android:id="@+id/offline_remote_timebar_host"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:layout_marginStart="4dp"
+        android:layout_marginEnd="4dp" />
+
+    <!--
+      Bottom dock: transport row only. (The timebar lives in its own
+      sibling host above so it can sit higher on the screen than the
+      buttons.)
+    -->
+    <LinearLayout
+        android:id="@+id/offline_remote_bottom_dock"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:orientation="vertical"
+        android:layout_marginStart="4dp"
+        android:layout_marginEnd="4dp"
+        android:layout_marginBottom="4dp">
+
+        <LinearLayout
+            android:id="@+id/offline_remote_player_row"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="#80000000"
+            android:padding="4dp"
+            android:visibility="visible">
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <LinearLayout
+                android:id="@+id/offline_remote_player_controls"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center">
+
+                <ImageButton
+                    android:id="@+id/offline_remote_skip_back"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:src="@drawable/ic_skip_previous_white_24dp"
+                    android:scaleType="centerInside"
+                    android:contentDescription="Skip back"
+                    android:background="@drawable/offline_menu_item_bg" />
+
+                <ImageButton
+                    android:id="@+id/offline_remote_rew"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:layout_marginStart="4dp"
+                    android:src="@drawable/ic_fast_rewind_white_24dp"
+                    android:scaleType="centerInside"
+                    android:contentDescription="Rewind"
+                    android:background="@drawable/offline_menu_item_bg" />
+
+                <ImageButton
+                    android:id="@+id/offline_remote_stop"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:layout_marginStart="4dp"
+                    android:src="@drawable/ic_stop_white_24dp"
+                    android:scaleType="centerInside"
+                    android:contentDescription="Stop"
+                    android:background="@drawable/offline_menu_item_bg" />
+
+                <ImageButton
+                    android:id="@+id/offline_remote_pause"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:layout_marginStart="4dp"
+                    android:src="@drawable/ic_pause_white_24dp"
+                    android:scaleType="centerInside"
+                    android:contentDescription="Pause"
+                    android:background="@drawable/offline_menu_item_bg" />
+
+                <ImageButton
+                    android:id="@+id/offline_remote_play"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:layout_marginStart="4dp"
+                    android:src="@drawable/ic_play_arrow_white_24dp"
+                    android:scaleType="centerInside"
+                    android:contentDescription="Play"
+                    android:background="@drawable/offline_menu_item_bg" />
+
+                <ImageButton
+                    android:id="@+id/offline_remote_ff"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:layout_marginStart="4dp"
+                    android:src="@drawable/ic_fast_forward_white_24dp"
+                    android:scaleType="centerInside"
+                    android:contentDescription="Fast forward"
+                    android:background="@drawable/offline_menu_item_bg" />
+
+                <ImageButton
+                    android:id="@+id/offline_remote_skip_forward"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:layout_marginStart="4dp"
+                    android:src="@drawable/ic_skip_next_white_24dp"
+                    android:scaleType="centerInside"
+                    android:contentDescription="Skip forward"
+                    android:background="@drawable/offline_menu_item_bg" />
+
+            </LinearLayout>
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <ImageButton
+                    android:id="@+id/offline_remote_aspect"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:src="@drawable/ic_aspect_ratio_white_24dp"
+                    android:scaleType="centerInside"
+                    android:contentDescription="Cycle aspect mode"
+                    android:background="@drawable/offline_menu_item_bg" />
+
+                <ImageButton
+                    android:id="@+id/offline_remote_rotate"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:layout_marginStart="4dp"
+                    android:src="@drawable/ic_screen_rotation_white_24dp"
+                    android:scaleType="centerInside"
+                    android:contentDescription="Rotate screen"
+                    android:background="@drawable/offline_menu_item_bg" />
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>

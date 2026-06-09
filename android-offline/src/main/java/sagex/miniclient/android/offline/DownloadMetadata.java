@@ -112,6 +112,7 @@ public class DownloadMetadata {
     // Per-recording options persisted in SQLite.
     private boolean watched;
     private boolean autoComskip;
+    private long playbackPositionMs;
     // User-selected sidecar refresh function flags. Stored in the per-row
     // JSON payload in SQLite so refresh can execute checked functions.
     private boolean sidecarSelectionConfigured;
@@ -561,6 +562,14 @@ public class DownloadMetadata {
 
     public void setAutoComskip(boolean autoComskip) {
         this.autoComskip = autoComskip;
+    }
+
+    public long getPlaybackPositionMs() {
+        return playbackPositionMs;
+    }
+
+    public void setPlaybackPositionMs(long playbackPositionMs) {
+        this.playbackPositionMs = Math.max(0L, playbackPositionMs);
     }
 
     public boolean isSidecarSelectionConfigured() {

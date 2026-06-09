@@ -26,7 +26,6 @@ import sagex.miniclient.android.MiniclientApplication;
 import sagex.miniclient.android.ui.settings.SettingsActivity;
 import sagex.miniclient.android.tv.MainActivity;
 import sagex.miniclient.android.tv.R;
-import sagex.miniclient.android.util.AudioUtil;
 import sagex.miniclient.prefs.PrefStore;
 import sagex.miniclient.prefs.PrefStore.Keys;
 
@@ -147,8 +146,10 @@ public class ServersActivity extends Activity implements OnAddServerListener {
     @Override
     protected void onResume() {
         super.onResume();
-        AudioUtil.requestAudioFocus(this);
         paused = false;
+        if (adapter != null) {
+            adapter.refreshOfflineTilePresence();
+        }
         refreshServers();
         AppUtil.hideSystemUIOnTV(this);
         MiniclientApplication.get(this).getClient().eventbus().register(this);
@@ -169,6 +170,9 @@ public class ServersActivity extends Activity implements OnAddServerListener {
     }
 
     public void refreshServers() {
+        if (adapter != null) {
+            adapter.refreshOfflineTilePresence();
+        }
         // refresh the data in case last connected changed, etc
         adapter.notifyDataSetChanged();
 
