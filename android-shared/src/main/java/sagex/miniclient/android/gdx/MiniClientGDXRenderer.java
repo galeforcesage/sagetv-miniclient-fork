@@ -712,8 +712,10 @@ public class MiniClientGDXRenderer implements ApplicationListener, UIRenderer<Gd
         }
 
         synchronized (renderQueue) {
-            renderQueue.addAll(frameQueue);
-            frameQueue.clear();
+            synchronized (frameQueue) {
+                renderQueue.addAll(frameQueue);
+                frameQueue.clear();
+            }
         }
         Gdx.graphics.requestRendering();
         if (logFrameTime) {
@@ -822,7 +824,9 @@ public class MiniClientGDXRenderer implements ApplicationListener, UIRenderer<Gd
 
     @Override
     public void invokeLater(Runnable runnable) {
-        frameQueue.add(runnable);
+        synchronized (frameQueue) {
+            frameQueue.add(runnable);
+        }
     }
 
     @Override

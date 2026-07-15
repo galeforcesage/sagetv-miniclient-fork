@@ -4,6 +4,7 @@ public class ImageHolder<T extends Texture> extends Holder<T> {
     private int handle=-1;
     private int width;
     private int height;
+    private volatile boolean decodePending;
 
     public ImageHolder() {
     }
@@ -27,6 +28,18 @@ public class ImageHolder<T extends Texture> extends Holder<T> {
         return handle;
     }
 
+    /**
+     * Returns true if this image is still being decoded on a background thread.
+     * Draw commands should skip this image until decode completes.
+     */
+    public boolean isDecodePending() {
+        return decodePending;
+    }
+
+    public void setDecodePending(boolean pending) {
+        this.decodePending = pending;
+    }
+
     // release resources for this image
     public void dispose() {
         if (get() instanceof  Disposable) {
@@ -39,6 +52,7 @@ public class ImageHolder<T extends Texture> extends Holder<T> {
         this.handle=-1;
         this.width=0;
         this.height=0;
+        this.decodePending = false;
     }
 
     public void setHandle(int handle) {

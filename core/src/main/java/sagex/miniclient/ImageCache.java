@@ -18,8 +18,11 @@ public class ImageCache
     private File cacheDir;
     private final MiniClient client;
     private long imageCacheSize;
-    private java.util.Map<Integer, Long> lruImageMap = new java.util.LinkedHashMap<Integer, Long>(16, 0.75f, true);
-    private java.util.Map<Integer, sagex.miniclient.uibridge.ImageHolder> imageMap = new java.util.HashMap<Integer, sagex.miniclient.uibridge.ImageHolder>();
+    // Access-order LRU (getOldestImage relies on iteration order) wrapped for
+    // thread-safety now that image decode happens off the UI thread. Iterate
+    // only inside synchronized(lruImageMap) per Collections.synchronizedMap.
+    private final java.util.Map<Integer, Long> lruImageMap = java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<Integer, Long>(16, 0.75f, true));
+    private final java.util.Map<Integer, sagex.miniclient.uibridge.ImageHolder> imageMap = new java.util.concurrent.ConcurrentHashMap<Integer, sagex.miniclient.uibridge.ImageHolder>();
     private ILogger log;
 
     public ImageCache(MiniClient client, ILogger log)
@@ -281,10 +284,13 @@ public class ImageCache
 
     public int getOldestImage()
     {
-        java.util.Iterator<java.util.Map.Entry<Integer, Long>> walker = lruImageMap.entrySet().iterator();
-        if (walker.hasNext())
+        synchronized (lruImageMap)
         {
-            return walker.next().getKey();
+            java.util.Iterator<java.util.Map.Entry<Integer, Long>> walker = lruImageMap.entrySet().iterator();
+            if (walker.hasNext())
+            {
+                return walker.next().getKey();
+            }
         }
         return 0;
     }

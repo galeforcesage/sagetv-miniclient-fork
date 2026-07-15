@@ -598,8 +598,10 @@ public class OpenGLRenderer implements UIRenderer<OpenGLTexture>, GLSurfaceView.
         }
 
         synchronized (renderQueue) {
-            renderQueue.addAll(frameQueue);
-            frameQueue.clear();
+            synchronized (frameQueue) {
+                renderQueue.addAll(frameQueue);
+                frameQueue.clear();
+            }
         }
 
         // request a render frame
@@ -696,9 +698,10 @@ public class OpenGLRenderer implements UIRenderer<OpenGLTexture>, GLSurfaceView.
 
     @Override
     public void invokeLater(Runnable runnable) {
-        frameQueue.add(runnable);
+        synchronized (frameQueue) {
+            frameQueue.add(runnable);
+        }
     }
-
     @Override
     public Scale getScale() {
         return scale;

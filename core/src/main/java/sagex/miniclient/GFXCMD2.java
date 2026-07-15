@@ -412,7 +412,10 @@ public class GFXCMD2 {
                     srcwidth = readInt(28, cmddata);
                     srcheight = readInt(32, cmddata);
                     blend = readInt(36, cmddata);
-                    windowManager.drawTexture(x, y, width, height, handle, client.getImageCache().get(handle), srcx, srcy, srcwidth, srcheight, blend);
+                    sagex.miniclient.uibridge.ImageHolder texImg = client.getImageCache().get(handle);
+                    if (texImg != null && !texImg.isDecodePending()) {
+                        windowManager.drawTexture(x, y, width, height, handle, texImg, srcx, srcy, srcwidth, srcheight, blend);
+                    }
                     client.getImageCache().registerImageAccess(handle);
                 } else {
                     log.warn("Invalid len for GFXCMD_DRAWTEXTURED: {}", len);
@@ -810,9 +813,7 @@ public class GFXCMD2 {
                     String resID = null;
                     try {
                         boolean cacheAdd = false;
-                        //log.debug("LoadImageCompressed: {}", handle);
                         if (lastImageResourceID != null && lastImageResourceIDHandle == handle) {
-                            //log.debug("LoadImageCompressed: {}, {}", handle, lastImageResourceID);
                             cacheFile = client.getImageCache().getCachedImageFile(lastImageResourceID, false);
                             resID = lastImageResourceID;
                             if (cacheFile != null && (!cacheFile.isFile() || cacheFile.length() == 0))
@@ -846,20 +847,43 @@ public class GFXCMD2 {
                             hasret[0] = 1;
                         } else
                             hasret[0] = 0;
-                        //log.debug("LOADIMAGE: AdvancedImageCaching: {}, Handle: {}, Return: {}", myConn.doesUseAdvancedImageCaching(), handle, hasret[0]);
-                        try {
-                            //log.debug("LoadImageCompressed: {}, reading Cached File: {}", handle, cacheFile);
-                            sagex.miniclient.uibridge.ImageHolder img = null;
-                            img = windowManager.readImage(cacheFile);
-                            img.setHandle(handle);
-                            client.getImageCache().put(handle, img, img.getWidth(), img.getHeight());
-                            windowManager.registerTexture(img);
-                            if (deleteCacheFile)
-                                cacheFile.delete();
-                            return handle;
-                        } catch (Exception e) {
-                            log.error("ERROR loading compressed image", e);
-                        }
+
+                        // Async image decode: BitmapFactory.decodeStream is the bottleneck.
+                        // Write file synchronously (fast), decode on background thread.
+                        // The image will appear on the next frame after decode completes.
+                        final java.io.File asyncFile = cacheFile;
+                        final int asyncHandle = handle;
+                        final boolean asyncDelete = deleteCacheFile;
+
+                        // Create placeholder marked as decode-pending
+                        sagex.miniclient.uibridge.ImageHolder placeholder = new sagex.miniclient.uibridge.ImageHolder();
+                        placeholder.setHandle(asyncHandle);
+                        placeholder.setDecodePending(true);
+                        client.getImageCache().put(asyncHandle, placeholder, 1, 1);
+
+                        client.getBackgroundService().submit(new Runnable() {
+                            @Override
+                            public void run() {
+                                try {
+                                    sagex.miniclient.uibridge.ImageHolder img = windowManager.readImage(asyncFile);
+                                    if (img != null) {
+                                        img.setHandle(asyncHandle);
+                                        img.setDecodePending(false);
+                                        client.getImageCache().put(asyncHandle, img, img.getWidth(), img.getHeight());
+                                        windowManager.registerTexture(img);
+                                    } else {
+                                        log.error("Async decode returned null for handle {}", asyncHandle);
+                                    }
+                                } catch (Exception e) {
+                                    log.error("Async image decode failed for handle {}", asyncHandle, e);
+                                } finally {
+                                    if (asyncDelete) {
+                                        asyncFile.delete();
+                                    }
+                                }
+                            }
+                        });
+                        return handle;
                     }
                     if (deleteCacheFile && cacheFile != null)
                         cacheFile.delete();
