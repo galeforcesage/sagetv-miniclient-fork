@@ -346,6 +346,15 @@ public class MiniClientConnection implements SageTVInputCallback
     private boolean firstFrameStarted;
     private boolean performingReconnect;
 
+    // Reconnect with exponential backoff (aligned with PWA architecture)
+    private static final int MAX_RECONNECT_ATTEMPTS = 5;
+    private static final long RECONNECT_BASE_DELAY_MS = 1000;
+    private static final long RECONNECT_MAX_DELAY_MS = 16000;
+    private static final long SHORT_SESSION_THRESHOLD_MS = 30000;
+    private static final int SHORT_SESSION_STORM_LIMIT = 10;
+    private long connectionEstablishedTime;
+    private int shortSessionCount;
+
     private List<String> videoCodecs = new ArrayList<String>();
     private List<String> audioCodecs = new ArrayList<String>();
     private List<String> pushFormats = new ArrayList<String>();
@@ -848,6 +857,7 @@ public class MiniClientConnection implements SageTVInputCallback
         log.logInfo("Connected to gfx server: " + msi);
 
         client.setCurrentConnection(this);
+        connectionEstablishedTime = System.currentTimeMillis();
 
         alive = true;
         Thread t = new Thread("Media-" + msi.address) {
@@ -1321,9 +1331,32 @@ public class MiniClientConnection implements SageTVInputCallback
                         {
                             if (reconnectAllowed && alive && firstFrameStarted && !encryptEvents)
                             {
+                                // Short-session storm guard: track consecutive short sessions
+                                // like PWA's _shortSessionCount pattern
+                                long sessionAge = System.currentTimeMillis() - connectionEstablishedTime;
+                                if (sessionAge < SHORT_SESSION_THRESHOLD_MS)
+                                {
+                                    shortSessionCount++;
+                                    if (shortSessionCount >= SHORT_SESSION_STORM_LIMIT)
+                                    {
+                                        log.logError("Reconnect storm detected: " + shortSessionCount
+                                                + " consecutive short sessions (<" + SHORT_SESSION_THRESHOLD_MS
+                                                + "ms). Aborting reconnect.", e);
+                                        synchronized (gfxSyncVector)
+                                        {
+                                            gfxSyncVector.add(e);
+                                            return;
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    shortSessionCount = 0;
+                                }
+
                                 performingReconnect = true;
                                 enabledzip = false;
-                                log.logError("GFX channel detected a connection error and we're in a mode that allows reconnect...try to reconnect to the server now", e);
+                                log.logError("GFX channel detected a connection error, attempting reconnect with exponential backoff", e);
                                 try
                                 {
                                     myStream.close();
@@ -1342,29 +1375,61 @@ public class MiniClientConnection implements SageTVInputCallback
                                 }
                                 catch (Exception e1) { }
 
-                                try
+                                // Exponential backoff reconnect loop
+                                boolean reconnected = false;
+                                for (int attempt = 0; attempt < MAX_RECONNECT_ATTEMPTS; attempt++)
                                 {
-                                    gfxSocket = EstablishServerConnection(5);
-                                    if (gfxSocket == null) throw new Exception("Failed to reconnect to server.  Unable to establish Graphics Socket.");
-                                    eventChannel = new java.io.DataOutputStream(new java.io.BufferedOutputStream(gfxSocket.getOutputStream()));
-                                    myStream = gfxIs = new java.io.DataInputStream(gfxSocket.getInputStream());
-
-                                    if (zipMode && !enabledzip)
+                                    long delay = Math.min(
+                                            RECONNECT_BASE_DELAY_MS * (1L << attempt),
+                                            RECONNECT_MAX_DELAY_MS);
+                                    log.logInfo("Reconnect attempt " + (attempt + 1) + "/" + MAX_RECONNECT_ATTEMPTS + " after " + delay + "ms");
+                                    try
                                     {
-                                        // Recreate stream wrappers with ZLIB
-                                        com.jcraft.jzlib.ZInputStream zs = new com.jcraft.jzlib.ZInputStream(gfxSocket.getInputStream(), true);
-                                        zs.setFlushMode(com.jcraft.jzlib.JZlib.Z_SYNC_FLUSH);
-                                        myStream = new java.io.DataInputStream(zs);
-                                        enabledzip = true;
+                                        Thread.sleep(delay);
                                     }
-                                    log.logInfo("Done doing server reconnect...continue on our merry way!");
-                                }
-                                catch (Exception e1)
-                                {
-                                    log.logError("Failure in reconnecting to server...abort the client", e1);
-                                    performingReconnect = false;
+                                    catch (InterruptedException ie)
+                                    {
+                                        Thread.currentThread().interrupt();
+                                        break;
+                                    }
 
-                                    if (client!=null)
+                                    if (!alive) break;
+
+                                    try
+                                    {
+                                        gfxSocket = EstablishServerConnection(5);
+                                        if (gfxSocket == null)
+                                        {
+                                            log.logWarning("Reconnect attempt " + (attempt + 1) + " failed: null socket");
+                                            continue;
+                                        }
+                                        eventChannel = new java.io.DataOutputStream(new java.io.BufferedOutputStream(gfxSocket.getOutputStream()));
+                                        myStream = gfxIs = new java.io.DataInputStream(gfxSocket.getInputStream());
+
+                                        if (zipMode && !enabledzip)
+                                        {
+                                            com.jcraft.jzlib.ZInputStream zs = new com.jcraft.jzlib.ZInputStream(gfxSocket.getInputStream(), true);
+                                            zs.setFlushMode(com.jcraft.jzlib.JZlib.Z_SYNC_FLUSH);
+                                            myStream = new java.io.DataInputStream(zs);
+                                            enabledzip = true;
+                                        }
+                                        reconnected = true;
+                                        connectionEstablishedTime = System.currentTimeMillis();
+                                        shortSessionCount = 0;
+                                        log.logInfo("Reconnect succeeded on attempt " + (attempt + 1));
+                                        break;
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        log.logWarning("Reconnect attempt " + (attempt + 1) + " failed: " + ex.getMessage());
+                                    }
+                                }
+
+                                if (!reconnected)
+                                {
+                                    log.logError("All " + MAX_RECONNECT_ATTEMPTS + " reconnect attempts failed, aborting client");
+                                    performingReconnect = false;
+                                    if (client != null)
                                     {
                                         client.eventbus().post(new ConnectionLost(performingReconnect));
                                     }
