@@ -41,15 +41,15 @@ public final class NgPlaybackContextStore {
             return;
         }
 
-        String url = pendingOpenUrl;
-        NgPlaybackContext previous = current;
-        NgPlaybackContext newContext = NgPlaybackContextParser.parse(wireValue, url);
+        var url = pendingOpenUrl;
+        var previous = current;
+        var newContext = NgPlaybackContextParser.parse(wireValue, url);
         current = newContext;
 
         log.debug("NG Playback Context updated: {}", newContext);
 
         if (eventBus != null) {
-            eventBus.post(new NgPlaybackContextEvent(previous, newContext));
+            eventBus.post(new NgPlaybackContextEvent.Updated(previous, newContext));
         }
     }
 
@@ -80,10 +80,10 @@ public final class NgPlaybackContextStore {
     }
 
     private void clear() {
-        NgPlaybackContext previous = current;
+        var previous = current;
         current = null;
         if (previous != null && eventBus != null) {
-            eventBus.post(new NgPlaybackContextEvent(previous, null));
+            eventBus.post(new NgPlaybackContextEvent.Cleared(previous));
         }
     }
 }

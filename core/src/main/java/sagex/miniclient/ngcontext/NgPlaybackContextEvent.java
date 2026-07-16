@@ -2,26 +2,13 @@ package sagex.miniclient.ngcontext;
 
 /**
  * Bus event posted when the NG playback context changes (new media opened, context received,
- * or media closed). Subscribers should null-check both fields.
+ * or media closed). Uses a sealed interface so consumers can pattern-match exhaustively.
  */
-public final class NgPlaybackContextEvent {
+public sealed interface NgPlaybackContextEvent {
 
-    /** Previous context, or null if this is the first context for this session. */
-    public final NgPlaybackContext previous;
+    /** Context was received or updated while media is playing. */
+    record Updated(NgPlaybackContext previous, NgPlaybackContext current) implements NgPlaybackContextEvent {}
 
-    /** Current context, or null if media was closed. */
-    public final NgPlaybackContext current;
-
-    public NgPlaybackContextEvent(NgPlaybackContext previous, NgPlaybackContext current) {
-        this.previous = previous;
-        this.current = current;
-    }
-
-    @Override
-    public String toString() {
-        return "NgPlaybackContextEvent{" +
-                "previous=" + previous +
-                ", current=" + current +
-                '}';
-    }
+    /** Media was closed — context cleared. */
+    record Cleared(NgPlaybackContext previous) implements NgPlaybackContextEvent {}
 }

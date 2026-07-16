@@ -26,7 +26,6 @@ public class NgPlaybackContextStoreTest {
     @Test
     public void testOnMediaOpenSetsUrl() {
         store.onMediaOpen("push:test.mpg");
-        // Context is still null until server sends property
         assertNull(store.getCurrent());
     }
 
@@ -35,12 +34,12 @@ public class NgPlaybackContextStoreTest {
         store.onMediaOpen("push:video.ts");
         store.onPropertyReceived("mediaFileId=123|title=Hello|durationMs=5000|contentType=recording|isLive=false");
 
-        NgPlaybackContext ctx = store.getCurrent();
+        var ctx = store.getCurrent();
         assertNotNull(ctx);
-        assertEquals("123", ctx.getMediaFileId());
-        assertEquals("Hello", ctx.getTitle());
-        assertEquals(5000L, ctx.getDurationMs());
-        assertEquals("push:video.ts", ctx.getOpenUrl());
+        assertEquals("123", ctx.mediaFileId());
+        assertEquals("Hello", ctx.title());
+        assertEquals(5000L, ctx.durationMs());
+        assertEquals("push:video.ts", ctx.openUrl());
     }
 
     @Test
@@ -49,11 +48,11 @@ public class NgPlaybackContextStoreTest {
         store.onPropertyReceived("mediaFileId=1|title=T|durationMs=100|contentType=music|isLive=false");
 
         assertNotNull(testBus.lastEvent);
-        assertTrue(testBus.lastEvent instanceof NgPlaybackContextEvent);
-        NgPlaybackContextEvent evt = (NgPlaybackContextEvent) testBus.lastEvent;
-        assertNull(evt.previous);
-        assertNotNull(evt.current);
-        assertEquals("1", evt.current.getMediaFileId());
+        assertInstanceOf(NgPlaybackContextEvent.Updated.class, testBus.lastEvent);
+        var evt = (NgPlaybackContextEvent.Updated) testBus.lastEvent;
+        assertNull(evt.previous());
+        assertNotNull(evt.current());
+        assertEquals("1", evt.current().mediaFileId());
     }
 
     @Test
@@ -65,10 +64,10 @@ public class NgPlaybackContextStoreTest {
         store.onMediaClose();
         assertNull(store.getCurrent());
 
-        // Should have posted an event with null current
-        NgPlaybackContextEvent evt = (NgPlaybackContextEvent) testBus.lastEvent;
-        assertNotNull(evt.previous);
-        assertNull(evt.current);
+        assertInstanceOf(NgPlaybackContextEvent.Cleared.class, testBus.lastEvent);
+        var evt = (NgPlaybackContextEvent.Cleared) testBus.lastEvent;
+        assertNotNull(evt.previous());
+        assertEquals("1", evt.previous().mediaFileId());
     }
 
     @Test
@@ -87,20 +86,19 @@ public class NgPlaybackContextStoreTest {
         store.onPropertyReceived("mediaFileId=1|title=First|durationMs=100|contentType=recording|isLive=false");
         store.onPropertyReceived("mediaFileId=2|title=Second|durationMs=200|contentType=live|isLive=true");
 
-        NgPlaybackContext ctx = store.getCurrent();
-        assertEquals("2", ctx.getMediaFileId());
-        assertEquals("Second", ctx.getTitle());
+        var ctx = store.getCurrent();
+        assertEquals("2", ctx.mediaFileId());
+        assertEquals("Second", ctx.title());
         assertTrue(ctx.isLive());
 
-        // Event should have previous
-        NgPlaybackContextEvent evt = (NgPlaybackContextEvent) testBus.lastEvent;
-        assertNotNull(evt.previous);
-        assertEquals("1", evt.previous.getMediaFileId());
+        var evt = (NgPlaybackContextEvent.Updated) testBus.lastEvent;
+        assertNotNull(evt.previous());
+        assertEquals("1", evt.previous().mediaFileId());
     }
 
     @Test
     public void testNullBusDoesNotCrash() {
-        NgPlaybackContextStore nullBusStore = new NgPlaybackContextStore(null);
+        var nullBusStore = new NgPlaybackContextStore(null);
         nullBusStore.onMediaOpen("push:x");
         nullBusStore.onPropertyReceived("mediaFileId=1|title=T|durationMs=100|contentType=music|isLive=false");
         assertNotNull(nullBusStore.getCurrent());
@@ -108,9 +106,6 @@ public class NgPlaybackContextStoreTest {
         assertNull(nullBusStore.getCurrent());
     }
 
-    /**
-     * Simple test bus implementation that captures the last posted event.
-     */
     private static class TestBus implements IBus {
         Object lastEvent;
 

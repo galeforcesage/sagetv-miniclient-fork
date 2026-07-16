@@ -1,7 +1,7 @@
 package sagex.miniclient.ngcontext;
 
-import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -16,8 +16,6 @@ import java.util.Map;
  */
 public final class NgPlaybackContextParser {
 
-    private static final String CHARSET = "UTF-8";
-
     private NgPlaybackContextParser() { }
 
     /**
@@ -28,7 +26,7 @@ public final class NgPlaybackContextParser {
      * @return parsed context, never null
      */
     public static NgPlaybackContext parse(String wireValue, String openUrl) {
-        Map<String, String> map = parseToMap(wireValue);
+        var map = parseToMap(wireValue);
         return fromMap(map, openUrl);
     }
 
@@ -36,78 +34,50 @@ public final class NgPlaybackContextParser {
      * Build an NgPlaybackContext from a pre-parsed map. Useful for testing.
      */
     public static NgPlaybackContext fromMap(Map<String, String> map, String openUrl) {
-        NgPlaybackContext.Builder builder = new NgPlaybackContext.Builder();
-        builder.openUrl(openUrl);
+        var builder = new NgPlaybackContext.Builder().openUrl(openUrl);
+        var extras = new HashMap<String, String>();
 
-        Map<String, String> extras = new HashMap<String, String>();
+        for (var entry : map.entrySet()) {
+            var key = entry.getKey();
+            var val = entry.getValue();
 
-        for (Map.Entry<String, String> entry : map.entrySet()) {
-            String key = entry.getKey();
-            String val = entry.getValue();
-
-            if ("mediaFileId".equals(key)) {
-                builder.mediaFileId(val);
-            } else if ("title".equals(key)) {
-                builder.title(val);
-            } else if ("durationMs".equals(key)) {
-                builder.durationMs(parseLong(val, -1));
-            } else if ("contentType".equals(key)) {
-                builder.contentType(val);
-            } else if ("isLive".equals(key)) {
-                builder.isLive(parseBoolean(val));
-            } else if ("isTimeshifted".equals(key)) {
-                builder.isTimeshifted(parseBoolean(val));
-            } else if ("scheduledStartMs".equals(key)) {
-                builder.scheduledStartMs(parseLong(val, 0));
-            } else if ("scheduledEndMs".equals(key)) {
-                builder.scheduledEndMs(parseLong(val, 0));
-            } else if ("chapterMarksMs".equals(key)) {
-                builder.chapterMarksMs(parseLongArray(val));
-            } else if ("commercialBreaksMs".equals(key)) {
-                builder.commercialBreaksMs(parseLongArray(val));
-            } else if ("seekableByClient".equals(key)) {
-                builder.seekableByClient(parseBoolean(val));
-            } else {
-                extras.put(key, val);
+            switch (key) {
+                case "mediaFileId" -> builder.mediaFileId(val);
+                case "title" -> builder.title(val);
+                case "durationMs" -> builder.durationMs(parseLong(val, -1));
+                case "contentType" -> builder.contentType(val);
+                case "isLive" -> builder.isLive(parseBoolean(val));
+                case "isTimeshifted" -> builder.isTimeshifted(parseBoolean(val));
+                case "scheduledStartMs" -> builder.scheduledStartMs(parseLong(val, 0));
+                case "scheduledEndMs" -> builder.scheduledEndMs(parseLong(val, 0));
+                case "chapterMarksMs" -> builder.chapterMarksMs(parseLongArray(val));
+                case "commercialBreaksMs" -> builder.commercialBreaksMs(parseLongArray(val));
+                case "seekableByClient" -> builder.seekableByClient(parseBoolean(val));
+                default -> extras.put(key, val);
             }
         }
 
         if (!extras.isEmpty()) {
             builder.extras(extras);
         }
-
         return builder.build();
     }
 
-    /**
-     * Parse the wire string into a raw key-value map.
-     */
+    /** Parse the wire string into a raw key-value map. */
     static Map<String, String> parseToMap(String wireValue) {
-        Map<String, String> map = new HashMap<String, String>();
         if (wireValue == null || wireValue.isEmpty()) {
-            return map;
+            return Map.of();
         }
 
-        String[] pairs = wireValue.split("\\|");
-        for (String pair : pairs) {
+        var map = new HashMap<String, String>();
+        for (var pair : wireValue.split("\\|")) {
             int eqIdx = pair.indexOf('=');
             if (eqIdx <= 0) continue;
-            String key = pair.substring(0, eqIdx).trim();
-            String rawVal = pair.substring(eqIdx + 1);
-            String val = urlDecode(rawVal);
-            map.put(key, val);
+            var key = pair.substring(0, eqIdx).trim();
+            var rawVal = pair.substring(eqIdx + 1);
+            map.put(key, URLDecoder.decode(rawVal, StandardCharsets.UTF_8));
         }
         return map;
-    }
-
-    private static String urlDecode(String val) {
-        try {
-            return URLDecoder.decode(val, CHARSET);
-        } catch (UnsupportedEncodingException e) {
-            return val;
-        } catch (IllegalArgumentException e) {
-            return val;
-        }
     }
 
     private static long parseLong(String val, long defaultVal) {
@@ -125,21 +95,16 @@ public final class NgPlaybackContextParser {
 
     private static long[] parseLongArray(String val) {
         if (val == null || val.isEmpty()) return new long[0];
-        String[] parts = val.split(",");
-        long[] result = new long[parts.length];
+        var parts = val.split(",");
+        var result = new long[parts.length];
         int count = 0;
-        for (String part : parts) {
+        for (var part : parts) {
             try {
                 result[count++] = Long.parseLong(part.trim());
             } catch (NumberFormatException e) {
                 // skip malformed entries
             }
         }
-        if (count < result.length) {
-            long[] trimmed = new long[count];
-            System.arraycopy(result, 0, trimmed, 0, count);
-            return trimmed;
-        }
-        return result;
+        return count < result.length ? java.util.Arrays.copyOf(result, count) : result;
     }
 }
