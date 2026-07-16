@@ -23,6 +23,7 @@ import java.util.concurrent.Executors;
 
 import sagex.miniclient.events.ConnectedEvent;
 import sagex.miniclient.logging.ILogger;
+import sagex.miniclient.ngcontext.NgPlaybackContextStore;
 import sagex.miniclient.prefs.PrefStore;
 
 /**
@@ -256,6 +257,14 @@ public class MiniClient
     public boolean isVideoVisible()
     {
         return currentConnection != null && currentConnection.getMediaCmd() != null && currentConnection.getMediaCmd().getPlaya() != null;
+    }
+
+    /**
+     * Returns the NG Playback Context store for the current connection, or null if not connected.
+     */
+    public NgPlaybackContextStore getPlaybackContextStore()
+    {
+        return currentConnection != null ? currentConnection.getPlaybackContextStore() : null;
     }
 
     public void prepareCodecs(List<String> videoCodecs, List<String> audioCodecs, List<String> pushFormats, List<String> pullFormats)

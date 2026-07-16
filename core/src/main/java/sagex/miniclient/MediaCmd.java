@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 
+import sagex.miniclient.ngcontext.NgPlaybackContextStore;
 import sagex.miniclient.prefs.PrefStore;
 import sagex.miniclient.uibridge.Dimension;
 import sagex.miniclient.uibridge.Rectangle;
@@ -189,6 +190,12 @@ public class MediaCmd
         pendingPushBuf = null;
         pendingPushSize = 0;
         pendingPushOverflow = false;
+
+        NgPlaybackContextStore contextStore = myConn.getPlaybackContextStore();
+        if (contextStore != null)
+        {
+            contextStore.onMediaClose();
+        }
     }
 
     public int ExecuteMediaCommand(int cmd, int len, byte[] cmddata, byte[] retbuf)
@@ -308,6 +315,13 @@ public class MediaCmd
                     }
                 }
                 writeInt(1, retbuf, 0);
+
+                // Notify NG context store of media open
+                NgPlaybackContextStore contextStore = myConn.getPlaybackContextStore();
+                if (contextStore != null)
+                {
+                    contextStore.onMediaOpen(urlString);
+                }
 
                 return 4;
             case MEDIACMD_GETMEDIATIME:

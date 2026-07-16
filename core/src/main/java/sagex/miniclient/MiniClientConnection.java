@@ -38,6 +38,7 @@ import sagex.miniclient.uibridge.MouseEvent;
 import sagex.miniclient.uibridge.UIRenderer;
 import sagex.miniclient.util.Utils;
 import sagex.miniclient.media.AudioCodec;
+import sagex.miniclient.ngcontext.NgPlaybackContextStore;
 
 
 public class MiniClientConnection implements SageTVInputCallback
@@ -362,6 +363,7 @@ public class MiniClientConnection implements SageTVInputCallback
 
     private MenuHint menuHint = new MenuHint();
     private Properties profileProperties;
+    private NgPlaybackContextStore playbackContextStore;
 
     /**
      * Resolves whether this connection should advertise the fixed Placeshifter
@@ -675,6 +677,7 @@ public class MiniClientConnection implements SageTVInputCallback
 
         this.msi = msi;
         usesAdvancedImageCaching = false;
+        this.playbackContextStore = new NgPlaybackContextStore(client.eventbus());
     }
 
     public MenuHint getMenuHint() {
@@ -2340,6 +2343,10 @@ public class MiniClientConnection implements SageTVInputCallback
                             propVal="";
                         }
                     }
+                    else if ("NG_PLAYBACK_CONTEXT_SUPPORTED".equals(propName))
+                    {
+                        propVal = "TRUE";
+                    }
 
                     if (propVal==null||propVal.isEmpty() && profileProperties!=null)
                     {
@@ -2554,6 +2561,16 @@ public class MiniClientConnection implements SageTVInputCallback
                             {
                                 uiRenderer.setVideoAdvancedAspect(propVal);
                             }
+                        }
+                        else if ("NG_PLAYBACK_CONTEXT".equals(propName))
+                        {
+                            propVal = new String(cmdbuffer, 4 + nameLen, valLen);
+                            log.logDebug("Received NG_PLAYBACK_CONTEXT: " + propVal);
+                            if (playbackContextStore != null)
+                            {
+                                playbackContextStore.onPropertyReceived(propVal);
+                            }
+                            retval = 0;
                         }
                         else if ("SET_CACHED_AUTH".equals(propName))
                         {
@@ -4349,6 +4366,10 @@ public class MiniClientConnection implements SageTVInputCallback
     }
     public GFXCMD2 getGfxCmd() {
         return myGfx;
+    }
+
+    public NgPlaybackContextStore getPlaybackContextStore() {
+        return playbackContextStore;
     }
 
     public boolean hasFontServer() {
