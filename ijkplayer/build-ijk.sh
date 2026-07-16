@@ -88,6 +88,33 @@ for ff_dir in android/contrib/ffmpeg-armv7a android/contrib/ffmpeg-arm64; do
     fi
 done
 
+# Fix SIGSEGV in ff_seek_frame_binary: null-check index_entries before access.
+# Older ffmpeg (used by ijkplayer) crashes when MPEG-PS demuxer calls
+# ff_seek_frame_binary on streams with no index (push/pipe sources).
+# Modern ffmpeg already guards this with `if (sti->index_entries)`.
+for ff_dir in android/contrib/ffmpeg-armv7a android/contrib/ffmpeg-arm64; do
+    utils="$ff_dir/libavformat/utils.c"
+    if [ -f "$utils" ] && grep -q 'ff_seek_frame_binary' "$utils"; then
+        # Guard: early-return when index_entries is NULL or empty.
+        # Insert right after the local variable declarations inside ff_seek_frame_binary.
+        if ! grep -q 'index_entries.*null-check patch' "$utils"; then
+            sed -i '/^int ff_seek_frame_binary/,/pos_limit = -1/{
+                /pos_limit = -1/a\
+\
+    /* null-check patch: prevent SIGSEGV on streams with no index (e.g. piped MPEG-PS) */\
+    if (stream_index >= 0 && stream_index < (int)s->nb_streams) {\
+        AVStream *_st = s->streams[stream_index];\
+        if (!_st->index_entries || _st->nb_index_entries <= 0) {\
+            av_log(s, AV_LOG_WARNING, "ff_seek_frame_binary: no index entries for stream %d, cannot seek\\n", stream_index);\
+            return -1;\
+        }\
+    } /* end null-check patch */
+            }' "$utils"
+            echo "Patched ff_seek_frame_binary null-check in $utils"
+        fi
+    fi
+done
+
 cd android/contrib/
 ./compile-ffmpeg.sh clean
 ./compile-ffmpeg.sh armv7a

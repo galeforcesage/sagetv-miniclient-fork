@@ -224,21 +224,12 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
 
         if (player != null && pushMode)
         {
-            log.debug("Flush in push mode: reset resume state, new data will arrive at new position");
-            // CRITICAL: TrickplayController.flush() (called from super.flush())
-            // only drains our native ring buffer. It does NOT touch IJK's
-            // internal ffmpeg packet queues / decoder queues, which can hold
-            // many seconds of pre-flush data. Without forcing IJK to drop
-            // those, FF/REW on Fold ↔ legacy server "does nothing" — the OSD
-            // advances but the picture keeps playing the old buffered frames.
-            //
-            // The seekToImpl(Long.MAX_VALUE) trick used in pull mode also
-            // works here as a pure "flush internal queues" signal:
-            // TransportIjkMediaSource.readAt() ignores the position arg and
-            // always returns the next bytes from our ring buffer head, so the
-            // seek itself is a no-op — but the act of starting the seek causes
-            // IJK to flush packet/decoder queues, then resume reading from
-            // our DS which now contains post-flush data from the new position.
+            log.debug("Flush in push mode: seeking to flush IJK internal queues");
+            // seekToImpl(Long.MAX_VALUE) signals IJK to flush its internal packet/decoder
+            // queues so stale frames don't persist after a server-driven seek.
+            // This is safe because libijkffmpeg.so now contains the null-check patch in
+            // ff_seek_frame_binary (see ijkplayer/build-ijk.sh) that prevents the SIGSEGV
+            // crash on MPEG-PS streams with no index entries.
             seekToImpl(Long.MAX_VALUE);
         }
         else if (player != null)
