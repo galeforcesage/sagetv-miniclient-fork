@@ -281,9 +281,15 @@ public final class CodecCapabilityDetector
         return false;
     }
 
-    /** Phase 3: IJKPlayer libavcodec covers the project's audio codec list. */
+    /**
+     * Phase 3: IJKPlayer libavcodec covers the project's audio codec list.
+     * Exception: AC-4 is not supported by the bundled FFmpeg/IJK build —
+     * advertising it would cause the server to send AC4 audio that IJK
+     * silently drops or errors on. The server should transcode to EAC3.
+     */
     public static boolean isAudioCodecSupportedByIjk(AudioCodec codec)
     {
+        if (codec == AudioCodec.AC4) return false;
         return true;
     }
 
