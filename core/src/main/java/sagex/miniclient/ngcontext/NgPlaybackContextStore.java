@@ -63,7 +63,10 @@ public final class NgPlaybackContextStore {
 
         // Manage live poller based on new context
         if (seekPolicy.needsLivePoll() && serverBaseUrl != null) {
-            livePoller.start(serverBaseUrl, seekPolicy.getLivePollIntervalMs());
+            String sid = newContext.sessionId();
+            if (sid != null && !sid.isEmpty()) {
+                livePoller.start(serverBaseUrl, sid, seekPolicy.getLivePollIntervalMs());
+            }
         } else if (!seekPolicy.needsLivePoll()) {
             livePoller.stop();
         }

@@ -23,6 +23,13 @@ public final class NgSeekPolicy {
     /** If context is older than this, consider it stale and disable policy. */
     private static final long STALENESS_THRESHOLD_MS = 30_000;
 
+    /**
+     * How close to safeSeekEndMs counts as "at edge" for ignore purposes.
+     * Intentionally tight (3s) — we want the first FF that overshoots to CLAMP to edge,
+     * and only ignore subsequent FFs once the player has actually reached edge.
+     */
+    private static final long LIVE_EDGE_THRESHOLD_MS = 3_000;
+
     private volatile NgPlaybackContext context;
     private volatile long lastSeekExecutedAtMs;
 
@@ -44,8 +51,12 @@ public final class NgSeekPolicy {
     /**
      * Should this seek be ignored entirely?
      * <p>
-     * Rule: if target &gt; safeSeekEndMs AND current position is within
-     * 1 granularity of the live edge → the user is already at edge, ignore.
+     * Rule: if target &gt; safeSeekEndMs AND current position is already AT the live edge
+     * (within a tight threshold) → the user is already at edge, further FFs are no-ops.
+     * <p>
+     * "At edge" means within {@link #LIVE_EDGE_THRESHOLD_MS} of safeSeekEndMs.
+     * This is intentionally tight — if the user is 10s behind edge and FFs past it,
+     * we want to CLAMP (jump to edge), not ignore. Only once they're at edge do we ignore.
      *
      * @param targetMs         the desired seek position in ms
      * @param currentPositionMs the player's current position in ms
@@ -53,19 +64,17 @@ public final class NgSeekPolicy {
      */
     public boolean shouldIgnoreSeek(long targetMs, long currentPositionMs) {
         var ctx = context;
-        if (ctx == null || !ctx.isLive() || isStale(ctx)) return false;
-        if (ctx.safeSeekEndMs() <= 0) return false;
-
-        long granularity = ctx.preferredGranularityMs() > 0 ? ctx.preferredGranularityMs() : 30_000;
+        if (ctx == null || !ctx.live().isLive() || isStale(ctx)) return false;
+        if (ctx.live().safeSeekEndMs() <= 0) return false;
 
         // Target is past the safe boundary
-        boolean targetPastEdge = targetMs > ctx.safeSeekEndMs();
-        // Current position is within 1 granularity of the edge (user is "at live")
-        boolean alreadyAtEdge = (ctx.safeSeekEndMs() - currentPositionMs) <= granularity;
+        boolean targetPastEdge = targetMs > ctx.live().safeSeekEndMs();
+        // Current position is already AT the edge (tight threshold)
+        boolean alreadyAtEdge = (ctx.live().safeSeekEndMs() - currentPositionMs) <= LIVE_EDGE_THRESHOLD_MS;
 
         if (targetPastEdge && alreadyAtEdge) {
             log.debug("NgSeekPolicy: IGNORE seek to {}ms — already at live edge (current={}ms, safeEnd={}ms)",
-                    targetMs, currentPositionMs, ctx.safeSeekEndMs());
+                    targetMs, currentPositionMs, ctx.live().safeSeekEndMs());
             return true;
         }
         return false;
@@ -82,11 +91,11 @@ public final class NgSeekPolicy {
     public long clampSeekTarget(long targetMs) {
         var ctx = context;
         if (ctx == null || isStale(ctx)) return targetMs;
-        if (ctx.safeSeekEndMs() <= 0) return targetMs;
+        if (ctx.live().safeSeekEndMs() <= 0) return targetMs;
 
-        if (targetMs > ctx.safeSeekEndMs()) {
-            log.debug("NgSeekPolicy: CLAMP seek from {}ms to safeSeekEndMs={}ms", targetMs, ctx.safeSeekEndMs());
-            return ctx.safeSeekEndMs();
+        if (targetMs > ctx.live().safeSeekEndMs()) {
+            log.debug("NgSeekPolicy: CLAMP seek from {}ms to safeSeekEndMs={}ms", targetMs, ctx.live().safeSeekEndMs());
+            return ctx.live().safeSeekEndMs();
         }
         return targetMs;
     }
@@ -102,13 +111,13 @@ public final class NgSeekPolicy {
     public boolean shouldCoalesce() {
         var ctx = context;
         if (ctx == null || isStale(ctx)) return false;
-        if (ctx.maxClientCoalesceMs() <= 0) return false;
+        if (ctx.seek().maxClientCoalesceMs() <= 0) return false;
 
         long now = System.currentTimeMillis();
         long elapsed = now - lastSeekExecutedAtMs;
 
-        if (elapsed < ctx.maxClientCoalesceMs()) {
-            log.debug("NgSeekPolicy: COALESCE — {}ms since last seek (threshold={}ms)", elapsed, ctx.maxClientCoalesceMs());
+        if (elapsed < ctx.seek().maxClientCoalesceMs()) {
+            log.debug("NgSeekPolicy: COALESCE — {}ms since last seek (threshold={}ms)", elapsed, ctx.seek().maxClientCoalesceMs());
             return true;
         }
         return false;
@@ -126,7 +135,7 @@ public final class NgSeekPolicy {
      */
     public boolean needsLivePoll() {
         var ctx = context;
-        return ctx != null && ctx.isLive() && ctx.preferredGranularityMs() > 0;
+        return ctx != null && ctx.live().isLive() && ctx.seek().preferredGranularityMs() > 0;
     }
 
     /**
@@ -136,8 +145,8 @@ public final class NgSeekPolicy {
      */
     public long getLivePollIntervalMs() {
         var ctx = context;
-        if (ctx == null || ctx.preferredGranularityMs() <= 0) return 5_000;
-        return Math.max(1_000, ctx.preferredGranularityMs() - 500);
+        if (ctx == null || ctx.seek().preferredGranularityMs() <= 0) return 5_000;
+        return Math.max(1_000, ctx.seek().preferredGranularityMs() - 500);
     }
 
     /**

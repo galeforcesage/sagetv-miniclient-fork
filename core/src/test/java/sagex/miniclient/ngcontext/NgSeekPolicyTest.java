@@ -17,8 +17,6 @@ public class NgSeekPolicyTest {
         policy = new NgSeekPolicy();
     }
 
-    // --- shouldIgnoreSeek tests ---
-
     @Test
     public void testShouldIgnoreSeek_returnsFalse_whenNoContext() {
         assertFalse(policy.shouldIgnoreSeek(100_000, 90_000));
@@ -26,33 +24,37 @@ public class NgSeekPolicyTest {
 
     @Test
     public void testShouldIgnoreSeek_returnsFalse_whenNotLive() {
-        var ctx = buildContext(false, 300_000, 280_000, 30_000, 0);
-        policy.update(ctx);
+        policy.update(buildContext(false, 280_000, 30_000, 0));
         assertFalse(policy.shouldIgnoreSeek(290_000, 270_000));
     }
 
     @Test
     public void testShouldIgnoreSeek_returnsTrue_whenAtLiveEdgeAndTargetPastSafe() {
-        var ctx = buildContext(true, 300_000, 280_000, 30_000, 0);
-        policy.update(ctx);
-        assertTrue(policy.shouldIgnoreSeek(290_000, 260_000));
+        // safeSeekEnd=280s, current=278s (within 3s threshold), target=290s (past safe)
+        policy.update(buildContext(true, 280_000, 30_000, 0));
+        assertTrue(policy.shouldIgnoreSeek(290_000, 278_000));
+    }
+
+    @Test
+    public void testShouldIgnoreSeek_returnsFalse_whenNearButNotAtEdge() {
+        // safeSeekEnd=280s, current=270s (10s from edge, beyond 3s threshold), target=290s
+        // This should NOT ignore — it should clamp instead (jump to edge)
+        policy.update(buildContext(true, 280_000, 30_000, 0));
+        assertFalse(policy.shouldIgnoreSeek(290_000, 270_000));
     }
 
     @Test
     public void testShouldIgnoreSeek_returnsFalse_whenFarFromEdge() {
-        var ctx = buildContext(true, 300_000, 280_000, 30_000, 0);
-        policy.update(ctx);
+        // current=100s (far from 280s edge)
+        policy.update(buildContext(true, 280_000, 30_000, 0));
         assertFalse(policy.shouldIgnoreSeek(290_000, 100_000));
     }
 
     @Test
     public void testShouldIgnoreSeek_returnsFalse_whenTargetWithinSafe() {
-        var ctx = buildContext(true, 300_000, 280_000, 30_000, 0);
-        policy.update(ctx);
+        policy.update(buildContext(true, 280_000, 30_000, 0));
         assertFalse(policy.shouldIgnoreSeek(270_000, 265_000));
     }
-
-    // --- clampSeekTarget tests ---
 
     @Test
     public void testClampSeekTarget_returnsOriginal_whenNoContext() {
@@ -61,26 +63,21 @@ public class NgSeekPolicyTest {
 
     @Test
     public void testClampSeekTarget_returnsOriginal_whenWithinBounds() {
-        var ctx = buildContext(true, 300_000, 280_000, 30_000, 0);
-        policy.update(ctx);
+        policy.update(buildContext(true, 280_000, 30_000, 0));
         assertEquals(270_000L, policy.clampSeekTarget(270_000));
     }
 
     @Test
     public void testClampSeekTarget_clampsToSafeEnd_whenExceedsBounds() {
-        var ctx = buildContext(true, 300_000, 280_000, 30_000, 0);
-        policy.update(ctx);
+        policy.update(buildContext(true, 280_000, 30_000, 0));
         assertEquals(280_000L, policy.clampSeekTarget(350_000));
     }
 
     @Test
-    public void testClampSeekTarget_returnsOriginal_whenSafeEndNotSet() {
-        var ctx = buildContext(true, 300_000, -1, 30_000, 0);
-        policy.update(ctx);
+    public void testClampSeekTarget_returnsOriginal_whenSafeEndZero() {
+        policy.update(buildContext(true, 0, 30_000, 0));
         assertEquals(350_000L, policy.clampSeekTarget(350_000));
     }
-
-    // --- shouldCoalesce tests ---
 
     @Test
     public void testShouldCoalesce_returnsFalse_whenNoContext() {
@@ -88,74 +85,47 @@ public class NgSeekPolicyTest {
     }
 
     @Test
-    public void testShouldCoalesce_returnsFalse_whenCoalesceNotConfigured() {
-        var ctx = buildContext(false, 300_000, 280_000, 30_000, 0);
-        policy.update(ctx);
-        assertFalse(policy.shouldCoalesce());
-    }
-
-    @Test
     public void testShouldCoalesce_returnsTrue_whenWithinCoalesceWindow() {
-        var ctx = buildContext(false, 300_000, 280_000, 30_000, 500);
-        policy.update(ctx);
+        policy.update(buildContext(false, 280_000, 30_000, 500));
         policy.markSeekExecuted();
         assertTrue(policy.shouldCoalesce());
     }
 
     @Test
-    public void testShouldCoalesce_returnsFalse_afterCoalesceWindowExpires() throws InterruptedException {
-        var ctx = buildContext(false, 300_000, 280_000, 30_000, 50);
-        policy.update(ctx);
+    public void testShouldCoalesce_returnsFalse_afterWindowExpires() throws InterruptedException {
+        policy.update(buildContext(false, 280_000, 30_000, 50));
         policy.markSeekExecuted();
         Thread.sleep(60);
         assertFalse(policy.shouldCoalesce());
     }
 
-    // --- needsLivePoll tests ---
-
     @Test
     public void testNeedsLivePoll_returnsTrue_whenLiveWithGranularity() {
-        var ctx = buildContext(true, 300_000, 280_000, 30_000, 0);
-        policy.update(ctx);
+        policy.update(buildContext(true, 280_000, 30_000, 0));
         assertTrue(policy.needsLivePoll());
     }
 
     @Test
     public void testNeedsLivePoll_returnsFalse_whenNotLive() {
-        var ctx = buildContext(false, 300_000, 280_000, 30_000, 0);
-        policy.update(ctx);
+        policy.update(buildContext(false, 280_000, 30_000, 0));
         assertFalse(policy.needsLivePoll());
     }
-
-    @Test
-    public void testNeedsLivePoll_returnsFalse_whenNoGranularity() {
-        var ctx = buildContext(true, 300_000, 280_000, 0, 0);
-        policy.update(ctx);
-        assertFalse(policy.needsLivePoll());
-    }
-
-    // --- getLivePollIntervalMs tests ---
 
     @Test
     public void testGetLivePollIntervalMs_returnsGranularityMinus500() {
-        var ctx = buildContext(true, 300_000, 280_000, 30_000, 0);
-        policy.update(ctx);
+        policy.update(buildContext(true, 280_000, 30_000, 0));
         assertEquals(29_500L, policy.getLivePollIntervalMs());
     }
 
     @Test
     public void testGetLivePollIntervalMs_minimumIs1000() {
-        var ctx = buildContext(true, 300_000, 280_000, 1_000, 0);
-        policy.update(ctx);
+        policy.update(buildContext(true, 280_000, 1_000, 0));
         assertEquals(1_000L, policy.getLivePollIntervalMs());
     }
 
-    // --- clear tests ---
-
     @Test
     public void testClear_resetsAllState() {
-        var ctx = buildContext(true, 300_000, 280_000, 30_000, 500);
-        policy.update(ctx);
+        policy.update(buildContext(true, 280_000, 30_000, 500));
         policy.markSeekExecuted();
 
         policy.clear();
@@ -166,20 +136,19 @@ public class NgSeekPolicyTest {
         assertEquals(500_000L, policy.clampSeekTarget(500_000));
     }
 
-    // --- helper ---
+    // --- helper: builds context with server-canonical nested structure ---
 
-    private NgPlaybackContext buildContext(boolean live, long playableEnd, long safeSeekEnd,
+    private NgPlaybackContext buildContext(boolean live, long safeSeekEnd,
                                            long granularity, long coalesce) {
         return new NgPlaybackContext.Builder()
-                .mediaFileId("test-123")
-                .title("Test")
-                .durationMs(-1)
-                .contentType(live ? "live" : "recording")
-                .isLive(live)
-                .playableEndMs(playableEnd)
-                .safeSeekEndMs(safeSeekEnd)
-                .preferredGranularityMs(granularity)
-                .maxClientCoalesceMs(coalesce)
+                .sessionId("test-session")
+                .mediaFileId(123)
+                .mode("push")
+                .container("ts")
+                .live(new NgPlaybackContext.LiveContext(
+                        live, 0, 0, safeSeekEnd, safeSeekEnd + 20_000, 0, 0))
+                .seek(new NgPlaybackContext.SeekPolicy(
+                        granularity, 250, coalesce, true, false))
                 .receivedAtMs(System.currentTimeMillis())
                 .build();
     }

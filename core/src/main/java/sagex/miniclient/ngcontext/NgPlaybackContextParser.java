@@ -1,114 +1,168 @@
 package sagex.miniclient.ngcontext;
 
-import java.net.URLDecoder;
-import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
-import java.util.Map;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
- * Parses the canonical NG Playback Context wire format into an {@link NgPlaybackContext}.
+ * Parses the NG Playback Context JSON wire format into an {@link NgPlaybackContext}.
  * <p>
- * Wire format: pipe-delimited key=value pairs. Arrays are comma-separated within the value.
- * Values containing {@code |} or {@code =} must be URL-encoded.
- * <pre>
- * mediaFileId=12345|title=My+Show|durationMs=3600000|contentType=recording|isLive=false
- * </pre>
+ * The server sends JSON via two paths:
+ * <ol>
+ *   <li>SET_PROPERTY "NG_PLAYBACK_CONTEXT" → raw context JSON object</li>
+ *   <li>HTTP GET /ng/playback-context/{sessionId} → wrapped: {@code {"type":"NG_PLAYBACK_CONTEXT","sessionId":"...","context":{...}}}</li>
+ * </ol>
+ * This parser handles both forms.
  */
 public final class NgPlaybackContextParser {
+
+    private static final Logger log = LoggerFactory.getLogger(NgPlaybackContextParser.class);
 
     private NgPlaybackContextParser() { }
 
     /**
-     * Parse the wire-format string into an NgPlaybackContext.
+     * Parse a wire-format string into an NgPlaybackContext.
+     * Accepts both the raw context JSON and the HTTP response wrapper.
      *
-     * @param wireValue the property value received from the server
-     * @param openUrl   the URL from MEDIACMD_OPENURL (may be null if not yet known)
-     * @return parsed context, never null
+     * @param wireValue the JSON string received from the server
+     * @param openUrl   the URL from MEDIACMD_OPENURL (may be null)
+     * @return parsed context, never null (returns empty defaults on parse failure)
      */
     public static NgPlaybackContext parse(String wireValue, String openUrl) {
-        var map = parseToMap(wireValue);
-        return fromMap(map, openUrl);
+        if (wireValue == null || wireValue.isBlank()) {
+            return new NgPlaybackContext.Builder().openUrl(openUrl).build();
+        }
+
+        try {
+            var root = new JSONObject(wireValue);
+
+            // Handle HTTP response wrapper: {"type":"NG_PLAYBACK_CONTEXT","context":{...}}
+            JSONObject ctx;
+            if (root.has("context")) {
+                ctx = root.getJSONObject("context");
+            } else {
+                ctx = root;
+            }
+
+            return fromJson(ctx, openUrl);
+        } catch (JSONException e) {
+            log.warn("Failed to parse NG Playback Context JSON: {}", e.getMessage());
+            return new NgPlaybackContext.Builder().openUrl(openUrl).build();
+        }
     }
 
     /**
-     * Build an NgPlaybackContext from a pre-parsed map. Useful for testing.
+     * Parse from a pre-parsed JSONObject. Useful for testing.
      */
-    public static NgPlaybackContext fromMap(Map<String, String> map, String openUrl) {
-        var builder = new NgPlaybackContext.Builder().openUrl(openUrl);
-        var extras = new HashMap<String, String>();
+    public static NgPlaybackContext fromJson(JSONObject ctx, String openUrl) throws JSONException {
+        var builder = new NgPlaybackContext.Builder()
+                .openUrl(openUrl)
+                .version(ctx.optInt("version", 1))
+                .sessionId(ctx.optString("sessionId", ""))
+                .mediaFileId(ctx.optLong("mediaFileId", 0))
+                .airingId(ctx.optLong("airingId", 0))
+                .mode(ctx.optString("mode", "unknown"))
+                .container(ctx.optString("container", "unknown"))
+                .durationMs(ctx.optLong("durationMs", 0))
+                .serverMediaTimeMs(ctx.optLong("serverMediaTimeMs", 0))
+                .streamEpoch(ctx.optInt("streamEpoch", 0));
 
-        for (var entry : map.entrySet()) {
-            var key = entry.getKey();
-            var val = entry.getValue();
-
-            switch (key) {
-                case "mediaFileId" -> builder.mediaFileId(val);
-                case "title" -> builder.title(val);
-                case "durationMs" -> builder.durationMs(parseLong(val, -1));
-                case "contentType" -> builder.contentType(val);
-                case "isLive" -> builder.isLive(parseBoolean(val));
-                case "isTimeshifted" -> builder.isTimeshifted(parseBoolean(val));
-                case "scheduledStartMs" -> builder.scheduledStartMs(parseLong(val, 0));
-                case "scheduledEndMs" -> builder.scheduledEndMs(parseLong(val, 0));
-                case "chapterMarksMs" -> builder.chapterMarksMs(parseLongArray(val));
-                case "commercialBreaksMs" -> builder.commercialBreaksMs(parseLongArray(val));
-                case "seekableByClient" -> builder.seekableByClient(parseBoolean(val));
-                case "playableEndMs" -> builder.playableEndMs(parseLong(val, -1));
-                case "safeSeekEndMs" -> builder.safeSeekEndMs(parseLong(val, -1));
-                case "preferredGranularityMs" -> builder.preferredGranularityMs(parseLong(val, 0));
-                case "maxClientCoalesceMs" -> builder.maxClientCoalesceMs(parseLong(val, 0));
-                default -> extras.put(key, val);
-            }
+        if (ctx.has("live")) {
+            builder.live(parseLive(ctx.getJSONObject("live")));
+        }
+        if (ctx.has("seek")) {
+            builder.seek(parseSeek(ctx.getJSONObject("seek")));
+        }
+        if (ctx.has("index")) {
+            builder.index(parseIndex(ctx.getJSONObject("index")));
+        }
+        if (ctx.has("skip")) {
+            builder.skip(parseSkip(ctx.getJSONObject("skip")));
+        }
+        if (ctx.has("flow")) {
+            builder.flow(parseFlow(ctx.getJSONObject("flow")));
         }
 
-        if (!extras.isEmpty()) {
-            builder.extras(extras);
-        }
         return builder.build();
     }
 
-    /** Parse the wire string into a raw key-value map. */
-    static Map<String, String> parseToMap(String wireValue) {
-        if (wireValue == null || wireValue.isEmpty()) {
-            return Map.of();
-        }
-
-        var map = new HashMap<String, String>();
-        for (var pair : wireValue.split("\\|")) {
-            int eqIdx = pair.indexOf('=');
-            if (eqIdx <= 0) continue;
-            var key = pair.substring(0, eqIdx).trim();
-            var rawVal = pair.substring(eqIdx + 1);
-            map.put(key, URLDecoder.decode(rawVal, StandardCharsets.UTF_8));
-        }
-        return map;
+    private static NgPlaybackContext.LiveContext parseLive(JSONObject obj) {
+        return new NgPlaybackContext.LiveContext(
+                obj.optBoolean("isLive", false),
+                obj.optLong("recordingStartMs", 0),
+                obj.optLong("safeSeekStartMs", 0),
+                obj.optLong("safeSeekEndMs", 0),
+                obj.optLong("playableEndMs", 0),
+                obj.optLong("growthBytes", 0),
+                obj.optLong("lastSizeRefreshMs", 0)
+        );
     }
 
-    private static long parseLong(String val, long defaultVal) {
-        if (val == null || val.isEmpty()) return defaultVal;
-        try {
-            return Long.parseLong(val.trim());
-        } catch (NumberFormatException e) {
-            return defaultVal;
-        }
+    private static NgPlaybackContext.SeekPolicy parseSeek(JSONObject obj) {
+        return new NgPlaybackContext.SeekPolicy(
+                obj.optLong("preferredGranularityMs", 5000),
+                obj.optLong("minSeekIntervalMs", 250),
+                obj.optLong("maxClientCoalesceMs", 1500),
+                obj.optBoolean("requiresServerSeek", true),
+                obj.optBoolean("clientMayPredictOsd", false)
+        );
     }
 
-    private static boolean parseBoolean(String val) {
-        return "true".equalsIgnoreCase(val != null ? val.trim() : "");
-    }
-
-    private static long[] parseLongArray(String val) {
-        if (val == null || val.isEmpty()) return new long[0];
-        var parts = val.split(",");
-        var result = new long[parts.length];
-        int count = 0;
-        for (var part : parts) {
-            try {
-                result[count++] = Long.parseLong(part.trim());
-            } catch (NumberFormatException e) {
-                // skip malformed entries
+    private static NgPlaybackContext.IndexContext parseIndex(JSONObject obj) {
+        List<NgPlaybackContext.PtsSample> samples = List.of();
+        if (obj.has("ptsSamples")) {
+            JSONArray arr = obj.getJSONArray("ptsSamples");
+            var list = new ArrayList<NgPlaybackContext.PtsSample>(arr.length());
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject s = arr.getJSONObject(i);
+                list.add(new NgPlaybackContext.PtsSample(
+                        s.optLong("timeMs", 0),
+                        s.optLong("byteOffset", 0),
+                        s.optBoolean("keyframe", false)
+                ));
             }
+            samples = list;
         }
-        return count < result.length ? java.util.Arrays.copyOf(result, count) : result;
+        return new NgPlaybackContext.IndexContext(
+                obj.optBoolean("hasKeyframeIndex", false),
+                obj.optBoolean("hasPtsByteMap", false),
+                samples
+        );
+    }
+
+    private static NgPlaybackContext.SkipContext parseSkip(JSONObject obj) {
+        return new NgPlaybackContext.SkipContext(
+                parseSegmentList(obj.optJSONArray("commercials")),
+                parseSegmentList(obj.optJSONArray("chapters")),
+                parseSegmentList(obj.optJSONArray("bookmarks"))
+        );
+    }
+
+    private static List<NgPlaybackContext.SkipSegment> parseSegmentList(JSONArray arr) {
+        if (arr == null || arr.length() == 0) return List.of();
+        var list = new ArrayList<NgPlaybackContext.SkipSegment>(arr.length());
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject seg = arr.getJSONObject(i);
+            list.add(new NgPlaybackContext.SkipSegment(
+                    seg.optLong("startMs", 0),
+                    seg.optLong("endMs", 0),
+                    seg.optString("type", "unknown"),
+                    seg.optLong("prerollMs", 0)
+            ));
+        }
+        return list;
+    }
+
+    private static NgPlaybackContext.FlowPolicy parseFlow(JSONObject obj) {
+        return new NgPlaybackContext.FlowPolicy(
+                obj.optInt("preferredPrebufferBytes", 262144),
+                obj.optInt("lowWatermarkBytes", 131072),
+                obj.optInt("highWatermarkBytes", 4194304)
+        );
     }
 }

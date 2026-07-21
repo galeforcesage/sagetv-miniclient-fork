@@ -1,141 +1,180 @@
 package sagex.miniclient.ngcontext;
 
-import java.util.Arrays;
-import java.util.Map;
+import java.util.List;
 
 /**
  * Immutable value object representing rich playback metadata sent by an NG-aware SageTV server.
  * When connected to a legacy server this object will never be created — consumers must always
  * null-check via {@link NgPlaybackContextStore#getCurrent()}.
  *
- * <p>Uses Java 17 record for immutability, compact accessors, and automatic equals/hashCode/toString.
- * Arrays are defensively copied; the extras map is an unmodifiable snapshot.
+ * <p>Structure mirrors the server's {@code sage.ng.NgPlaybackContext} JSON wire format exactly:
+ * <pre>
+ * {
+ *   "version": 1,
+ *   "sessionId": "...",
+ *   "mediaFileId": 12345,
+ *   "airingId": 67890,
+ *   "mode": "push",
+ *   "container": "mpeg-ps",
+ *   "durationMs": 3600000,
+ *   "serverMediaTimeMs": 1234567,
+ *   "streamEpoch": 1,
+ *   "live": { ... },
+ *   "seek": { ... },
+ *   "index": { ... },
+ *   "skip": { ... },
+ *   "flow": { ... }
+ * }
+ * </pre>
  */
 public record NgPlaybackContext(
-        // --- canonical fields (agreed with server) ---
-        String mediaFileId,
-        String title,
+        int version,
+        String sessionId,
+        long mediaFileId,
+        long airingId,
+        String mode,
+        String container,
         long durationMs,
-        String contentType,
-        boolean isLive,
-        boolean isTimeshifted,
-        long scheduledStartMs,
-        long scheduledEndMs,
-        // --- trickplay hints ---
-        long[] chapterMarksMs,
-        long[] commercialBreaksMs,
-        boolean seekableByClient,
-        // --- live edge / seek policy fields (Phase 2) ---
-        long playableEndMs,
-        long safeSeekEndMs,
-        long preferredGranularityMs,
-        long maxClientCoalesceMs,
-        // --- extensibility ---
-        Map<String, String> extras,
-        // --- generated on client ---
+        long serverMediaTimeMs,
+        int streamEpoch,
+        LiveContext live,
+        SeekPolicy seek,
+        IndexContext index,
+        SkipContext skip,
+        FlowPolicy flow,
+        // --- client-side metadata (not from wire) ---
         String openUrl,
         long receivedAtMs
 ) {
-    /** Compact constructor — defensive copies and null-safety. */
     public NgPlaybackContext {
-        chapterMarksMs = chapterMarksMs != null ? chapterMarksMs.clone() : new long[0];
-        commercialBreaksMs = commercialBreaksMs != null ? commercialBreaksMs.clone() : new long[0];
-        extras = extras != null ? Map.copyOf(extras) : Map.of();
+        sessionId = sessionId != null ? sessionId : "";
+        mode = mode != null ? mode : "unknown";
+        container = container != null ? container : "unknown";
+        live = live != null ? live : LiveContext.EMPTY;
+        seek = seek != null ? seek : SeekPolicy.DEFAULT;
+        index = index != null ? index : IndexContext.EMPTY;
+        skip = skip != null ? skip : SkipContext.EMPTY;
+        flow = flow != null ? flow : FlowPolicy.DEFAULT;
         receivedAtMs = receivedAtMs > 0 ? receivedAtMs : System.currentTimeMillis();
     }
 
-    /** Defensive copy on access. */
-    @Override public long[] chapterMarksMs() { return chapterMarksMs.clone(); }
-    @Override public long[] commercialBreaksMs() { return commercialBreaksMs.clone(); }
+    /** Live/timeshift window state. Mirrors server's NgLiveContext. */
+    public record LiveContext(
+            boolean isLive,
+            long recordingStartMs,
+            long safeSeekStartMs,
+            long safeSeekEndMs,
+            long playableEndMs,
+            long growthBytes,
+            long lastSizeRefreshMs
+    ) {
+        public static final LiveContext EMPTY = new LiveContext(false, 0, 0, 0, 0, 0, 0);
+    }
+
+    /** Server-advisory seek policy. Mirrors server's NgSeekPolicy. */
+    public record SeekPolicy(
+            long preferredGranularityMs,
+            long minSeekIntervalMs,
+            long maxClientCoalesceMs,
+            boolean requiresServerSeek,
+            boolean clientMayPredictOsd
+    ) {
+        public static final SeekPolicy DEFAULT = new SeekPolicy(5000, 250, 1500, true, false);
+    }
+
+    /** Index availability for client-assisted seeking. Mirrors server's NgIndexContext. */
+    public record IndexContext(
+            boolean hasKeyframeIndex,
+            boolean hasPtsByteMap,
+            List<PtsSample> ptsSamples
+    ) {
+        public IndexContext {
+            ptsSamples = ptsSamples != null ? List.copyOf(ptsSamples) : List.of();
+        }
+        public static final IndexContext EMPTY = new IndexContext(false, false, List.of());
+    }
+
+    /** A single PTS-to-byte sample. Mirrors server's NgPtsSample. */
+    public record PtsSample(long timeMs, long byteOffset, boolean keyframe) {}
+
+    /** Skip/chapter/bookmark data. Mirrors server's NgSkipContext. */
+    public record SkipContext(
+            List<SkipSegment> commercials,
+            List<SkipSegment> chapters,
+            List<SkipSegment> bookmarks
+    ) {
+        public SkipContext {
+            commercials = commercials != null ? List.copyOf(commercials) : List.of();
+            chapters = chapters != null ? List.copyOf(chapters) : List.of();
+            bookmarks = bookmarks != null ? List.copyOf(bookmarks) : List.of();
+        }
+        public static final SkipContext EMPTY = new SkipContext(List.of(), List.of(), List.of());
+    }
+
+    /** A single skip segment. Mirrors server's NgSkipSegment. */
+    public record SkipSegment(long startMs, long endMs, String type, long prerollMs) {
+        public SkipSegment {
+            type = type != null ? type : "unknown";
+        }
+    }
+
+    /** Buffer flow policy. Mirrors server's NgFlowPolicy. */
+    public record FlowPolicy(
+            int preferredPrebufferBytes,
+            int lowWatermarkBytes,
+            int highWatermarkBytes
+    ) {
+        public static final FlowPolicy DEFAULT = new FlowPolicy(262144, 131072, 4194304);
+    }
 
     @Override
     public String toString() {
-        return "NgPlaybackContext[mediaFileId=%s, title=%s, durationMs=%d, contentType=%s, isLive=%b, seekableByClient=%b, playableEndMs=%d, safeSeekEndMs=%d, openUrl=%s]"
-                .formatted(mediaFileId, title, durationMs, contentType, isLive, seekableByClient, playableEndMs, safeSeekEndMs, openUrl);
+        return "NgPlaybackContext[v=%d, session=%s, mediaFile=%d, mode=%s, container=%s, durationMs=%d, live=%s]"
+                .formatted(version, sessionId, mediaFileId, mode, container, durationMs, live.isLive());
     }
 
-    @Override
-    public boolean equals(Object o) {
-        return o instanceof NgPlaybackContext other
-                && durationMs == other.durationMs
-                && isLive == other.isLive
-                && isTimeshifted == other.isTimeshifted
-                && scheduledStartMs == other.scheduledStartMs
-                && scheduledEndMs == other.scheduledEndMs
-                && seekableByClient == other.seekableByClient
-                && playableEndMs == other.playableEndMs
-                && safeSeekEndMs == other.safeSeekEndMs
-                && preferredGranularityMs == other.preferredGranularityMs
-                && maxClientCoalesceMs == other.maxClientCoalesceMs
-                && receivedAtMs == other.receivedAtMs
-                && java.util.Objects.equals(mediaFileId, other.mediaFileId)
-                && java.util.Objects.equals(title, other.title)
-                && java.util.Objects.equals(contentType, other.contentType)
-                && Arrays.equals(chapterMarksMs, other.chapterMarksMs)
-                && Arrays.equals(commercialBreaksMs, other.commercialBreaksMs)
-                && java.util.Objects.equals(extras, other.extras)
-                && java.util.Objects.equals(openUrl, other.openUrl);
-    }
-
-    @Override
-    public int hashCode() {
-        int h = java.util.Objects.hash(mediaFileId, title, durationMs, contentType,
-                isLive, isTimeshifted, scheduledStartMs, scheduledEndMs,
-                seekableByClient, playableEndMs, safeSeekEndMs,
-                preferredGranularityMs, maxClientCoalesceMs,
-                extras, openUrl, receivedAtMs);
-        h = 31 * h + Arrays.hashCode(chapterMarksMs);
-        h = 31 * h + Arrays.hashCode(commercialBreaksMs);
-        return h;
-    }
-
-    /** Fluent builder for parser and test code. */
+    /** Convenience builder for parser and test code. */
     public static final class Builder {
-        private String mediaFileId;
-        private String title;
-        private long durationMs = -1;
-        private String contentType;
-        private boolean isLive;
-        private boolean isTimeshifted;
-        private long scheduledStartMs;
-        private long scheduledEndMs;
-        private long[] chapterMarksMs;
-        private long[] commercialBreaksMs;
-        private boolean seekableByClient;
-        private long playableEndMs = -1;
-        private long safeSeekEndMs = -1;
-        private long preferredGranularityMs;
-        private long maxClientCoalesceMs;
-        private Map<String, String> extras;
+        private int version = 1;
+        private String sessionId;
+        private long mediaFileId;
+        private long airingId;
+        private String mode;
+        private String container;
+        private long durationMs;
+        private long serverMediaTimeMs;
+        private int streamEpoch;
+        private LiveContext live;
+        private SeekPolicy seek;
+        private IndexContext index;
+        private SkipContext skip;
+        private FlowPolicy flow;
         private String openUrl;
         private long receivedAtMs;
 
-        public Builder mediaFileId(String val) { this.mediaFileId = val; return this; }
-        public Builder title(String val) { this.title = val; return this; }
+        public Builder version(int val) { this.version = val; return this; }
+        public Builder sessionId(String val) { this.sessionId = val; return this; }
+        public Builder mediaFileId(long val) { this.mediaFileId = val; return this; }
+        public Builder airingId(long val) { this.airingId = val; return this; }
+        public Builder mode(String val) { this.mode = val; return this; }
+        public Builder container(String val) { this.container = val; return this; }
         public Builder durationMs(long val) { this.durationMs = val; return this; }
-        public Builder contentType(String val) { this.contentType = val; return this; }
-        public Builder isLive(boolean val) { this.isLive = val; return this; }
-        public Builder isTimeshifted(boolean val) { this.isTimeshifted = val; return this; }
-        public Builder scheduledStartMs(long val) { this.scheduledStartMs = val; return this; }
-        public Builder scheduledEndMs(long val) { this.scheduledEndMs = val; return this; }
-        public Builder chapterMarksMs(long[] val) { this.chapterMarksMs = val; return this; }
-        public Builder commercialBreaksMs(long[] val) { this.commercialBreaksMs = val; return this; }
-        public Builder seekableByClient(boolean val) { this.seekableByClient = val; return this; }
-        public Builder playableEndMs(long val) { this.playableEndMs = val; return this; }
-        public Builder safeSeekEndMs(long val) { this.safeSeekEndMs = val; return this; }
-        public Builder preferredGranularityMs(long val) { this.preferredGranularityMs = val; return this; }
-        public Builder maxClientCoalesceMs(long val) { this.maxClientCoalesceMs = val; return this; }
-        public Builder extras(Map<String, String> val) { this.extras = val; return this; }
+        public Builder serverMediaTimeMs(long val) { this.serverMediaTimeMs = val; return this; }
+        public Builder streamEpoch(int val) { this.streamEpoch = val; return this; }
+        public Builder live(LiveContext val) { this.live = val; return this; }
+        public Builder seek(SeekPolicy val) { this.seek = val; return this; }
+        public Builder index(IndexContext val) { this.index = val; return this; }
+        public Builder skip(SkipContext val) { this.skip = val; return this; }
+        public Builder flow(FlowPolicy val) { this.flow = val; return this; }
         public Builder openUrl(String val) { this.openUrl = val; return this; }
         public Builder receivedAtMs(long val) { this.receivedAtMs = val; return this; }
 
         public NgPlaybackContext build() {
             return new NgPlaybackContext(
-                    mediaFileId, title, durationMs, contentType,
-                    isLive, isTimeshifted, scheduledStartMs, scheduledEndMs,
-                    chapterMarksMs, commercialBreaksMs, seekableByClient,
-                    playableEndMs, safeSeekEndMs, preferredGranularityMs, maxClientCoalesceMs,
-                    extras, openUrl, receivedAtMs
+                    version, sessionId, mediaFileId, airingId,
+                    mode, container, durationMs, serverMediaTimeMs, streamEpoch,
+                    live, seek, index, skip, flow,
+                    openUrl, receivedAtMs
             );
         }
     }

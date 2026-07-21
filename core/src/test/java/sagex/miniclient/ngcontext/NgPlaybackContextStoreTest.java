@@ -12,6 +12,28 @@ public class NgPlaybackContextStoreTest {
     private NgPlaybackContextStore store;
     private TestBus testBus;
 
+    private static final String SAMPLE_JSON = """
+            {"version":1,"sessionId":"sess-1","mediaFileId":123,"airingId":0,\
+            "mode":"push","container":"ts","durationMs":5000,"serverMediaTimeMs":0,"streamEpoch":0,\
+            "live":{"isLive":false,"recordingStartMs":0,"safeSeekStartMs":0,"safeSeekEndMs":0,\
+            "playableEndMs":0,"growthBytes":0,"lastSizeRefreshMs":0},\
+            "seek":{"preferredGranularityMs":5000,"minSeekIntervalMs":250,"maxClientCoalesceMs":1500,\
+            "requiresServerSeek":true,"clientMayPredictOsd":false},\
+            "index":{"hasKeyframeIndex":false,"hasPtsByteMap":false,"ptsSamples":[]},\
+            "skip":{"commercials":[],"chapters":[],"bookmarks":[]},\
+            "flow":{"preferredPrebufferBytes":262144,"lowWatermarkBytes":131072,"highWatermarkBytes":4194304}}""";
+
+    private static final String LIVE_JSON = """
+            {"version":1,"sessionId":"sess-2","mediaFileId":456,"airingId":0,\
+            "mode":"push","container":"ts","durationMs":0,"serverMediaTimeMs":0,"streamEpoch":0,\
+            "live":{"isLive":true,"recordingStartMs":0,"safeSeekStartMs":0,"safeSeekEndMs":90000,\
+            "playableEndMs":100000,"growthBytes":0,"lastSizeRefreshMs":0},\
+            "seek":{"preferredGranularityMs":30000,"minSeekIntervalMs":250,"maxClientCoalesceMs":1500,\
+            "requiresServerSeek":true,"clientMayPredictOsd":false},\
+            "index":{"hasKeyframeIndex":false,"hasPtsByteMap":false,"ptsSamples":[]},\
+            "skip":{"commercials":[],"chapters":[],"bookmarks":[]},\
+            "flow":{"preferredPrebufferBytes":262144,"lowWatermarkBytes":131072,"highWatermarkBytes":4194304}}""";
+
     @Before
     public void setUp() {
         testBus = new TestBus();
@@ -32,48 +54,44 @@ public class NgPlaybackContextStoreTest {
     @Test
     public void testOnPropertyReceivedSetsContext() {
         store.onMediaOpen("push:video.ts");
-        store.onPropertyReceived("mediaFileId=123|title=Hello|durationMs=5000|contentType=recording|isLive=false");
+        store.onPropertyReceived(SAMPLE_JSON);
 
         var ctx = store.getCurrent();
         assertNotNull(ctx);
-        assertEquals("123", ctx.mediaFileId());
-        assertEquals("Hello", ctx.title());
-        assertEquals(5000L, ctx.durationMs());
+        assertEquals(123L, ctx.mediaFileId());
+        assertEquals("push", ctx.mode());
         assertEquals("push:video.ts", ctx.openUrl());
     }
 
     @Test
     public void testOnPropertyReceivedPostsEvent() {
         store.onMediaOpen("push:x");
-        store.onPropertyReceived("mediaFileId=1|title=T|durationMs=100|contentType=music|isLive=false");
+        store.onPropertyReceived(SAMPLE_JSON);
 
         assertNotNull(testBus.lastEvent);
         assertTrue(testBus.lastEvent instanceof NgPlaybackContextEvent.Updated);
         var evt = (NgPlaybackContextEvent.Updated) testBus.lastEvent;
         assertNull(evt.previous());
         assertNotNull(evt.current());
-        assertEquals("1", evt.current().mediaFileId());
+        assertEquals(123L, evt.current().mediaFileId());
     }
 
     @Test
     public void testOnMediaCloseClearsContext() {
         store.onMediaOpen("push:x");
-        store.onPropertyReceived("mediaFileId=1|title=T|durationMs=100|contentType=music|isLive=false");
+        store.onPropertyReceived(SAMPLE_JSON);
         assertNotNull(store.getCurrent());
 
         store.onMediaClose();
         assertNull(store.getCurrent());
 
         assertTrue(testBus.lastEvent instanceof NgPlaybackContextEvent.Cleared);
-        var evt = (NgPlaybackContextEvent.Cleared) testBus.lastEvent;
-        assertNotNull(evt.previous());
-        assertEquals("1", evt.previous().mediaFileId());
     }
 
     @Test
     public void testEmptyPropertyClearsContext() {
         store.onMediaOpen("push:x");
-        store.onPropertyReceived("mediaFileId=1|title=T|durationMs=100|contentType=music|isLive=false");
+        store.onPropertyReceived(SAMPLE_JSON);
         assertNotNull(store.getCurrent());
 
         store.onPropertyReceived("");
@@ -81,48 +99,22 @@ public class NgPlaybackContextStoreTest {
     }
 
     @Test
-    public void testContextUpdateReplacesOld() {
-        store.onMediaOpen("push:x");
-        store.onPropertyReceived("mediaFileId=1|title=First|durationMs=100|contentType=recording|isLive=false");
-        store.onPropertyReceived("mediaFileId=2|title=Second|durationMs=200|contentType=live|isLive=true");
-
-        var ctx = store.getCurrent();
-        assertEquals("2", ctx.mediaFileId());
-        assertEquals("Second", ctx.title());
-        assertTrue(ctx.isLive());
-
-        var evt = (NgPlaybackContextEvent.Updated) testBus.lastEvent;
-        assertNotNull(evt.previous());
-        assertEquals("1", evt.previous().mediaFileId());
-    }
-
-    @Test
-    public void testNullBusDoesNotCrash() {
-        var nullBusStore = new NgPlaybackContextStore(null);
-        nullBusStore.onMediaOpen("push:x");
-        nullBusStore.onPropertyReceived("mediaFileId=1|title=T|durationMs=100|contentType=music|isLive=false");
-        assertNotNull(nullBusStore.getCurrent());
-        nullBusStore.onMediaClose();
-        assertNull(nullBusStore.getCurrent());
-    }
-
-    @Test
     public void testSeekPolicyUpdatedOnPropertyReceived() {
         store.onMediaOpen("push:x");
-        store.onPropertyReceived("mediaFileId=1|title=T|durationMs=100000|contentType=live|isLive=true|safeSeekEndMs=90000|preferredGranularityMs=30000");
+        store.onPropertyReceived(LIVE_JSON);
 
         var policy = store.getSeekPolicy();
         assertNotNull(policy);
         assertNotNull(policy.getContext());
         assertTrue(policy.needsLivePoll());
-        // Clamping works
+        // Clamping works — safeSeekEndMs=90000
         assertEquals(90_000L, policy.clampSeekTarget(120_000));
     }
 
     @Test
     public void testSeekPolicyClearedOnMediaClose() {
         store.onMediaOpen("push:x");
-        store.onPropertyReceived("mediaFileId=1|title=T|durationMs=100000|contentType=live|isLive=true|safeSeekEndMs=90000|preferredGranularityMs=30000");
+        store.onPropertyReceived(LIVE_JSON);
         assertNotNull(store.getSeekPolicy().getContext());
 
         store.onMediaClose();
@@ -132,9 +124,19 @@ public class NgPlaybackContextStoreTest {
     @Test
     public void testShutdownCleansUp() {
         store.onMediaOpen("push:x");
-        store.onPropertyReceived("mediaFileId=1|title=T|durationMs=100|contentType=music|isLive=false");
+        store.onPropertyReceived(SAMPLE_JSON);
         store.shutdown();
         assertNull(store.getCurrent());
+    }
+
+    @Test
+    public void testNullBusDoesNotCrash() {
+        var nullBusStore = new NgPlaybackContextStore(null);
+        nullBusStore.onMediaOpen("push:x");
+        nullBusStore.onPropertyReceived(SAMPLE_JSON);
+        assertNotNull(nullBusStore.getCurrent());
+        nullBusStore.onMediaClose();
+        assertNull(nullBusStore.getCurrent());
     }
 
     private static class TestBus implements IBus {

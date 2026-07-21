@@ -15,13 +15,21 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * Periodically polls the NG server's playback-context endpoint to keep
- * live-edge fields ({@code playableEndMs}, {@code safeSeekEndMs}) fresh.
+ * live-edge fields ({@code live.safeSeekEndMs}, {@code live.playableEndMs}) fresh.
+ * <p>
+ * This is a <b>fallback/supplement</b> for the primary delivery path which is
+ * server-pushed SET_PROPERTY over the event channel. The poller is useful when:
+ * <ul>
+ *   <li>The server doesn't push at the right interval</li>
+ *   <li>The connection was interrupted and context may be stale</li>
+ *   <li>The server version only supports HTTP polling (no push)</li>
+ * </ul>
  * <p>
  * Only active when the current context indicates a live stream with
- * {@code preferredGranularityMs > 0}. Automatically stops on media close.
+ * {@code seek.preferredGranularityMs > 0}. Automatically stops on media close.
  * <p>
- * The poll result is fed back into the {@link NgPlaybackContextStore} which
- * updates the context and re-publishes the bus event.
+ * Uses {@code GET /ng/playback-context/{sessionId}} or
+ * {@code GET /ng/playback-context/current?clientName={name}}.
  */
 public final class NgLivePoller {
 
@@ -31,7 +39,7 @@ public final class NgLivePoller {
     private final NgPlaybackContextStore store;
     private final ScheduledExecutorService scheduler;
     private volatile ScheduledFuture<?> pollTask;
-    private volatile String serverBaseUrl;
+    private volatile String pollUrl;
 
     public NgLivePoller(NgPlaybackContextStore store) {
         this.store = store;
@@ -43,15 +51,30 @@ public final class NgLivePoller {
     }
 
     /**
-     * Start polling at the given interval.
+     * Start polling using a session ID.
      *
-     * @param serverBaseUrl base URL of the NG server (e.g. "http://192.168.0.10:8080")
+     * @param serverBaseUrl base URL (e.g. "http://192.168.0.10:31099")
+     * @param sessionId     the NG session UUID from the context
      * @param intervalMs    poll interval in milliseconds
      */
-    public void start(String serverBaseUrl, long intervalMs) {
-        stop(); // cancel any existing poll
-        this.serverBaseUrl = serverBaseUrl;
-        log.info("NgLivePoller: starting poll every {}ms against {}", intervalMs, serverBaseUrl);
+    public void start(String serverBaseUrl, String sessionId, long intervalMs) {
+        stop();
+        this.pollUrl = serverBaseUrl + "/ng/playback-context/" + sessionId;
+        log.info("NgLivePoller: starting poll every {}ms → {}", intervalMs, pollUrl);
+        pollTask = scheduler.scheduleAtFixedRate(this::poll, intervalMs, intervalMs, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * Start polling using a client name (fallback when sessionId not available).
+     *
+     * @param serverBaseUrl base URL
+     * @param clientName    the MiniClient identity name
+     * @param intervalMs    poll interval in milliseconds
+     */
+    public void startByClientName(String serverBaseUrl, String clientName, long intervalMs) {
+        stop();
+        this.pollUrl = serverBaseUrl + "/ng/playback-context/current?clientName=" + clientName;
+        log.info("NgLivePoller: starting poll every {}ms → {}", intervalMs, pollUrl);
         pollTask = scheduler.scheduleAtFixedRate(this::poll, intervalMs, intervalMs, TimeUnit.MILLISECONDS);
     }
 
@@ -84,24 +107,28 @@ public final class NgLivePoller {
     }
 
     private void poll() {
-        var base = serverBaseUrl;
-        if (base == null) return;
+        var url = pollUrl;
+        if (url == null) return;
 
         try {
-            var url = URI.create(base + "/ng/playback-context/current").toURL();
-            var conn = (HttpURLConnection) url.openConnection();
+            var conn = (HttpURLConnection) URI.create(url).toURL().openConnection();
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(HTTP_TIMEOUT_MS);
             conn.setReadTimeout(HTTP_TIMEOUT_MS);
-            conn.setRequestProperty("Accept", "text/plain");
+            conn.setRequestProperty("Accept", "application/json");
 
             int status = conn.getResponseCode();
             if (status == 200) {
                 try (var reader = new BufferedReader(
                         new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
-                    var wireValue = reader.readLine();
-                    if (wireValue != null && !wireValue.isEmpty()) {
-                        store.onPropertyReceived(wireValue);
+                    var sb = new StringBuilder(1024);
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        sb.append(line);
+                    }
+                    String body = sb.toString();
+                    if (!body.isEmpty()) {
+                        store.onPropertyReceived(body);
                         log.debug("NgLivePoller: context refreshed");
                     }
                 }
