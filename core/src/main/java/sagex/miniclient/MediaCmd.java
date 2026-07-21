@@ -23,6 +23,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import sagex.miniclient.ngcontext.NgPlaybackContextStore;
+import sagex.miniclient.ngcontext.NgSeekPolicy;
 import sagex.miniclient.prefs.PrefStore;
 import sagex.miniclient.uibridge.Dimension;
 import sagex.miniclient.uibridge.Rectangle;
@@ -584,6 +585,28 @@ public class MediaCmd
                 if (playa != null)
                 {
                     log.debug("MEDIACMD_SEEK called: {}", seekTime);
+
+                    // --- NG Seek Policy: clamp/ignore/coalesce (no-op for legacy servers) ---
+                    NgPlaybackContextStore ctxStore = myConn.getPlaybackContextStore();
+                    if (ctxStore != null && ctxStore.getCurrent() != null)
+                    {
+                        NgSeekPolicy policy = ctxStore.getSeekPolicy();
+                        long currentPos = getMediaTimeMillis();
+
+                        if (policy.shouldIgnoreSeek(seekTime, currentPos))
+                        {
+                            log.debug("MEDIACMD_SEEK: NG policy IGNORED seek to {} (at live edge)", seekTime);
+                            return 0;
+                        }
+                        if (policy.shouldCoalesce())
+                        {
+                            log.debug("MEDIACMD_SEEK: NG policy COALESCED seek to {}", seekTime);
+                            return 0;
+                        }
+                        seekTime = policy.clampSeekTarget(seekTime);
+                        policy.markSeekExecuted();
+                    }
+
                     if (pushMode)
                     {
                         // Stash the authoritative target so the post-flush

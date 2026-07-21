@@ -53,6 +53,10 @@ public final class NgPlaybackContextParser {
                 case "chapterMarksMs" -> builder.chapterMarksMs(parseLongArray(val));
                 case "commercialBreaksMs" -> builder.commercialBreaksMs(parseLongArray(val));
                 case "seekableByClient" -> builder.seekableByClient(parseBoolean(val));
+                case "playableEndMs" -> builder.playableEndMs(parseLong(val, -1));
+                case "safeSeekEndMs" -> builder.safeSeekEndMs(parseLong(val, -1));
+                case "preferredGranularityMs" -> builder.preferredGranularityMs(parseLong(val, 0));
+                case "maxClientCoalesceMs" -> builder.maxClientCoalesceMs(parseLong(val, 0));
                 default -> extras.put(key, val);
             }
         }

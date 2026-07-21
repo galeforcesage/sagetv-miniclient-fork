@@ -25,6 +25,11 @@ public record NgPlaybackContext(
         long[] chapterMarksMs,
         long[] commercialBreaksMs,
         boolean seekableByClient,
+        // --- live edge / seek policy fields (Phase 2) ---
+        long playableEndMs,
+        long safeSeekEndMs,
+        long preferredGranularityMs,
+        long maxClientCoalesceMs,
         // --- extensibility ---
         Map<String, String> extras,
         // --- generated on client ---
@@ -45,8 +50,8 @@ public record NgPlaybackContext(
 
     @Override
     public String toString() {
-        return "NgPlaybackContext[mediaFileId=%s, title=%s, durationMs=%d, contentType=%s, isLive=%b, seekableByClient=%b, openUrl=%s]"
-                .formatted(mediaFileId, title, durationMs, contentType, isLive, seekableByClient, openUrl);
+        return "NgPlaybackContext[mediaFileId=%s, title=%s, durationMs=%d, contentType=%s, isLive=%b, seekableByClient=%b, playableEndMs=%d, safeSeekEndMs=%d, openUrl=%s]"
+                .formatted(mediaFileId, title, durationMs, contentType, isLive, seekableByClient, playableEndMs, safeSeekEndMs, openUrl);
     }
 
     @Override
@@ -58,6 +63,10 @@ public record NgPlaybackContext(
                 && scheduledStartMs == other.scheduledStartMs
                 && scheduledEndMs == other.scheduledEndMs
                 && seekableByClient == other.seekableByClient
+                && playableEndMs == other.playableEndMs
+                && safeSeekEndMs == other.safeSeekEndMs
+                && preferredGranularityMs == other.preferredGranularityMs
+                && maxClientCoalesceMs == other.maxClientCoalesceMs
                 && receivedAtMs == other.receivedAtMs
                 && java.util.Objects.equals(mediaFileId, other.mediaFileId)
                 && java.util.Objects.equals(title, other.title)
@@ -72,7 +81,9 @@ public record NgPlaybackContext(
     public int hashCode() {
         int h = java.util.Objects.hash(mediaFileId, title, durationMs, contentType,
                 isLive, isTimeshifted, scheduledStartMs, scheduledEndMs,
-                seekableByClient, extras, openUrl, receivedAtMs);
+                seekableByClient, playableEndMs, safeSeekEndMs,
+                preferredGranularityMs, maxClientCoalesceMs,
+                extras, openUrl, receivedAtMs);
         h = 31 * h + Arrays.hashCode(chapterMarksMs);
         h = 31 * h + Arrays.hashCode(commercialBreaksMs);
         return h;
@@ -91,6 +102,10 @@ public record NgPlaybackContext(
         private long[] chapterMarksMs;
         private long[] commercialBreaksMs;
         private boolean seekableByClient;
+        private long playableEndMs = -1;
+        private long safeSeekEndMs = -1;
+        private long preferredGranularityMs;
+        private long maxClientCoalesceMs;
         private Map<String, String> extras;
         private String openUrl;
         private long receivedAtMs;
@@ -106,6 +121,10 @@ public record NgPlaybackContext(
         public Builder chapterMarksMs(long[] val) { this.chapterMarksMs = val; return this; }
         public Builder commercialBreaksMs(long[] val) { this.commercialBreaksMs = val; return this; }
         public Builder seekableByClient(boolean val) { this.seekableByClient = val; return this; }
+        public Builder playableEndMs(long val) { this.playableEndMs = val; return this; }
+        public Builder safeSeekEndMs(long val) { this.safeSeekEndMs = val; return this; }
+        public Builder preferredGranularityMs(long val) { this.preferredGranularityMs = val; return this; }
+        public Builder maxClientCoalesceMs(long val) { this.maxClientCoalesceMs = val; return this; }
         public Builder extras(Map<String, String> val) { this.extras = val; return this; }
         public Builder openUrl(String val) { this.openUrl = val; return this; }
         public Builder receivedAtMs(long val) { this.receivedAtMs = val; return this; }
@@ -115,6 +134,7 @@ public record NgPlaybackContext(
                     mediaFileId, title, durationMs, contentType,
                     isLive, isTimeshifted, scheduledStartMs, scheduledEndMs,
                     chapterMarksMs, commercialBreaksMs, seekableByClient,
+                    playableEndMs, safeSeekEndMs, preferredGranularityMs, maxClientCoalesceMs,
                     extras, openUrl, receivedAtMs
             );
         }

@@ -23,11 +23,23 @@ public final class NgPlaybackContextStore {
     private static final Logger log = LoggerFactory.getLogger(NgPlaybackContextStore.class);
 
     private final IBus eventBus;
+    private final NgSeekPolicy seekPolicy = new NgSeekPolicy();
+    private final NgLivePoller livePoller;
     private volatile NgPlaybackContext current;
     private volatile String pendingOpenUrl;
+    private volatile String serverBaseUrl;
 
     public NgPlaybackContextStore(IBus eventBus) {
         this.eventBus = eventBus;
+        this.livePoller = new NgLivePoller(this);
+    }
+
+    /**
+     * Set the server base URL for live polling (e.g. "http://192.168.0.10:8080").
+     * Should be called when the connection is established.
+     */
+    public void setServerBaseUrl(String url) {
+        this.serverBaseUrl = url;
     }
 
     /**
@@ -45,8 +57,16 @@ public final class NgPlaybackContextStore {
         var previous = current;
         var newContext = NgPlaybackContextParser.parse(wireValue, url);
         current = newContext;
+        seekPolicy.update(newContext);
 
         log.debug("NG Playback Context updated: {}", newContext);
+
+        // Manage live poller based on new context
+        if (seekPolicy.needsLivePoll() && serverBaseUrl != null) {
+            livePoller.start(serverBaseUrl, seekPolicy.getLivePollIntervalMs());
+        } else if (!seekPolicy.needsLivePoll()) {
+            livePoller.stop();
+        }
 
         if (eventBus != null) {
             eventBus.post(new NgPlaybackContextEvent.Updated(previous, newContext));
@@ -69,6 +89,7 @@ public final class NgPlaybackContextStore {
     public void onMediaClose() {
         clear();
         pendingOpenUrl = null;
+        livePoller.stop();
     }
 
     /**
@@ -79,9 +100,33 @@ public final class NgPlaybackContextStore {
         return current;
     }
 
+    /**
+     * Returns the seek policy informed by the current NG context.
+     * Always non-null; returns pass-through behavior when no context is present.
+     */
+    public NgSeekPolicy getSeekPolicy() {
+        return seekPolicy;
+    }
+
+    /**
+     * Returns the live poller instance (for lifecycle management).
+     */
+    public NgLivePoller getLivePoller() {
+        return livePoller;
+    }
+
+    /**
+     * Shut down all resources (connection closing).
+     */
+    public void shutdown() {
+        clear();
+        livePoller.shutdown();
+    }
+
     private void clear() {
         var previous = current;
         current = null;
+        seekPolicy.clear();
         if (previous != null && eventBus != null) {
             eventBus.post(new NgPlaybackContextEvent.Cleared(previous));
         }

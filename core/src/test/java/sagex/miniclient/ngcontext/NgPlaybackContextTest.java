@@ -172,4 +172,29 @@ public class NgPlaybackContextTest {
         assertTrue(str.contains("mediaFileId=42"));
         assertTrue(str.contains("title=Test"));
     }
+
+    @Test
+    public void testPhase2FieldsParsing() {
+        var wire = "mediaFileId=1|title=Live+News|durationMs=-1|contentType=live|isLive=true"
+                + "|playableEndMs=300000|safeSeekEndMs=280000"
+                + "|preferredGranularityMs=30000|maxClientCoalesceMs=500";
+
+        var ctx = NgPlaybackContextParser.parse(wire, "push:live");
+
+        assertEquals(300_000L, ctx.playableEndMs());
+        assertEquals(280_000L, ctx.safeSeekEndMs());
+        assertEquals(30_000L, ctx.preferredGranularityMs());
+        assertEquals(500L, ctx.maxClientCoalesceMs());
+    }
+
+    @Test
+    public void testPhase2FieldsDefaultWhenAbsent() {
+        var wire = "mediaFileId=1|title=T|durationMs=100|contentType=recording|isLive=false";
+        var ctx = NgPlaybackContextParser.parse(wire, null);
+
+        assertEquals(-1L, ctx.playableEndMs());
+        assertEquals(-1L, ctx.safeSeekEndMs());
+        assertEquals(0L, ctx.preferredGranularityMs());
+        assertEquals(0L, ctx.maxClientCoalesceMs());
+    }
 }

@@ -224,13 +224,13 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
 
         if (player != null && pushMode)
         {
-            log.debug("Flush in push mode: seeking to flush IJK internal queues");
-            // seekToImpl(Long.MAX_VALUE) signals IJK to flush its internal packet/decoder
-            // queues so stale frames don't persist after a server-driven seek.
-            // This is safe because libijkffmpeg.so now contains the null-check patch in
-            // ff_seek_frame_binary (see ijkplayer/build-ijk.sh) that prevents the SIGSEGV
-            // crash on MPEG-PS streams with no index entries.
-            seekToImpl(Long.MAX_VALUE);
+            // Seek to position 0 to trigger IJK's internal packet/decoder queue flush.
+            // The actual target position doesn't matter (server controls what data arrives
+            // next via push buffer). We just need IJK's read_thread to process a seek_req
+            // which flushes all packet queues. Using 0 avoids Long.MAX_VALUE overflow
+            // when IJK's JNI casts to (int) for the FFP_REQ_SEEK message.
+            log.debug("Flush in push mode: seekTo(0) to flush IJK internal queues");
+            seekToImpl(0);
         }
         else if (player != null)
         {
