@@ -287,14 +287,14 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
 
             if (pushMode)
             {
-                // Push-mode low-latency tuning: data arrives continuously at
-                // real-time rate. Reduce format-probe and internal buffering to
-                // minimize time-to-first-frame (target <2s).
-                ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 32768);           // 32 KB (vs 5 MB default)
-                ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", 800000);    // 800ms (vs 5s default)
+                // Push-mode tuning: reduce internal buffering to cut startup
+                // latency and limit stale data after seek. Values must be
+                // conservative enough for MPEG2-TS (needs >32KB for PID/PMT
+                // detection) while still faster than defaults (5MB/5s).
+                ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 131072);          // 128 KB (vs 5 MB default; 32KB too small for TS)
+                ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", 1500000);   // 1.5s (vs 5s default)
+                ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "packet-buffering", 1);
                 ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-buffer-size", 2 * 1024 * 1024); // 2 MB (vs 15 MB) — limits stale data after seek
-                ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "min-frames", 3);              // start after 3 frames decoded (vs default ~50)
-                ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "start-on-prepared", 1);       // auto-start without waiting for large buffer fill
             }
             else
             {

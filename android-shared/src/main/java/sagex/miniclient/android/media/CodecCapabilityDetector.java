@@ -1,6 +1,12 @@
 package sagex.miniclient.android.media;
 
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.media.AudioAttributes;
+import android.media.AudioDeviceInfo;
+import android.media.AudioFormat;
+import android.media.AudioManager;
 import android.os.Build;
 import android.media.MediaCodecInfo;
 import android.media.MediaCodecList;
@@ -223,13 +229,11 @@ public final class CodecCapabilityDetector
     {
         int[] encodings = codec.getAndroidAudioEncodings();
         if (encodings == null || encodings.length == 0) return false;
-        // C3 guard: AC-4 advertisement only allowed when the device actually
-        // has an audio/ac4 MediaCodec decoder. Several Shields' audio sinks
-        // (esp. via certain HDMI receivers) falsely advertise AC-4 passthrough
-        // capability even though no decoder is registered; the audio renderer
-        // then fails to init and the video pipeline goes black. Strip AC-4
-        // unless a real decoder is present.
-        if (codec == AudioCodec.AC4 && !hasMediaCodecDecoderForMime("audio/ac4"))
+        // C3 guard: AC-4 passthrough only allowed when a verified playback
+        // path exists (MediaCodec decoder OR Android 13+ direct audio render).
+        // HDMI sink claims alone are NOT sufficient — Shield falsely reports
+        // AC4 passthrough via HDMI without any real decoder/DSP.
+        if (codec == AudioCodec.AC4 && !hasVerifiedAc4PlaybackPath(ctx))
         {
             return false;
         }
@@ -267,11 +271,14 @@ public final class CodecCapabilityDetector
         {
             if (codec.hasAndroidMimeType(mime)) return true;
         }
-        // C3 guard: AC-4 must not fall through to the passthrough probe -
-        // an HDMI sink that advertises AC-4 passthrough is not sufficient
-        // when no MediaCodec / FFmpeg decoder exists, because ExoPlayer's
-        // audio renderer init fails and the video pipeline goes black.
-        if (codec == AudioCodec.AC4) return false;
+        // C3 guard: AC-4 must not fall through to the passthrough probe
+        // unless a verified playback path exists. An HDMI sink that claims
+        // AC-4 passthrough without a real decoder/DSP causes ExoPlayer's
+        // audio renderer init to fail → video pipeline goes black.
+        if (codec == AudioCodec.AC4 && !hasVerifiedAc4PlaybackPath(ctx))
+        {
+            return false;
+        }
         // Last resort: passthrough capability (AC3, EAC3, etc. on HDMI sinks).
         AudioCapabilities caps = AudioCapabilities.getCapabilities(ctx);
         for (int enc : codec.getAndroidAudioEncodings())
@@ -336,6 +343,107 @@ public final class CodecCapabilityDetector
             // "no decoder" to keep us out of the failure-prone path.
         }
         return false;
+    }
+
+    // ─── AC-4 layered detection (Dolby guidance) ────────────────────────
+
+    /**
+     * AC-4 support levels, ordered from most-trusted to least:
+     * <ul>
+     *   <li>{@code MEDIACODEC_DECODER} – real {@code audio/ac4} decoder in MediaCodecList</li>
+     *   <li>{@code DIRECT_AUDIO_RENDER} – Android 13+ {@code getDirectPlaybackSupport()} reports offload/bitstream</li>
+     *   <li>{@code REPORTED_ONLY_UNVERIFIED} – HDMI sink/output device claims AC4 but no decoder/DSP confirmed</li>
+     *   <li>{@code NONE} – no AC4 support detected at any layer</li>
+     * </ul>
+     */
+    public enum Ac4Support
+    {
+        NONE,
+        REPORTED_ONLY_UNVERIFIED,
+        DIRECT_AUDIO_RENDER,
+        MEDIACODEC_DECODER
+    }
+
+    /**
+     * Multi-layer AC-4 detection following Dolby's Android guidance:
+     * <ol>
+     *   <li>MediaCodecList for {@code audio/ac4} (phones/tablets primary signal)</li>
+     *   <li>Android 13+ {@code AudioManager.getDirectPlaybackSupport()} (Android TV DSP/offload)</li>
+     *   <li>Output device / HDMI sink encoding report (diagnostic only, NOT safe to advertise)</li>
+     * </ol>
+     */
+    public static Ac4Support detectAc4Support(Context ctx)
+    {
+        // 1. MediaCodecList – strongest signal (Samsung Fold 5, LG flagships)
+        if (hasMediaCodecDecoderForMime("audio/ac4"))
+        {
+            return Ac4Support.MEDIACODEC_DECODER;
+        }
+
+        // 2. Android 13+ direct playback query – covers Android TV boxes with
+        //    audio DSP/offload that don't expose a MediaCodec entry
+        if (Build.VERSION.SDK_INT >= 33)
+        {
+            try
+            {
+                AudioAttributes attrs = new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                        .build();
+                AudioFormat format = new AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_AC4)
+                        .setSampleRate(48000)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                        .build();
+                int support = AudioManager.getDirectPlaybackSupport(format, attrs);
+                if (support != 0) // any non-zero = offload/bitstream/gapless
+                {
+                    return Ac4Support.DIRECT_AUDIO_RENDER;
+                }
+            }
+            catch (Throwable ignored) { }
+        }
+
+        // 3. Output device / HDMI sink reports ENCODING_AC4 – diagnostic only.
+        //    Dolby explicitly says HDMI AC4 reporting can be misleading;
+        //    Shield's HDMI sink falsely advertises AC4 here.
+        if (Build.VERSION.SDK_INT >= 23)
+        {
+            try
+            {
+                AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
+                if (am != null)
+                {
+                    for (AudioDeviceInfo dev : am.getDevices(AudioManager.GET_DEVICES_OUTPUTS))
+                    {
+                        for (int enc : dev.getEncodings())
+                        {
+                            if (enc == AudioFormat.ENCODING_AC4)
+                            {
+                                return Ac4Support.REPORTED_ONLY_UNVERIFIED;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Throwable ignored) { }
+        }
+
+        return Ac4Support.NONE;
+    }
+
+    /**
+     * Policy: should we advertise AC-4 to the server for this device?
+     * Only {@code MEDIACODEC_DECODER} and {@code DIRECT_AUDIO_RENDER} are
+     * trusted enough to advertise. {@code REPORTED_ONLY_UNVERIFIED} (HDMI
+     * sink claim without a real decoder/DSP) is explicitly rejected per
+     * Dolby's Android TV guidance.
+     */
+    public static boolean hasVerifiedAc4PlaybackPath(Context ctx)
+    {
+        Ac4Support support = detectAc4Support(ctx);
+        return support == Ac4Support.MEDIACODEC_DECODER
+                || support == Ac4Support.DIRECT_AUDIO_RENDER;
     }
 
     private static Set<String> getTypes(MediaCodecInfo info, String prefix)
