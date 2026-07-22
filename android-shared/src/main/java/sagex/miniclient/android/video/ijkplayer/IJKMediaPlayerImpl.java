@@ -285,8 +285,22 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
             ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 1); // handle resolution changes in HW decoder without fallback to software
             ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 1);
 
-            ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "packet-buffering", 1);
-            ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-buffer-size", 15 * 1024 * 1024); // 15MB internal buffer
+            if (pushMode)
+            {
+                // Push-mode low-latency tuning: data arrives continuously at
+                // real-time rate. Reduce format-probe and internal buffering to
+                // minimize time-to-first-frame (target <2s).
+                ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 32768);           // 32 KB (vs 5 MB default)
+                ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", 800000);    // 800ms (vs 5s default)
+                ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-buffer-size", 2 * 1024 * 1024); // 2 MB (vs 15 MB) — limits stale data after seek
+                ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "min-frames", 3);              // start after 3 frames decoded (vs default ~50)
+                ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "start-on-prepared", 1);       // auto-start without waiting for large buffer fill
+            }
+            else
+            {
+                ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "packet-buffering", 1);
+                ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-buffer-size", 15 * 1024 * 1024); // 15MB internal buffer
+            }
 
             // setting this to 0 removes the pixelization for mpeg2 videos
             ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 0);

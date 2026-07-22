@@ -607,9 +607,13 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     private void runWhenPrebuffered(final Runnable action)
     {
         final long startedAt = System.currentTimeMillis();
-        final int PREBUFFER_THRESHOLD = 64 * 1024;
-        final int POLL_INTERVAL_MS = 25;
-        final int TIMEOUT_MS = 3_000;
+        // 16 KB is sufficient for any container header (EBML + Segment +
+        // Tracks for Matroska, pack_start_code for MPEG-PS, sync bytes for
+        // TS). Keeping this small reduces time-to-first-frame on initial
+        // open and error recovery.
+        final int PREBUFFER_THRESHOLD = 16 * 1024;
+        final int POLL_INTERVAL_MS = 15;
+        final int TIMEOUT_MS = 2_000;
         final Runnable[] gate = new Runnable[1];
         gate[0] = new Runnable()
         {
@@ -767,19 +771,21 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
         ExoPlayer.Builder builder = new ExoPlayer.Builder(context.getContext(), renderersFactory);
 
-        // Tune buffer sizes for streams over slow/variable connections (e.g. Tailscale).
-        // C4 (NG cold-start grace): bump minBufferMs to 30s so a slow server
-        // cold-start on the first OPENURL has time to fill the pipeline
-        // before ExoPlayer trips an underflow that would surface as
-        // FORCED_MEDIA_RECONNECT. bufferForPlaybackMs is held modest (5s)
-        // so playback still starts promptly once data is flowing.
+        // Tune buffer sizes for push vs pull modes.
+        // Push: data arrives at real-time rate from the server continuously,
+        // so we can start rendering with minimal buffer (1.5s) without risk
+        // of underflow. Keeps time-to-first-frame under 2s.
+        // Pull: server may have variable response times / seek latency, so
+        // keep larger buffers.
+        final int bufferForPlaybackMs = pushMode ? 1_500 : 5_000;
+        final int bufferForRebufferMs = pushMode ? 2_500 : 5_000;
         builder.setLoadControl(
                 new com.google.android.exoplayer2.DefaultLoadControl.Builder()
                         .setBufferDurationsMs(
                                 /* minBufferMs= */ 30_000,
                                 /* maxBufferMs= */ 60_000,
-                                /* bufferForPlaybackMs= */ 5_000,
-                                /* bufferForPlaybackAfterRebufferMs= */ 5_000)
+                                /* bufferForPlaybackMs= */ bufferForPlaybackMs,
+                                /* bufferForPlaybackAfterRebufferMs= */ bufferForRebufferMs)
                         .build());
 
         builder.setTrackSelector(trackSelector);
