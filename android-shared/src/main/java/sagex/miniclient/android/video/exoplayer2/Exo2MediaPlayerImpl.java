@@ -539,34 +539,35 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                         return;
                     }
 
+                    // Reset error/retry state so the new stream segment
+                    // gets a clean slate.
+                    retryCount = 0;
+                    errorState = false;
+
                     if (pushMode)
                     {
-                        // Push-mode flush: rebuild the player's MediaSource
-                        // so renderers (especially the audio sink) are
-                        // fully reset. seekTo(...) is too light — it leaves
-                        // partial DefaultAudioSink calibration state that
-                        // accumulates A/V drift across multiple REWs.
+                        // Push-mode flush: use a lightweight seekTo(0)
+                        // to flush ExoPlayer's decoder queues and sample
+                        // buffers WITHOUT rebuilding the MediaSource.
                         //
-                        // The cascade-of-rebuilds that used to break this
-                        // is prevented two ways:
-                        //   1. runWhenPrebuffered gates on ~64 KB arriving
-                        //      so sniff doesn't fail.
-                        //   2. Pending gates are cancelled before the next
-                        //      one is scheduled, so a burst of 5 flushes
-                        //      coalesces into a single rebuild.
-                        final com.google.android.exoplayer2.source.MediaSource finalSrc = mediaSource;
-                        runWhenPrebuffered(new Runnable()
-                        {
-                            @Override
-                            public void run()
-                            {
-                                if (player == null) return;
-                                player.setMediaSource(finalSrc, true);
-                                player.prepare();
-                                if (VerboseLogging.DETAILED_PLAYER_LOGGING)
-                                    log.logDebug("Push flush: setMediaSource+prepare after prebuffer");
-                            }
-                        });
+                        // Rebuilding (setMediaSource+prepare) triggers a
+                        // full re-sniff of the DataSource. For Matroska
+                        // push this is fatal: the NG server restarts the
+                        // mux at a Cluster boundary, omitting the EBML
+                        // header that MatroskaExtractor.sniff() requires
+                        // at byte 0. MPEG-PS/TS are self-synchronizing so
+                        // re-sniff worked for them, but Matroska is not.
+                        //
+                        // seekTo(0) flushes all SampleQueues and renderer
+                        // pipelines (including DefaultAudioSink) while
+                        // keeping the extractor alive to parse the
+                        // arriving Clusters. The player's reported
+                        // position will jump to the timestamp of the
+                        // first new sample, matching the server's seek
+                        // target communicated via MEDIACMD_SEEK.
+                        player.seekTo(0);
+                        if (VerboseLogging.DETAILED_PLAYER_LOGGING)
+                            log.logDebug("Push flush: seekTo(0) to flush decoder queues");
                     }
                     else
                     {
@@ -809,8 +810,31 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                     errorState = true;
                     retryCount++;
 
-                    player.seekTo(player.getCurrentPosition() + 100);
-                    player.prepare();
+                    if (pushMode)
+                    {
+                        // Push-mode: seekTo(pos+100)+prepare() is wrong because
+                        // prepare() re-sniffs the ring buffer which may still be
+                        // partially filled. Instead, wait for enough data to
+                        // accumulate then rebuild — the prebuffer gate handles
+                        // the timing.
+                        final com.google.android.exoplayer2.source.MediaSource src = mediaSource;
+                        runWhenPrebuffered(new Runnable()
+                        {
+                            @Override
+                            public void run()
+                            {
+                                if (player == null) return;
+                                player.setMediaSource(src, true);
+                                player.prepare();
+                                log.logDebug("Push error retry: rebuild after prebuffer (attempt " + retryCount + ")");
+                            }
+                        });
+                    }
+                    else
+                    {
+                        player.seekTo(player.getCurrentPosition() + 100);
+                        player.prepare();
+                    }
                 }
                 else
                 {

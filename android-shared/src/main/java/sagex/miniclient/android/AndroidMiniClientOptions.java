@@ -141,7 +141,7 @@ public class AndroidMiniClientOptions implements MiniClientOptions {
     private List<Container> getSupportedPushContainers()
     {
         List<Container> supportedContainers = new ArrayList<Container>();
-        Container [] allContainers = new Container[]{MPEG1PS, MPEG2PS, MPEG2TS};
+        Container [] allContainers = new Container[]{MPEG1PS, MPEG2PS, MPEG2TS, MATROSKA};
 
         for (Container c : allContainers)
         {
@@ -250,7 +250,7 @@ public class AndroidMiniClientOptions implements MiniClientOptions {
         // Push containers (push-only set used today by getSupportedPushContainers).
         java.util.List<String> exoPush = new ArrayList<>();
         java.util.List<String> ijkPush = new ArrayList<>();
-        Container[] pushAll = new Container[]{MPEG1PS, MPEG2PS, MPEG2TS};
+        Container[] pushAll = new Container[]{MPEG1PS, MPEG2PS, MPEG2TS, MATROSKA};
         for (Container c : pushAll)
         {
             TriState state = TriState.fromPrefValue(prefs.getContainerSupport(c.getName()));
