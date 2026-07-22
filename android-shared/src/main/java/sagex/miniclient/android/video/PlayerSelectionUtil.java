@@ -118,16 +118,25 @@ public final class PlayerSelectionUtil
     }
 
     /**
-     * HEVC push landmine: the server selected a push stream with HEVC video,
-     * but on this device ExoPlayer can reach a ready state without ever
-     * presenting a visible picture. IJK has been the more reliable renderer
-     * for this specific push shape, so route it up-front.
+     * HEVC push landmine: the server selected a push stream with HEVC video
+     * inside an MPEG-PS or MPEG-TS container, where ExoPlayer can reach a
+     * ready state without ever presenting a visible picture. IJK has been the
+     * more reliable renderer for this specific push shape, so route it up-front.
+     *
+     * <p>Does NOT trigger for Matroska/MKV push — ExoPlayer's MatroskaExtractor
+     * handles HEVC correctly. Only MPEG program/transport streams have this
+     * rendering issue.</p>
      */
     public static boolean isExoHevcPushLandmine(String url)
     {
         if (url == null) return false;
         String u = url.toUpperCase(java.util.Locale.ROOT);
         if (!u.contains("PUSH:")) return false;
+        // Only fire for MPEG-PS/TS containers — Matroska/MKV push works fine in ExoPlayer.
+        if (!(u.contains("F=MPEG2-PS") || u.contains("F=MPEG2-TS") || u.contains("F=MPEG1-PS") || u.contains("F=MPEG")))
+            return false;
+        // Exclude Matroska explicitly (F=MPEG substring could false-match in theory)
+        if (u.contains("F=MATROSKA") || u.contains("F=MKV")) return false;
 
         int vidIdx = u.indexOf("BF=VID");
         if (vidIdx < 0) return false;

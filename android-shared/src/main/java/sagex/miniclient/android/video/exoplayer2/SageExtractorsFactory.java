@@ -65,14 +65,16 @@ public final class SageExtractorsFactory implements ExtractorsFactory {
                 new com.google.android.exoplayer2.util.TimestampAdjuster(0),
                 liveSizeProvider);
         if (psOnly) {
-            // Push-mode wire: MPEG-PS (MPEG2 / H.264 content) or MPEG2-TS (HEVC,
-            // since HEVC-in-PS is non-standard and the server muxes HEVC into TS).
+            // Push-mode wire: MPEG-PS (MPEG2 / H.264 content), MPEG2-TS (HEVC,
+            // since HEVC-in-PS is non-standard and the server muxes HEVC into TS),
+            // or Matroska (NG server uses MKV for HEVC+EAC3/AC4 remux push).
             // TsExtractor's sniff is strict (multiple 0x47 sync bytes at 188-byte
             // intervals) so it won't false-positive on a PS stream, and vice
             // versa, making this two-extractor cascade safe against the
             // partial-buffer mis-sniff problem that motivated the original
-            // ps-only restriction.
-            return new Extractor[]{ psExtractor, new TsExtractor() };
+            // ps-only restriction. MatroskaExtractor sniffs on EBML header bytes
+            // which are distinct from both PS and TS sync patterns.
+            return new Extractor[]{ psExtractor, new TsExtractor(), new MatroskaExtractor() };
         }
         return new Extractor[]{
                 new MatroskaExtractor(),
