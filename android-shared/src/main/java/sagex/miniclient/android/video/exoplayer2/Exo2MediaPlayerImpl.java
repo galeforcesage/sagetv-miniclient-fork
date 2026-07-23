@@ -36,12 +36,14 @@ import com.google.android.exoplayer2.video.VideoSize;
 
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 
 import android.media.MediaCodecInfo;
 import android.media.MediaCodecList;
 
 import sagex.miniclient.MiniPlayerPlugin;
 import sagex.miniclient.android.MiniclientApplication;
+import sagex.miniclient.android.media.CodecCapabilityDetector;
 import sagex.miniclient.android.ui.AndroidUIController;
 import sagex.miniclient.android.util.Logger;
 import sagex.miniclient.android.video.BaseMediaPlayerImpl;
@@ -1573,6 +1575,19 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     private static boolean hasMediaCodecDecoderForMime(String mime)
     {
         if (mime == null) return false;
+        // If the smoke test has run and this codec was tested, trust the
+        // verified result over raw MediaCodecList (catches false positives
+        // like Samsung Fold 5 + audio/ac4).
+        if (CodecCapabilityDetector.isCodecVerified(mime)) return true;
+        // If the smoke test flagged it as broken, reject it.
+        Map<String, Boolean> smokeResults = CodecCapabilityDetector.getSmokeTestResults();
+        if (smokeResults != null)
+        {
+            Boolean ok = smokeResults.get(mime);
+            if (ok != null) return ok; // true=verified, false=broken
+        }
+        // Codec not in smoke test suite or smoke test hasn't run yet —
+        // fall back to raw MediaCodecList check.
         try
         {
             MediaCodecList codecList = new MediaCodecList(MediaCodecList.ALL_CODECS);

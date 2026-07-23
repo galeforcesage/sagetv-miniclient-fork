@@ -318,6 +318,19 @@ public final class CodecCapabilityDetector
             if (info.isEncoder()) continue;
             out.addAll(getTypes(info, prefix));
         }
+        // Filter out codecs the smoke test proved are broken (listed in
+        // MediaCodecList but fail configure/start). If the smoke test hasn't
+        // run yet, trust MediaCodecList as-is (no regression).
+        Map<String, Boolean> results = smokeTestResults;
+        if (results != null)
+        {
+            out.removeIf(mime -> {
+                Boolean ok = results.get(mime);
+                // ok == null means the codec wasn't in the smoke test suite
+                // (trust MediaCodecList). ok == false means listed but broken.
+                return ok != null && !ok;
+            });
+        }
         return out;
     }
 
@@ -571,6 +584,16 @@ public final class CodecCapabilityDetector
         if (results == null) return false;
         Boolean ok = results.get(mime);
         return ok != null && ok;
+    }
+
+    /**
+     * Returns the cached smoke test results map, or null if the smoke test
+     * hasn't run yet. Used by other components to check whether a specific
+     * codec was tested and whether it passed or failed.
+     */
+    public static Map<String, Boolean> getSmokeTestResults()
+    {
+        return smokeTestResults;
     }
 
     /**
