@@ -37,6 +37,9 @@ import com.google.android.exoplayer2.video.VideoSize;
 import java.util.HashSet;
 import java.util.List;
 
+import android.media.MediaCodecInfo;
+import android.media.MediaCodecList;
+
 import sagex.miniclient.MiniPlayerPlugin;
 import sagex.miniclient.android.MiniclientApplication;
 import sagex.miniclient.android.ui.AndroidUIController;
@@ -994,6 +997,33 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
 
         final String sageTVurlFinal = sageTVurl;
+
+        // Pre-validate audio decoder availability. If the server told us the
+        // audio codec (via push:bf=aud;f=... or ng_fmt) and we have no decoder
+        // for it, log a warning immediately. This catches cases like AC-4 on
+        // devices without a decoder — the stream will play video but be silent,
+        // so at minimum we surface the issue in logs for diagnosis.
+        // (Future: signal the server to transcode audio instead.)
+        if (audioCodecHint != null)
+        {
+            String audioMime = audioCodecToAndroidMime(audioCodecHint);
+            if (audioMime != null)
+            {
+                boolean hasDecoder = hasMediaCodecDecoderForMime(audioMime);
+                if (!hasDecoder)
+                {
+                    log.logWarning("AUDIO DECODER PRE-CHECK FAILED: no MediaCodec decoder for "
+                            + audioCodecHint + " (" + audioMime + "). "
+                            + "Playback will likely have no audio. "
+                            + "Server should transcode this codec.");
+                }
+                else if (VerboseLogging.DETAILED_PLAYER_LOGGING)
+                {
+                    log.logDebug("Audio decoder pre-check OK: " + audioCodecHint + " (" + audioMime + ")");
+                }
+            }
+        }
+
         if (!httpls)
         {
 
@@ -1057,26 +1087,38 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             }
             else if (pushMode && trickplayController != null && trickplayController.isNativeAvailable())
             {
-                // Push-mode prebuffer gate (placeshifter pattern).
-                // Defer setMediaSource()+prepare() until ~64 KB has actually
-                // arrived in the ring (matches placeshifter's
-                // pushDataLeftBeforeInit). Without this the first sniff()
-                // runs against a near-empty ring, fails with
-                // UnrecognizedInputFormatException, and ExoPlayer's retry
-                // path burns 1-2 seconds per attempt.
-                final com.google.android.exoplayer2.source.MediaSource finalSrc = mediaSource;
-                runWhenPrebuffered(new Runnable()
+                if (containerHint != null)
                 {
-                    @Override
-                    public void run()
+                    // Container hint available (from push:f= or ng_fmt) — the
+                    // SageExtractorsFactory will return a single extractor with no
+                    // sniff phase, so we can call prepare() immediately. The
+                    // extractor's read() will simply block until data arrives in
+                    // the ring buffer. This eliminates the prebuffer gate delay
+                    // (~500-1500ms). Works with both legacy and NG servers since
+                    // push:f= has always been sent.
+                    player.setMediaSource(mediaSource, true);
+                    player.prepare();
+                    if (VerboseLogging.DETAILED_PLAYER_LOGGING)
+                        log.logDebug("Push setupPlayer: immediate prepare() (containerHint=" + containerHint + ")");
+                }
+                else
+                {
+                    // No format hint — fall back to prebuffer gate so the sniff
+                    // phase has enough data to identify the container.
+                    final com.google.android.exoplayer2.source.MediaSource finalSrc = mediaSource;
+                    runWhenPrebuffered(new Runnable()
                     {
-                        if (player == null) return;
-                        player.setMediaSource(finalSrc, true);
-                        player.prepare();
-                        if (VerboseLogging.DETAILED_PLAYER_LOGGING)
-                            log.logDebug("Push setupPlayer: prepare() after prebuffer");
-                    }
-                });
+                        @Override
+                        public void run()
+                        {
+                            if (player == null) return;
+                            player.setMediaSource(finalSrc, true);
+                            player.prepare();
+                            if (VerboseLogging.DETAILED_PLAYER_LOGGING)
+                                log.logDebug("Push setupPlayer: prepare() after prebuffer");
+                        }
+                    });
+                }
             }
             else
             {
@@ -1522,5 +1564,28 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
         metaDataBuilder.putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_TITLE, displayTitle);
         metaDataBuilder.putLong(MediaMetadataCompat.METADATA_KEY_DURATION, duration);
         mediaSession.setMetadata(metaDataBuilder.build());
+    }
+
+    /**
+     * Check if a MediaCodec decoder exists for the given MIME type.
+     * Used for pre-validating audio codec availability at player setup time.
+     */
+    private static boolean hasMediaCodecDecoderForMime(String mime)
+    {
+        if (mime == null) return false;
+        try
+        {
+            MediaCodecList codecList = new MediaCodecList(MediaCodecList.ALL_CODECS);
+            for (MediaCodecInfo info : codecList.getCodecInfos())
+            {
+                if (info.isEncoder()) continue;
+                for (String type : info.getSupportedTypes())
+                {
+                    if (type.equalsIgnoreCase(mime)) return true;
+                }
+            }
+        }
+        catch (Exception ignored) { }
+        return false;
     }
 }

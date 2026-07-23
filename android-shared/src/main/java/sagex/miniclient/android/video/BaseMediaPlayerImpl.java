@@ -82,6 +82,20 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
      */
     protected String containerHint = null;
 
+    /**
+     * Video codec hint (SageTV name e.g. "HEVC", "H.264", "MPEG2-Video")
+     * parsed from the OPENURL. Used for pre-validation only.
+     */
+    protected String videoCodecHint = null;
+
+    /**
+     * Audio codec hint (SageTV name e.g. "AC3", "EAC3", "AC-4", "AAC")
+     * parsed from the OPENURL. Used for decoder pre-validation — if the
+     * audio codec has no available decoder, the client can signal failure
+     * before wasting time buffering.
+     */
+    protected String audioCodecHint = null;
+
     public BaseMediaPlayerImpl(AndroidUIController activity, boolean createPlayerOnUI, boolean waitForPlayer)
     {
         this.context = activity;
@@ -132,10 +146,13 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
         flushed = false;
         this.timeshifted = timeshifted;
 
-        // Extract container format hint from the server URL.
-        // Push: "push:f=MPEG2-TS;[bf=vid;...]" → "MPEG2-TS"
-        // Pull NG: "stv://host/file.ts?ng_fmt=video/mp2t,video/hevc,audio/eac3" → "video/mp2t"
+        // Extract format hints from the server URL for extractor selection
+        // and decoder pre-validation. Works for both legacy and NG servers
+        // in push mode (push:f=MPEG2-TS;[bf=vid;f=HEVC;][bf=aud;f=AC3;]).
+        // For NG pull mode: ?ng_fmt=video/mp2t,video/hevc,audio/eac3
         containerHint = parseContainerHint(urlString);
+        videoCodecHint = parseVideoCodecHint(urlString);
+        audioCodecHint = parseAudioCodecHint(urlString);
 
         String url = urlString;
         httpls = urlString.startsWith("http://");
@@ -320,6 +337,155 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
             // There are params after ng_fmt — replace the separator with the one before
             char sep = url.charAt(sepIdx);
             return url.substring(0, sepIdx) + sep + url.substring(end + 1);
+        }
+    }
+
+    /**
+     * Parse the video codec hint from a server OPENURL string.
+     * Push: extracts from [bf=vid;f=HEVC;...] block.
+     * Pull NG: extracts from ng_fmt second field (video MIME → SageTV name).
+     */
+    protected static String parseVideoCodecHint(String url)
+    {
+        if (url == null || url.isEmpty()) return null;
+        try
+        {
+            if (url.startsWith("push:"))
+            {
+                return extractTrackCodec(url.substring("push:".length()), "bf=vid");
+            }
+            else
+            {
+                String mime = extractNgFmtField(url, 1);
+                return mapVideoMimeToCodec(mime);
+            }
+        }
+        catch (RuntimeException ignored) { }
+        return null;
+    }
+
+    /**
+     * Parse the audio codec hint from a server OPENURL string.
+     * Push: extracts from [bf=aud;f=AC3;...] block.
+     * Pull NG: extracts from ng_fmt third field (audio MIME → SageTV name).
+     */
+    protected static String parseAudioCodecHint(String url)
+    {
+        if (url == null || url.isEmpty()) return null;
+        try
+        {
+            if (url.startsWith("push:"))
+            {
+                return extractTrackCodec(url.substring("push:".length()), "bf=aud");
+            }
+            else
+            {
+                String mime = extractNgFmtField(url, 2);
+                return mapAudioMimeToCodec(mime);
+            }
+        }
+        catch (RuntimeException ignored) { }
+        return null;
+    }
+
+    /**
+     * Extract the f= value from a [tag;f=VALUE;...] block in a push URL body.
+     * Returns null if not found.
+     */
+    private static String extractTrackCodec(String body, String tag)
+    {
+        int blockStart = body.indexOf("[" + tag);
+        if (blockStart < 0) return null;
+        int blockEnd = body.indexOf(']', blockStart);
+        if (blockEnd < 0) blockEnd = body.length();
+        String block = body.substring(blockStart, blockEnd);
+        int fIdx = block.indexOf(";f=");
+        if (fIdx < 0) return null;
+        int valStart = fIdx + 3;
+        int valEnd = valStart;
+        while (valEnd < block.length())
+        {
+            char ch = block.charAt(valEnd);
+            if (ch == ';' || ch == ']') break;
+            valEnd++;
+        }
+        String codec = block.substring(valStart, valEnd).trim();
+        return codec.isEmpty() ? null : codec;
+    }
+
+    /**
+     * Extract a positional field from the ng_fmt query parameter value.
+     * Index 0 = container, 1 = video, 2 = audio.
+     */
+    private static String extractNgFmtField(String url, int fieldIndex)
+    {
+        int ngIdx = url.indexOf("ng_fmt=");
+        if (ngIdx < 0) return null;
+        int start = ngIdx + "ng_fmt=".length();
+        int end = url.indexOf('&', start);
+        if (end < 0) end = url.length();
+        String mimeStr = url.substring(start, end);
+        String[] parts = mimeStr.split(",", -1);
+        if (fieldIndex >= parts.length) return null;
+        String field = parts[fieldIndex].trim();
+        return field.isEmpty() ? null : field;
+    }
+
+    /** Map video MIME to SageTV codec name. */
+    private static String mapVideoMimeToCodec(String mime)
+    {
+        if (mime == null) return null;
+        switch (mime)
+        {
+            case "video/hevc":     return "HEVC";
+            case "video/avc":      return "H.264";
+            case "video/mpeg2":    return "MPEG2-Video";
+            case "video/mp4v-es":  return "MPEG4-Video";
+            case "video/x-ms-wmv": return "VC1";
+            default:               return null;
+        }
+    }
+
+    /** Map audio MIME to SageTV codec name. */
+    private static String mapAudioMimeToCodec(String mime)
+    {
+        if (mime == null) return null;
+        switch (mime)
+        {
+            case "audio/ac4":       return "AC-4";
+            case "audio/eac3":      return "EAC3";
+            case "audio/ac3":       return "AC3";
+            case "audio/mp4a-latm": return "AAC";
+            case "audio/mpeg":      return "MP3";
+            case "audio/mpeg-L2":   return "MP2";
+            case "audio/flac":      return "FLAC";
+            case "audio/vnd.dts":   return "DTS";
+            case "audio/vnd.dts.hd":return "DTS-HD";
+            case "audio/vorbis":    return "Vorbis";
+            case "audio/alac":      return "ALAC";
+            default:                return null;
+        }
+    }
+
+    /**
+     * Map a SageTV audio codec name to Android MIME type for MediaCodec lookup.
+     * Returns null if unmapped (decoder validation will be skipped).
+     */
+    protected static String audioCodecToAndroidMime(String codec)
+    {
+        if (codec == null) return null;
+        switch (codec)
+        {
+            case "AC-4":  return "audio/ac4";
+            case "EAC3":  return "audio/eac3";
+            case "AC3":   return "audio/ac3";
+            case "AAC":   return "audio/mp4a-latm";
+            case "MP3":   return "audio/mpeg";
+            case "FLAC":  return "audio/flac";
+            case "DTS":   return "audio/vnd.dts";
+            case "DTS-HD": return "audio/vnd.dts.hd";
+            case "Vorbis": return "audio/vorbis";
+            default:       return null;
         }
     }
 
