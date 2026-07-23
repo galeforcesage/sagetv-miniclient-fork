@@ -667,6 +667,10 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
         this.url = sageTVurl;
 
+        // Strip ng_fmt query parameter (format hint for extractor selection only —
+        // the data source / server doesn't understand it as part of the file path).
+        sageTVurl = stripNgFmt(sageTVurl);
+
         // VerboseLogUtil.setEnableAllTags(true);
 
         //if (VerboseLogging.DETAILED_PLAYER_LOGGING)
@@ -913,7 +917,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                     //Library files start with stc:// but do not have push in it
                     //Live TV has push: with a lot of other data in it
 
-                    setMediaSessionMetadata(sageTVurl, duration);
+                    setMediaSessionMetadata(url, duration);
                     if (mediaSession != null) mediaSession.setActive(true);
                     updateMediaSessionPlaybackState(Exo2MediaPlayerImpl.this.getPlaybackPosition());
                 }
@@ -1019,9 +1023,11 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             // ERROR_CODE_PARSING_CONTAINER_MALFORMED rebuilds when a post-flush
             // sniff against a partially-filled ring fails over to Mp3Extractor /
             // other extractors that then bail after scanning >1MB.
+            // If containerHint is available (server told us the format), pass it
+            // to skip sniffing entirely (~200-500ms savings).
             mediaSource = new ProgressiveMediaSource.Factory(
                     dataSourceFactory,
-                    new SageExtractorsFactory(liveSizeProvider, pushMode))
+                    new SageExtractorsFactory(liveSizeProvider, pushMode, containerHint))
                     .createMediaSource(MediaItem.fromUri(Uri.parse(sageTVurl)));
 
 

@@ -72,6 +72,16 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     boolean debug_ar = false;
     protected boolean httpls = false;
 
+    /**
+     * Container format hint extracted from the server's OPENURL string.
+     * For push mode: parsed from {@code push:f=MPEG2-TS;...}
+     * For pull mode (NG): parsed from {@code ?ng_fmt=video/mp2t,...}
+     * Used by ExoPlayer to skip extractor sniffing and select the right
+     * extractor immediately — saves 200-500ms on startup.
+     * Null if no hint is available (legacy server, unknown format).
+     */
+    protected String containerHint = null;
+
     public BaseMediaPlayerImpl(AndroidUIController activity, boolean createPlayerOnUI, boolean waitForPlayer)
     {
         this.context = activity;
@@ -121,6 +131,11 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
         seekPending = false;
         flushed = false;
         this.timeshifted = timeshifted;
+
+        // Extract container format hint from the server URL.
+        // Push: "push:f=MPEG2-TS;[bf=vid;...]" → "MPEG2-TS"
+        // Pull NG: "stv://host/file.ts?ng_fmt=video/mp2t,video/hevc,audio/eac3" → "video/mp2t"
+        containerHint = parseContainerHint(urlString);
 
         String url = urlString;
         httpls = urlString.startsWith("http://");
@@ -212,6 +227,101 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     }
 
     protected abstract void setupPlayer(String sageTVurl);
+
+    /**
+     * Parse the container format hint from a server OPENURL string.
+     * Returns a normalized container name (e.g. "MPEG2-TS", "MATROSKA", "MPEG2-PS", "MP4")
+     * or null if no hint is available.
+     */
+    protected static String parseContainerHint(String url)
+    {
+        if (url == null || url.isEmpty()) return null;
+        try
+        {
+            if (url.startsWith("push:"))
+            {
+                // push:f=MPEG2-TS;[bf=vid;f=HEVC;...]
+                String body = url.substring("push:".length());
+                int fIdx = body.indexOf("f=");
+                if (fIdx >= 0)
+                {
+                    int end = fIdx + 2;
+                    while (end < body.length())
+                    {
+                        char ch = body.charAt(end);
+                        if (ch == ';' || ch == '[') break;
+                        end++;
+                    }
+                    String container = body.substring(fIdx + 2, end).trim();
+                    if (!container.isEmpty()) return container;
+                }
+            }
+            else
+            {
+                // Pull mode: look for ng_fmt query parameter
+                // ?ng_fmt=video/mp2t,video/hevc,audio/eac3
+                int ngIdx = url.indexOf("ng_fmt=");
+                if (ngIdx >= 0)
+                {
+                    int start = ngIdx + "ng_fmt=".length();
+                    int end = url.indexOf('&', start);
+                    if (end < 0) end = url.length();
+                    String mimeStr = url.substring(start, end);
+                    // First field is container MIME → map to SageTV name
+                    int comma = mimeStr.indexOf(',');
+                    String containerMime = (comma >= 0) ? mimeStr.substring(0, comma) : mimeStr;
+                    return mapMimeToContainer(containerMime.trim());
+                }
+            }
+        }
+        catch (RuntimeException ignored) { }
+        return null;
+    }
+
+    /**
+     * Map a container MIME type from ng_fmt to the internal container name
+     * used by SageExtractorsFactory.
+     */
+    private static String mapMimeToContainer(String mime)
+    {
+        if (mime == null || mime.isEmpty()) return null;
+        switch (mime)
+        {
+            case "video/mp2t":        return "MPEG2-TS";
+            case "video/mpeg":        return "MPEG2-PS";
+            case "video/x-matroska":  return "MATROSKA";
+            case "video/mp4":         return "MP4";
+            case "video/quicktime":   return "MP4";
+            case "video/x-msvideo":   return null; // AVI — no dedicated extractor priority
+            default:                  return null;
+        }
+    }
+
+    /**
+     * Strip the ng_fmt query parameter from a URL before passing to the data source.
+     * Returns the URL unchanged if ng_fmt is not present.
+     */
+    protected static String stripNgFmt(String url)
+    {
+        if (url == null) return null;
+        int ngIdx = url.indexOf("ng_fmt=");
+        if (ngIdx < 0) return url;
+        // Find the separator before ng_fmt (? or &)
+        int sepIdx = ngIdx - 1;
+        if (sepIdx < 0) return url;
+        int end = url.indexOf('&', ngIdx + 7);
+        if (end < 0)
+        {
+            // ng_fmt is the last (or only) param — remove it and the preceding separator
+            return url.substring(0, sepIdx);
+        }
+        else
+        {
+            // There are params after ng_fmt — replace the separator with the one before
+            char sep = url.charAt(sepIdx);
+            return url.substring(0, sepIdx) + sep + url.substring(end + 1);
+        }
+    }
 
     public void message(final String msg)
     {
