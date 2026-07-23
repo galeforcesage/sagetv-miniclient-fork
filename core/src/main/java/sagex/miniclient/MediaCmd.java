@@ -21,6 +21,8 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Timer;
+import java.util.TimerTask;
 
 import sagex.miniclient.ngcontext.NgPlaybackContextStore;
 import sagex.miniclient.ngcontext.NgSeekPolicy;
@@ -114,6 +116,23 @@ public class MediaCmd
     private int pendingPushSize = 0;
     private boolean pendingPushOverflow = false;
 
+    /*
+     * Push data-flow watchdog.
+     *
+     * After MEDIACMD_OPENURL in push mode, the server should begin sending
+     * PUSHBUFFER packets within a few seconds. If the tuner can't lock signal
+     * (wrong modulation, bad channel assignment after reconnect, etc.) the
+     * server produces 0 bytes and the client would sit forever with a blank
+     * screen while the server's Seeker loops through halt-detect/restart cycles.
+     *
+     * This watchdog fires PUSH_DATAFLOW_TIMEOUT_MS after OPENURL. If no push
+     * data has arrived by then, the player is closed (freeing the server-side
+     * tuner) and a warning is logged.
+     */
+    private static final long PUSH_DATAFLOW_TIMEOUT_MS = 7000;
+    private volatile boolean pushDataReceived = false;
+    private Timer pushDataflowTimer = null;
+
     static
     {
         CMDMAP.put(MEDIACMD_INIT, "MEDIACMD_INIT");
@@ -182,6 +201,7 @@ public class MediaCmd
 
     public void close()
     {
+        cancelPushDataflowWatchdog();
         if (myConn.getGfxCmd() != null)
             myConn.getGfxCmd().setVideoBounds(null, null);
         if (playa != null)
@@ -196,6 +216,45 @@ public class MediaCmd
         if (contextStore != null)
         {
             contextStore.onMediaClose();
+        }
+    }
+
+    /**
+     * Start the push data-flow watchdog timer. Cancels any existing timer first.
+     * Called after push-mode OPENURL creates the player.
+     */
+    private void startPushDataflowWatchdog()
+    {
+        cancelPushDataflowWatchdog();
+        pushDataReceived = false;
+        pushDataflowTimer = new Timer("PushDataflowWatchdog", true);
+        pushDataflowTimer.schedule(new TimerTask()
+        {
+            @Override
+            public void run()
+            {
+                if (!pushDataReceived && playa != null && pushMode)
+                {
+                    log.error("PUSH DATA-FLOW TIMEOUT: no data received within {}ms of OPENURL — "
+                            + "closing player to release server tuner. Likely cause: tuner cannot "
+                            + "receive the requested channel (wrong modulation, bad signal, or "
+                            + "stale channel assignment after server restart).",
+                            PUSH_DATAFLOW_TIMEOUT_MS);
+                    close();
+                }
+            }
+        }, PUSH_DATAFLOW_TIMEOUT_MS);
+    }
+
+    /**
+     * Cancel the push data-flow watchdog if active.
+     */
+    private void cancelPushDataflowWatchdog()
+    {
+        if (pushDataflowTimer != null)
+        {
+            pushDataflowTimer.cancel();
+            pushDataflowTimer = null;
         }
     }
 
@@ -301,6 +360,7 @@ public class MediaCmd
                             try
                             {
                                 playa.pushData(pendingPushBuf, 0, pendingPushSize);
+                                pushDataReceived = true; // pre-OPENURL data counts
                             }
                             catch (IOException e)
                             {
@@ -313,6 +373,9 @@ public class MediaCmd
                                 pendingPushOverflow = false;
                             }
                         }
+
+                        // Start data-flow watchdog for push mode
+                        startPushDataflowWatchdog();
                     }
                 }
                 writeInt(1, retbuf, 0);
@@ -433,6 +496,12 @@ public class MediaCmd
                 {
                     if (buffSize > 0)
                     {
+                        // Data is flowing — cancel the watchdog on first real push data
+                        if (!pushDataReceived)
+                        {
+                            pushDataReceived = true;
+                            cancelPushDataflowWatchdog();
+                        }
                         try
                         {
                             playa.pushData(cmddata, bufDataOffset, buffSize);
