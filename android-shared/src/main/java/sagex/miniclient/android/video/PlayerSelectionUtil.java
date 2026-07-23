@@ -119,23 +119,29 @@ public final class PlayerSelectionUtil
 
     /**
      * HEVC push landmine: the server selected a push stream with HEVC video
-     * inside an MPEG-PS or MPEG-TS container, where ExoPlayer can reach a
-     * ready state without ever presenting a visible picture. IJK has been the
-     * more reliable renderer for this specific push shape, so route it up-front.
+     * inside an MPEG-PS container, where ExoPlayer can reach a ready state
+     * without ever presenting a visible picture. IJK has been the more
+     * reliable renderer for this specific push shape, so route it up-front.
      *
      * <p>Does NOT trigger for Matroska/MKV push — ExoPlayer's MatroskaExtractor
-     * handles HEVC correctly. Only MPEG program/transport streams have this
-     * rendering issue.</p>
+     * handles HEVC correctly.</p>
+     *
+     * <p>Does NOT trigger for MPEG2-TS push — ExoPlayer's TsExtractor handles
+     * HEVC correctly (the original rendering issue was related to sniff/rebuild
+     * during flush, now fixed with seekTo(0) flush). Additionally, ATSC3
+     * channels carry AC4 audio which IJK's ffmpeg cannot decode, so routing
+     * MPEG2-TS+HEVC to IJK causes silent audio.</p>
      */
     public static boolean isExoHevcPushLandmine(String url)
     {
         if (url == null) return false;
         String u = url.toUpperCase(java.util.Locale.ROOT);
         if (!u.contains("PUSH:")) return false;
-        // Only fire for MPEG-PS/TS containers — Matroska/MKV push works fine in ExoPlayer.
-        if (!(u.contains("F=MPEG2-PS") || u.contains("F=MPEG2-TS") || u.contains("F=MPEG1-PS") || u.contains("F=MPEG")))
+        // Only fire for MPEG-PS containers. MPEG2-TS is now safe for ExoPlayer
+        // (TsExtractor + HEVC works, and TS streams may carry AC4 which IJK can't decode).
+        if (!(u.contains("F=MPEG2-PS") || u.contains("F=MPEG1-PS")))
             return false;
-        // Exclude Matroska explicitly (F=MPEG substring could false-match in theory)
+        // Exclude Matroska explicitly
         if (u.contains("F=MATROSKA") || u.contains("F=MKV")) return false;
 
         int vidIdx = u.indexOf("BF=VID");

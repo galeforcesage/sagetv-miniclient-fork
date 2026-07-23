@@ -22,6 +22,7 @@ import java.io.FileReader;
 import java.io.IOException;
 
 import sagex.miniclient.MiniClient;
+import sagex.miniclient.android.media.CodecCapabilityDetector;
 import sagex.miniclient.android.util.Logger;
 import sagex.miniclient.prefs.PrefStore;
 
@@ -130,6 +131,19 @@ public class MiniclientApplication extends Application
         }
 
         log.logDebug("-------- LAYOUT: {"+ getResources().getString(R.string.layout) + "} ---------");
+
+        // Run codec smoke tests on a background thread at app init.
+        // Results are cached for the lifetime of the process and used by
+        // capability advertisement and player pre-validation to filter out
+        // codecs that are listed in MediaCodecList but actually broken.
+        new Thread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                CodecCapabilityDetector.runCodecSmokeTests();
+            }
+        }, "CodecSmokeTest").start();
     }
 
     @Override

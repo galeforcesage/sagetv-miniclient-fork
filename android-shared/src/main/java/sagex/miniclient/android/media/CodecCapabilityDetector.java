@@ -18,9 +18,11 @@ import com.google.android.exoplayer2.ext.ffmpeg.FfmpegLibrary;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -456,23 +458,131 @@ public final class CodecCapabilityDetector
                 || support == Ac4Support.DIRECT_AUDIO_RENDER;
     }
 
+    // ─── Codec runtime smoke test ─────────────────────────────────────────
+    //
+    // MediaCodecList can lie: devices register decoders that throw or silently
+    // fail when actually used (Samsung Fold 5 + audio/ac4, various TV boxes
+    // with broken DTS entries, etc.). The smoke test instantiates each
+    // decoder, calls configure()+start()+stop()+release() with a minimal
+    // MediaFormat. Results are cached for the lifetime of the process.
+    //
+    // Total cost for ~12 codecs: ~100-250ms (runs once at app init).
+
+    /** MIME types to smoke-test at init time. */
+    private static final String[][] SMOKE_TEST_CODECS = {
+            // Audio codecs
+            { "audio/ac4",       "audio", "48000", "2" },
+            { "audio/eac3",      "audio", "48000", "2" },
+            { "audio/ac3",       "audio", "48000", "2" },
+            { "audio/mp4a-latm", "audio", "44100", "2" },
+            { "audio/mpeg",      "audio", "44100", "2" },
+            { "audio/flac",      "audio", "44100", "2" },
+            { "audio/vnd.dts",   "audio", "48000", "2" },
+            { "audio/vnd.dts.hd","audio", "48000", "2" },
+            { "audio/opus",      "audio", "48000", "2" },
+            { "audio/vorbis",    "audio", "44100", "2" },
+            // Video codecs
+            { "video/hevc",      "video", "1920", "1080" },
+            { "video/avc",       "video", "1920", "1080" },
+            { "video/mpeg2",     "video", "1920", "1080" },
+            { "video/mp4v-es",   "video", "1920", "1080" },
+            { "video/x-vnd.on2.vp9", "video", "1920", "1080" },
+            { "video/av01",      "video", "1920", "1080" },
+    };
+
+    /** Cached results: MIME → true (decoder actually works) / false (listed but broken). */
+    private static volatile Map<String, Boolean> smokeTestResults = null;
+
     /**
-     * Runtime smoke test: actually instantiate an AC4 decoder, configure it
-     * with a realistic MediaFormat, and call start(). Some devices (e.g.
-     * Samsung Fold 5) register an {@code audio/ac4} codec in MediaCodecList
-     * but the decoder throws or silently fails when configured. This catches
-     * those false positives at capability-advertisement time rather than
-     * during live playback (which would produce silent audio).
+     * Run the codec smoke test for all key codecs. Call once at app init.
+     * Results are cached for the lifetime of the process.
+     * Skips codecs not listed in MediaCodecList (no point testing).
      *
-     * <p>The test takes ~5-20ms and is called once during session init.
+     * @return unmodifiable map of MIME → verified (true = works, false = broken)
      */
-    private static boolean canConfigureAc4Decoder()
+    public static Map<String, Boolean> runCodecSmokeTests()
+    {
+        if (smokeTestResults != null) return smokeTestResults;
+
+        long startTime = System.currentTimeMillis();
+        Map<String, Boolean> results = new HashMap<>();
+
+        for (String[] entry : SMOKE_TEST_CODECS)
+        {
+            String mime = entry[0];
+
+            // Only test if MediaCodecList claims a decoder exists
+            if (!hasMediaCodecDecoderForMime(mime))
+            {
+                results.put(mime, false);
+                continue;
+            }
+
+            boolean ok;
+            if ("audio".equals(entry[1]))
+            {
+                ok = smokeTestDecoder(mime,
+                        MediaFormat.createAudioFormat(mime,
+                                Integer.parseInt(entry[2]),
+                                Integer.parseInt(entry[3])));
+            }
+            else
+            {
+                ok = smokeTestDecoder(mime,
+                        MediaFormat.createVideoFormat(mime,
+                                Integer.parseInt(entry[2]),
+                                Integer.parseInt(entry[3])));
+            }
+            results.put(mime, ok);
+        }
+
+        long elapsed = System.currentTimeMillis() - startTime;
+        StringBuilder sb = new StringBuilder("Codec smoke test completed in ")
+                .append(elapsed).append("ms: ");
+        for (Map.Entry<String, Boolean> e : results.entrySet())
+        {
+            if (e.getValue())
+            {
+                sb.append(e.getKey()).append("=OK ");
+            }
+            else if (hasMediaCodecDecoderForMime(e.getKey()))
+            {
+                sb.append(e.getKey()).append("=LISTED_BUT_BROKEN ");
+            }
+            // Skip codecs not listed at all (not interesting)
+        }
+
+        // Use Android's Log directly since we don't have a Logger instance here
+        android.util.Log.i("CodecSmokeTest", sb.toString().trim());
+
+        smokeTestResults = Collections.unmodifiableMap(results);
+        return smokeTestResults;
+    }
+
+    /**
+     * Check if a specific codec is verified by the smoke test.
+     * Returns true if the decoder was successfully configured and started.
+     * Returns false if the codec is not listed OR listed but broken.
+     * Must call {@link #runCodecSmokeTests()} first (returns false if not yet run).
+     */
+    public static boolean isCodecVerified(String mime)
+    {
+        Map<String, Boolean> results = smokeTestResults;
+        if (results == null) return false;
+        Boolean ok = results.get(mime);
+        return ok != null && ok;
+    }
+
+    /**
+     * Instantiate a decoder, configure it, start it, stop it, release it.
+     * Returns true only if the full lifecycle succeeds without throwing.
+     */
+    private static boolean smokeTestDecoder(String mime, MediaFormat fmt)
     {
         MediaCodec codec = null;
         try
         {
-            codec = MediaCodec.createDecoderByType("audio/ac4");
-            MediaFormat fmt = MediaFormat.createAudioFormat("audio/ac4", 48000, 2);
+            codec = MediaCodec.createDecoderByType(mime);
             codec.configure(fmt, null, null, 0);
             codec.start();
             codec.stop();
@@ -480,7 +590,6 @@ public final class CodecCapabilityDetector
         }
         catch (Throwable t)
         {
-            // Any exception = decoder is a stub or broken
             return false;
         }
         finally
@@ -490,6 +599,23 @@ public final class CodecCapabilityDetector
                 try { codec.release(); } catch (Throwable ignored) { }
             }
         }
+    }
+
+    /**
+     * Runtime smoke test for AC4 specifically.
+     * Uses the cached smoke test results if available, otherwise runs inline.
+     */
+    private static boolean canConfigureAc4Decoder()
+    {
+        Map<String, Boolean> results = smokeTestResults;
+        if (results != null)
+        {
+            Boolean ok = results.get("audio/ac4");
+            return ok != null && ok;
+        }
+        // Fallback: inline test (shouldn't happen if init ran first)
+        return smokeTestDecoder("audio/ac4",
+                MediaFormat.createAudioFormat("audio/ac4", 48000, 2));
     }
 
     private static Set<String> getTypes(MediaCodecInfo info, String prefix)
