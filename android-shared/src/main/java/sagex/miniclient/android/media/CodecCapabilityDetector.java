@@ -7,6 +7,8 @@ import android.media.AudioAttributes;
 import android.media.AudioDeviceInfo;
 import android.media.AudioFormat;
 import android.media.AudioManager;
+import android.media.MediaCodec;
+import android.media.MediaFormat;
 import android.os.Build;
 import android.media.MediaCodecInfo;
 import android.media.MediaCodecList;
@@ -374,10 +376,18 @@ public final class CodecCapabilityDetector
      */
     public static Ac4Support detectAc4Support(Context ctx)
     {
-        // 1. MediaCodecList – strongest signal (Samsung Fold 5, LG flagships)
+        // 1. MediaCodecList – strongest signal (Samsung Fold 5, LG flagships).
+        //    However, some devices register an audio/ac4 decoder that cannot
+        //    actually decode (Samsung codec stub). Verify by instantiating
+        //    and configuring the decoder with a realistic AC4 MediaFormat.
         if (hasMediaCodecDecoderForMime("audio/ac4"))
         {
-            return Ac4Support.MEDIACODEC_DECODER;
+            if (canConfigureAc4Decoder())
+            {
+                return Ac4Support.MEDIACODEC_DECODER;
+            }
+            // Decoder listed but configure/start fails → treat as unverified
+            // (falls through to layer 2/3)
         }
 
         // 2. Android 13+ direct playback query – covers Android TV boxes with
@@ -444,6 +454,42 @@ public final class CodecCapabilityDetector
         Ac4Support support = detectAc4Support(ctx);
         return support == Ac4Support.MEDIACODEC_DECODER
                 || support == Ac4Support.DIRECT_AUDIO_RENDER;
+    }
+
+    /**
+     * Runtime smoke test: actually instantiate an AC4 decoder, configure it
+     * with a realistic MediaFormat, and call start(). Some devices (e.g.
+     * Samsung Fold 5) register an {@code audio/ac4} codec in MediaCodecList
+     * but the decoder throws or silently fails when configured. This catches
+     * those false positives at capability-advertisement time rather than
+     * during live playback (which would produce silent audio).
+     *
+     * <p>The test takes ~5-20ms and is called once during session init.
+     */
+    private static boolean canConfigureAc4Decoder()
+    {
+        MediaCodec codec = null;
+        try
+        {
+            codec = MediaCodec.createDecoderByType("audio/ac4");
+            MediaFormat fmt = MediaFormat.createAudioFormat("audio/ac4", 48000, 2);
+            codec.configure(fmt, null, null, 0);
+            codec.start();
+            codec.stop();
+            return true;
+        }
+        catch (Throwable t)
+        {
+            // Any exception = decoder is a stub or broken
+            return false;
+        }
+        finally
+        {
+            if (codec != null)
+            {
+                try { codec.release(); } catch (Throwable ignored) { }
+            }
+        }
     }
 
     private static Set<String> getTypes(MediaCodecInfo info, String prefix)
