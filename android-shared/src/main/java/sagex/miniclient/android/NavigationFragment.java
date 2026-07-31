@@ -246,6 +246,15 @@ public class NavigationFragment extends DialogFragment
             }
         });
 
+        navView.findViewById(R.id.nav_equalizer).setOnClickListener(new View.OnClickListener()
+        {
+            @Override
+            public void onClick(View v)
+            {
+                onOpenEqualizer();
+            }
+        });
+
         navView.findViewById(R.id.nav_remote_mode).setOnClickListener(new View.OnClickListener()
         {
             @Override
@@ -459,6 +468,16 @@ public class NavigationFragment extends DialogFragment
     {
         dismiss();
         HelpDialogFragment.showDialog(getActivity());
+    }
+
+    public void onOpenEqualizer()
+    {
+        dismiss();
+        Activity activity = getActivity();
+        if (activity == null) return;
+        sagex.miniclient.android.audio.eq.EqualizerFragment eqFrag =
+                new sagex.miniclient.android.audio.eq.EqualizerFragment();
+        eqFrag.show(activity.getFragmentManager(), "equalizer");
     }
 
     private boolean isExoPlayer()

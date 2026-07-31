@@ -192,6 +192,11 @@ public class MiniClientConnection implements SageTVInputCallback
     public static final String SAGETV_NG_VERSION = "1.0.1";
     public static final String CAP_PROFILE_ANDROID_MODERN = "android_modern";
     public static final String CAP_PROFILE_ANDROID_LEGACY = "android_legacy";
+
+    /** Set by Android at app init with EQ capability JSON. */
+    public static volatile String audioProcessingCapabilities = "";
+    /** Set by Android EQ UI on settings change. */
+    public static volatile String audioProcessingSettings = "";
     public static final String GIF = "GIF";
     public static final String PNG = "PNG";
     public static final String BMP = "BMP";
@@ -1787,6 +1792,14 @@ public class MiniClientConnection implements SageTVInputCallback
                     else if ("GFX_SUBTITLES".equals(propName))
                     {
                         propVal = "TRUE";
+                    }
+                    else if ("AUDIO_PROCESSING_CAPABILITIES".equals(propName))
+                    {
+                        propVal = audioProcessingCapabilities;
+                    }
+                    else if ("AUDIO_PROCESSING_SETTINGS".equals(propName))
+                    {
+                        propVal = audioProcessingSettings;
                     }
                     else if ("FORCED_MEDIA_RECONNECT".equals(propName))
                     {

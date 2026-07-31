@@ -22,6 +22,7 @@ import java.io.FileReader;
 import java.io.IOException;
 
 import sagex.miniclient.MiniClient;
+import sagex.miniclient.android.audio.eq.EqCapabilityPayload;
 import sagex.miniclient.android.media.CodecCapabilityDetector;
 import sagex.miniclient.android.util.Logger;
 import sagex.miniclient.prefs.PrefStore;
@@ -142,6 +143,7 @@ public class MiniclientApplication extends Application
             public void run()
             {
                 CodecCapabilityDetector.runCodecSmokeTests();
+                EqCapabilityPayload.init();
             }
         }, "CodecSmokeTest").start();
     }
