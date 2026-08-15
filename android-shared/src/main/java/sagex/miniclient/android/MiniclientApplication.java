@@ -144,6 +144,8 @@ public class MiniclientApplication extends Application
             {
                 CodecCapabilityDetector.runCodecSmokeTests();
                 EqCapabilityPayload.init();
+                sagex.miniclient.android.audio.eq.EqManager.get()
+                        .init(getApplicationContext());
             }
         }, "CodecSmokeTest").start();
     }

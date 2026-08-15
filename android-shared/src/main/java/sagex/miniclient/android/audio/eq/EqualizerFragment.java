@@ -8,7 +8,6 @@ import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.Window;
 import android.view.WindowManager;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
@@ -43,6 +42,8 @@ public class EqualizerFragment extends DialogFragment
     private TextView preampValue;
     private LinearLayout bandsContainer;
     private TextView offIndicator;
+    private TextView statusText;
+    private TextView recommendText;
     private View nightModeSection;
     private CheckBox nightModeCheckbox;
     private Spinner nightIntensitySpinner;
@@ -50,6 +51,17 @@ public class EqualizerFragment extends DialogFragment
     private SeekBar[] bandSeekBars;
     private TextView[] bandValueLabels;
     private boolean suppressListeners;
+
+    private final android.os.Handler statusHandler = new android.os.Handler();
+    private final Runnable statusTick = new Runnable()
+    {
+        @Override
+        public void run()
+        {
+            updateStatus();
+            statusHandler.postDelayed(this, 1000);
+        }
+    };
 
     /** Listener interface for settings changes (server notification). */
     public interface OnEqSettingsChangedListener
@@ -76,10 +88,11 @@ public class EqualizerFragment extends DialogFragment
     @Override
     public Dialog onCreateDialog(Bundle savedInstanceState)
     {
+        // STYLE_NO_FRAME (set in onCreate) already removes the title bar.
+        // Avoid requestFeature() here, which throws if content is set first.
         Dialog dialog = super.onCreateDialog(savedInstanceState);
         if (dialog.getWindow() != null)
         {
-            dialog.getWindow().requestFeature(Window.FEATURE_NO_TITLE);
             dialog.getWindow().setFlags(
                     WindowManager.LayoutParams.FLAG_FULLSCREEN,
                     WindowManager.LayoutParams.FLAG_FULLSCREEN);
@@ -102,8 +115,11 @@ public class EqualizerFragment extends DialogFragment
         Context ctx = getActivity();
         if (ctx == null) { dismiss(); return; }
 
+        EqManager mgr = EqManager.get();
+        mgr.init(ctx);
         store = new EqSettingsStore(ctx);
-        settings = store.load();
+        settings = mgr.getSettings();
+        engine = mgr.getEngine();
         bandCount = EqCapabilityReporter.getEffectiveBandCount();
 
         bindViews(view);
@@ -123,6 +139,8 @@ public class EqualizerFragment extends DialogFragment
         preampValue = view.findViewById(R.id.eq_preamp_value);
         bandsContainer = view.findViewById(R.id.eq_bands_container);
         offIndicator = view.findViewById(R.id.eq_off_indicator);
+        statusText = view.findViewById(R.id.eq_status_text);
+        recommendText = view.findViewById(R.id.eq_recommend_text);
         nightModeSection = view.findViewById(R.id.eq_night_mode_section);
         nightModeCheckbox = view.findViewById(R.id.eq_night_mode_checkbox);
         nightIntensitySpinner = view.findViewById(R.id.eq_night_intensity_spinner);
@@ -363,26 +381,123 @@ public class EqualizerFragment extends DialogFragment
         offIndicator.setVisibility(settings.isEnabled() ? View.GONE : View.VISIBLE);
     }
 
+    /**
+     * Reflects whether the EQ engine is actually attached to a live audio session.
+     * Mirrors the PWA client's indicator: connection state is only meaningful
+     * while something is playing.
+     */
+    private void updateStatus()
+    {
+        if (statusText == null) return;
+
+        EqManager mgr = EqManager.get();
+        boolean attached = mgr.isAttached();
+        boolean streamActive = mgr.isStreamActive();
+        boolean passthrough = streamActive && !mgr.isCurrentStreamPcm();
+
+        // Passthrough audio (e.g. Dolby/DTS to a receiver) can't be EQ'd on-device;
+        // the server must do it, so reflect that the on-device toggle is overridden.
+        if (clientProcessingCheckbox != null)
+        {
+            clientProcessingCheckbox.setEnabled(!passthrough);
+        }
+
+        if (passthrough)
+        {
+            statusText.setText("\u25CF Passthrough audio ("
+                    + mgr.getCurrentChannelCount() + "ch) \u2014 EQ handled by server");
+            statusText.setTextColor(0xFF4FC3F7); // blue
+        }
+        else if (attached)
+        {
+            statusText.setText("\u25CF Connected \u2014 EQ applied on this device ("
+                    + mgr.getCurrentChannelCount() + "ch)");
+            statusText.setTextColor(0xFF66BB6A); // green
+        }
+        else if (streamActive && settings.isEnabled() && !settings.isClientProcessing())
+        {
+            statusText.setText("\u25CF Connected \u2014 EQ handled by server");
+            statusText.setTextColor(0xFF4FC3F7); // blue
+        }
+        else if (streamActive)
+        {
+            statusText.setText("\u25CF Connected \u2014 EQ off");
+            statusText.setTextColor(0xFF888888); // gray
+        }
+        else
+        {
+            statusText.setText("Not connected \u2014 status shows while media is playing");
+            statusText.setTextColor(0xFF888888); // gray
+        }
+
+        updateRecommendation(passthrough);
+    }
+
+    /**
+     * When the device can fully reproduce the current EQ settings but the server
+     * is currently doing the processing, recommend switching to on-device EQ so
+     * the server doesn't need to transcode. Suppressed for passthrough audio,
+     * where the server MUST do the EQ.
+     */
+    private void updateRecommendation(boolean passthrough)
+    {
+        if (recommendText == null) return;
+
+        if (passthrough)
+        {
+            recommendText.setText("Surround passthrough \u2014 on-device EQ isn't possible; "
+                    + "server EQ is used automatically.");
+            recommendText.setVisibility(View.VISIBLE);
+            return;
+        }
+
+        boolean serverDoingEq = settings.isEnabled() && !settings.isClientProcessing();
+        if (EqManager.get().isStreamActive() && serverDoingEq && clientCanFullyHandle())
+        {
+            recommendText.setText("Tip: this device can handle these settings \u2014 "
+                    + "check \u201CProcess on this device\u201D to turn off server EQ.");
+            recommendText.setVisibility(View.VISIBLE);
+        }
+        else
+        {
+            recommendText.setVisibility(View.GONE);
+        }
+    }
+
+    /** True when the device engine can fully reproduce the current settings. */
+    private boolean clientCanFullyHandle()
+    {
+        // Night mode needs DRC (DynamicsProcessing); legacy devices can't do it.
+        if (settings.getNightMode().isEnabled() && !EqCapabilityReporter.supportsDrc())
+        {
+            return false;
+        }
+        // Full canonical EQ needs the device to expose all bands; 5-band hardware
+        // only approximates the 10-band model, so leave that to the server.
+        return EqCapabilityReporter.getEffectiveBandCount() >= EqSettings.BAND_COUNT;
+    }
+
+    @Override
+    public void onResume()
+    {
+        super.onResume();
+        statusHandler.post(statusTick);
+    }
+
+    @Override
+    public void onPause()
+    {
+        statusHandler.removeCallbacks(statusTick);
+        super.onPause();
+    }
+
     // ── Apply + Notify ─────────────────────────────────────────────
 
     private void applyAndNotify()
     {
-        // Apply to audio engine
-        if (engine != null)
-        {
-            engine.apply(settings);
-        }
-
-        // Persist
-        store.save(settings);
-
-        // Update server-facing settings payload
-        try
-        {
-            sagex.miniclient.MiniClientConnection.audioProcessingSettings =
-                    settings.toServerPayload().toString();
-        }
-        catch (org.json.JSONException ignored) { }
+        // Apply to the live audio session + persist + publish the server payload
+        // (EqManager owns the payload so it can force server EQ on passthrough).
+        EqManager.get().updateSettings(settings);
 
         // Notify server wiring
         if (listener != null)

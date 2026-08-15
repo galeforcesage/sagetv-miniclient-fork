@@ -88,6 +88,55 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
     private SubtitleView subView;
 
+    // EQ audio-session tracking (fed to EqManager for on-device vs server EQ)
+    private int eqSessionId = 0;
+    private int eqChannelCount = 2;
+    private boolean eqIsPcm = true;
+
+    private void pushEqAudioState()
+    {
+        if (eqSessionId > 0)
+        {
+            try
+            {
+                sagex.miniclient.android.audio.eq.EqManager.get()
+                        .onAudioSessionChanged(eqSessionId, eqChannelCount, eqIsPcm);
+            }
+            catch (Throwable t)
+            {
+                log.logError("EQ audio-state push failed", t);
+            }
+        }
+    }
+
+    /**
+     * Decide whether ExoPlayer will output decoded PCM (which the client can EQ)
+     * or bitstream/passthrough audio (which only the server can EQ). Mirrors the
+     * decision {@code DefaultAudioSink} makes via {@link AudioCapabilities}.
+     */
+    private boolean isPcmOutput(Format format)
+    {
+        if (format == null) return true;
+        // Raw PCM source is always PCM output.
+        if (com.google.android.exoplayer2.util.MimeTypes.AUDIO_RAW.equals(format.sampleMimeType))
+        {
+            return true;
+        }
+        try
+        {
+            AudioCapabilities caps =
+                    AudioCapabilities.getCapabilities(context.getContext());
+            // If the device would bitstream this format to a receiver, it's passthrough
+            // (no PCM for the client to touch); otherwise ExoPlayer decodes it to PCM.
+            return !caps.isPassthroughPlaybackSupported(format);
+        }
+        catch (Throwable t)
+        {
+            // Unknown → assume decoded PCM so the client can still attempt EQ.
+            return true;
+        }
+    }
+
     public Exo2MediaPlayerImpl(AndroidUIController activity)
     {
         super(activity, true, false);
@@ -170,6 +219,12 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                     {
                         log.logError("Error calling release on player", ex);
                     }
+
+                    try
+                    {
+                        sagex.miniclient.android.audio.eq.EqManager.get().onPlayerReleased();
+                    }
+                    catch (Throwable ignored) { }
 
                     player = null;
                     Exo2MediaPlayerImpl.super.releasePlayer();
@@ -800,6 +855,41 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
         builder.setTrackSelector(trackSelector);
         player = builder.build();
         //player.addAnalyticsListener(new EventLogger(trackSelector));
+
+        // Attach the client-side audio equalizer to this player's audio session.
+        // We track the output channel count and PCM-vs-passthrough encoding so the
+        // EQ manager can decide between on-device EQ and server-side EQ (passthrough
+        // audio, e.g. Dolby/DTS bitstreamed to a receiver, must be EQ'd by server).
+        player.addAnalyticsListener(new com.google.android.exoplayer2.analytics.AnalyticsListener()
+        {
+            @Override
+            public void onAudioSessionIdChanged(
+                    com.google.android.exoplayer2.analytics.AnalyticsListener.EventTime eventTime,
+                    int audioSessionId)
+            {
+                eqSessionId = audioSessionId;
+                Format fmt = player.getAudioFormat();
+                if (fmt != null && fmt.channelCount != Format.NO_VALUE && fmt.channelCount > 0)
+                {
+                    eqChannelCount = fmt.channelCount;
+                }
+                pushEqAudioState();
+            }
+
+            @Override
+            public void onAudioInputFormatChanged(
+                    com.google.android.exoplayer2.analytics.AnalyticsListener.EventTime eventTime,
+                    Format format,
+                    com.google.android.exoplayer2.decoder.DecoderReuseEvaluation evaluation)
+            {
+                if (format != null && format.channelCount != Format.NO_VALUE && format.channelCount > 0)
+                {
+                    eqChannelCount = format.channelCount;
+                }
+                eqIsPcm = isPcmOutput(format);
+                pushEqAudioState();
+            }
+        });
 
         player.addListener(new Player.Listener()
         {

@@ -28,7 +28,7 @@
             android:id="@+id/eq_enabled_checkbox"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Enabled"
+            android:text="EQ On"
             android:textColor="#FFFFFF"
             android:buttonTint="#4FC3F7" />
 
@@ -37,7 +37,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginStart="16dp"
-            android:text="Client EQ"
+            android:text="Process on this device"
             android:textColor="#FFFFFF"
             android:buttonTint="#4FC3F7" />
     </LinearLayout>
@@ -162,6 +162,29 @@
             android:layout_marginStart="16dp"
             android:backgroundTint="#4FC3F7" />
     </LinearLayout>
+
+    <!-- Connection status (mirrors the PWA client's live-EQ indicator) -->
+    <TextView
+        android:id="@+id/eq_status_text"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="center"
+        android:text=""
+        android:textColor="#AAAAAA"
+        android:textSize="13sp" />
+
+    <!-- Recommendation: shown when the device can fully handle the current EQ -->
+    <TextView
+        android:id="@+id/eq_recommend_text"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:gravity="center"
+        android:text=""
+        android:textColor="#FFB74D"
+        android:textSize="13sp"
+        android:visibility="gone" />
 
     <!-- Close button -->
     <Button

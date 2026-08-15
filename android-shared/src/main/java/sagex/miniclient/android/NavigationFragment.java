@@ -472,12 +472,37 @@ public class NavigationFragment extends DialogFragment
 
     public void onOpenEqualizer()
     {
+        final Activity activity = getActivity();
         dismiss();
-        Activity activity = getActivity();
-        if (activity == null) return;
-        sagex.miniclient.android.audio.eq.EqualizerFragment eqFrag =
-                new sagex.miniclient.android.audio.eq.EqualizerFragment();
-        eqFrag.show(activity.getFragmentManager(), "equalizer");
+        if (activity == null)
+        {
+            log.warn("onOpenEqualizer: activity is null, cannot open EQ");
+            return;
+        }
+        // Defer the show until after this dialog's dismiss transaction settles,
+        // otherwise the FragmentManager can be mid-transaction and swallow the show.
+        activity.runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                try
+                {
+                    log.debug("onOpenEqualizer: showing EqualizerFragment");
+                    android.app.FragmentManager fm = activity.getFragmentManager();
+                    android.app.FragmentTransaction ft = fm.beginTransaction();
+                    Fragment prev = fm.findFragmentByTag("equalizer");
+                    if (prev != null) ft.remove(prev);
+                    sagex.miniclient.android.audio.eq.EqualizerFragment eqFrag =
+                            new sagex.miniclient.android.audio.eq.EqualizerFragment();
+                    eqFrag.show(ft, "equalizer");
+                }
+                catch (Throwable t)
+                {
+                    log.error("onOpenEqualizer: failed to show EQ", t);
+                }
+            }
+        });
     }
 
     private boolean isExoPlayer()

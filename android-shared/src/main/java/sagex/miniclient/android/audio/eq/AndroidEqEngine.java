@@ -34,6 +34,7 @@ public final class AndroidEqEngine
     private boolean useDynamicsProcessing;
     private int actualBandCount;
     private boolean attached;
+    private int configuredChannelCount = 2;
 
     public AndroidEqEngine()
     {
@@ -42,15 +43,28 @@ public final class AndroidEqEngine
     }
 
     /**
-     * Attach the EQ engine to an audio session.
+     * Attach the EQ engine to an audio session, assuming stereo output.
      * @return true if successfully attached
      */
     public boolean attach(int audioSessionId)
     {
+        return attach(audioSessionId, 2);
+    }
+
+    /**
+     * Attach the EQ engine to an audio session for a specific output channel count.
+     * The channel count must match the decoded PCM output; a mismatch (e.g. building
+     * a stereo processor for a 5.1 stream) garbles audio into chirps.
+     * @return true if successfully attached
+     */
+    public boolean attach(int audioSessionId, int channelCount)
+    {
         if (audioSessionId <= 0) return false;
-        if (attached && boundSessionId == audioSessionId) return true;
+        int chans = (channelCount >= 1 && channelCount <= 8) ? channelCount : 2;
+        if (attached && boundSessionId == audioSessionId && configuredChannelCount == chans) return true;
 
         release();
+        configuredChannelCount = chans;
 
         try
         {
@@ -66,7 +80,7 @@ public final class AndroidEqEngine
             attached = true;
             Log.i(TAG, "Attached to session " + audioSessionId
                     + " (" + (useDynamicsProcessing ? "DynamicsProcessing" : "LegacyEQ")
-                    + ", " + actualBandCount + " bands)");
+                    + ", " + actualBandCount + " bands, " + configuredChannelCount + " ch)");
             return true;
         }
         catch (Throwable t)
@@ -164,7 +178,7 @@ public final class AndroidEqEngine
         // Configure: 10-band PreEQ + 1-band MBC (for DRC) + no PostEQ + Limiter
         DynamicsProcessing.Config.Builder builder = new DynamicsProcessing.Config.Builder(
                 DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
-                /* channelCount */ 2,
+                /* channelCount */ configuredChannelCount,
                 /* preEqInUse */ true,
                 /* preEqBandCount */ 10,
                 /* mbcInUse */ true,

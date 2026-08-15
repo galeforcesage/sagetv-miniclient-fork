@@ -465,6 +465,19 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                     player.start();
                     state = PLAY_STATE;
 
+                    // Attach the client-side audio equalizer to IJK's audio session.
+                    // IJK downmixes to stereo PCM, so on-device EQ is always applicable.
+                    try
+                    {
+                        int sid = player.getAudioSessionId();
+                        sagex.miniclient.android.audio.eq.EqManager.get()
+                                .onAudioSessionChanged(sid, 2, true);
+                    }
+                    catch (Throwable t)
+                    {
+                        log.warn("EQ attach (IJK) failed: {}", t.getMessage());
+                    }
+
                     if (!pushMode)
                     {
                         if (preSeekPos != -1)
@@ -826,6 +839,11 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
         catch (Throwable t)
         {
         }
+        try
+        {
+            sagex.miniclient.android.audio.eq.EqManager.get().onPlayerReleased();
+        }
+        catch (Throwable ignored) { }
         player = null;
 
         super.releasePlayer();
