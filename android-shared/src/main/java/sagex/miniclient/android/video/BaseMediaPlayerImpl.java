@@ -154,6 +154,34 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
         videoCodecHint = parseVideoCodecHint(urlString);
         audioCodecHint = parseAudioCodecHint(urlString);
 
+        // NG STREAMINFO fallback: when the URL carried no format hints (e.g. a
+        // bare push: with no f= tags), fill them from the pre-stream metadata
+        // the server sent via MEDIACMD_STREAMINFO. This lets SageExtractorsFactory
+        // skip the sniff/probe pass and lets the decoder be pre-validated,
+        // shaving cold-start latency. URL hints, when present, always win.
+        try
+        {
+            sagex.miniclient.MiniClientConnection conn =
+                    (context != null && context.getClient() != null)
+                            ? context.getClient().getCurrentConnection() : null;
+            sagex.miniclient.streaminfo.StreamInfo si =
+                    (conn != null) ? conn.getPendingStreamInfo() : null;
+            if (si != null)
+            {
+                if (containerHint == null && si.container != null)
+                    containerHint = si.container;
+                sagex.miniclient.streaminfo.StreamInfo.VideoTrack v = si.primaryVideo();
+                if (videoCodecHint == null && v != null && v.codec != null)
+                    videoCodecHint = v.codec;
+                sagex.miniclient.streaminfo.StreamInfo.AudioTrack a = si.primaryAudio();
+                if (audioCodecHint == null && a != null && a.codec != null)
+                    audioCodecHint = a.codec;
+                log.debug("load(): STREAMINFO hints applied container={} video={} audio={}",
+                        containerHint, videoCodecHint, audioCodecHint);
+            }
+        }
+        catch (RuntimeException ignored) { }
+
         String url = urlString;
         httpls = urlString.startsWith("http://");
         if (httpls)

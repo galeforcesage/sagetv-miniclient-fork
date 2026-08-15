@@ -199,4 +199,143 @@ public final class PlayerSelectionUtil
                 || window.contains("F=MPEG2-VIDEO@HL;")
                 || window.contains("F=MPEG2-VIDEO@HL]");
     }
+
+    // ── Unified routing decision ────────────────────────────────────────
+
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(PlayerSelectionUtil.class);
+
+    /**
+     * Result of {@link #decide}: which engine to use and (if a compatibility
+     * swap was applied) a human-readable reason for logging/telemetry.
+     */
+    public static final class PlayerDecision
+    {
+        public final boolean useExoPlayer;
+        /** null when no swap/override was applied. */
+        public final String swapReason;
+
+        public PlayerDecision(boolean useExoPlayer, String swapReason)
+        {
+            this.useExoPlayer = useExoPlayer;
+            this.swapReason = swapReason;
+        }
+    }
+
+    /**
+     * Single source of truth for player routing, shared by every renderer.
+     *
+     * <p>Precedence:
+     * <ol>
+     *   <li>User one-time swap toggles the base preference.</li>
+     *   <li>If {@code streamInfo} is present (NG STREAMINFO), route on codec
+     *       FACTS — deterministic, no URL-string guessing.</li>
+     *   <li>Otherwise fall back to the legacy URL-string landmine heuristics
+     *       (legacy google/SageTV + non-STREAMINFO NG sessions) — unchanged.</li>
+     * </ol>
+     *
+     * <p>The landmines still <i>exist</i> (ExoPlayer's PsExtractor still crashes
+     * on MPEG-4 Part 2 in MPEG-PS, HEVC-in-PS renders unreliably, and some
+     * devices lack an MPEG-2 decoder); STREAMINFO just lets us detect them
+     * reliably and BEFORE the failed open instead of swapping on failure.</p>
+     *
+     * @param toastCtx          context for the one-shot user toast (may be null)
+     * @param urlString         the OPENURL string
+     * @param userPrefersExo    base preference (ExoPlayer vs IJK)
+     * @param oneTimeSwap       user-initiated one-time player swap active
+     * @param streamInfo        NG pre-stream metadata, or null (legacy / absent)
+     * @param exoCanDecodeMpeg2 whether this device exposes an Exo MPEG-2 decoder
+     */
+    public static PlayerDecision decide(
+            android.content.Context toastCtx,
+            String urlString,
+            boolean userPrefersExo,
+            boolean oneTimeSwap,
+            sagex.miniclient.streaminfo.StreamInfo streamInfo,
+            boolean exoCanDecodeMpeg2)
+    {
+        boolean useExo = userPrefersExo;
+        String swapReason = null;
+
+        if (oneTimeSwap)
+        {
+            useExo = !useExo;
+            swapReason = "one-time player swap (user-initiated)";
+        }
+
+        if (useExo && streamInfo != null)
+        {
+            // ── Fact-based routing from STREAMINFO ──
+            sagex.miniclient.streaminfo.StreamInfo.VideoTrack v = streamInfo.primaryVideo();
+            boolean ps = streamInfo.isProgramStream();
+
+            if (v != null && v.isMpeg4Part2() && ps)
+            {
+                useExo = false;
+                swapReason = "PS+MPEG-4 compat (STREAMINFO: MPEG-4 Part 2 in MPEG-PS crashes Exo PsExtractor)";
+                notifyLandmineSwap(toastCtx, "PS+MPEG-4 compat");
+            }
+            else if (v != null && v.isHevc() && ps)
+            {
+                useExo = false;
+                swapReason = "HEVC push compat (STREAMINFO: HEVC in MPEG-PS renders unreliably on Exo)";
+                notifyLandmineSwap(toastCtx, "HEVC push compat");
+            }
+            else if (v != null && v.isMpeg2Video() && !exoCanDecodeMpeg2)
+            {
+                useExo = false;
+                swapReason = "MPEG2 video compat (STREAMINFO: no Exo video/mpeg2 decoder on this device)";
+                notifyLandmineSwap(toastCtx, "MPEG2 video compat");
+            }
+
+            if (swapReason != null && !useExo)
+            {
+                log.warn("STREAMINFO routing -> IJK ({}). video={}, container={}",
+                        swapReason, v, streamInfo.container);
+            }
+            return new PlayerDecision(useExo, swapReason);
+        }
+
+        if (useExo)
+        {
+            // ── Legacy URL-string heuristics (no STREAMINFO available) ──
+            if (isExoPsMpeg4Landmine(urlString))
+            {
+                useExo = false;
+                swapReason = "PS+MPEG-4 compat (ExoPlayer PsExtractor crashes on MPEG-4 Part 2 in MPEG-PS)";
+                notifyLandmineSwap(toastCtx, "PS+MPEG-4 compat");
+            }
+            else if (isBarePushUrl(urlString))
+            {
+                useExo = false;
+                swapReason = "NG bare-push compat (server emitted push: with no format hint)";
+                notifyLandmineSwap(toastCtx, "NG bare-push compat");
+            }
+            else if (isExoHevcPushLandmine(urlString))
+            {
+                useExo = false;
+                swapReason = "HEVC push compat (ExoPlayer video did not render reliably)";
+                notifyLandmineSwap(toastCtx, "HEVC push compat");
+            }
+            else if (isExoPushMp4Landmine(urlString))
+            {
+                useExo = false;
+                swapReason = "Push MP4 compat (ExoPlayer source mismatch on affected streams)";
+                notifyLandmineSwap(toastCtx, "Push MP4 compat");
+            }
+            else if (isExoMpeg2NoDecoderLandmine(urlString, exoCanDecodeMpeg2))
+            {
+                useExo = false;
+                swapReason = "MPEG2 video compat (ExoPlayer has no video/mpeg2 decoder on this device)";
+                notifyLandmineSwap(toastCtx, "MPEG2 video compat");
+            }
+
+            if (swapReason != null && !useExo)
+            {
+                log.warn("URL-heuristic routing -> IJK ({}). url={}", swapReason, urlString);
+            }
+        }
+
+        return new PlayerDecision(useExo, swapReason);
+    }
 }

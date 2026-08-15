@@ -371,6 +371,14 @@ public class MiniClientConnection implements SageTVInputCallback
     private NgPlaybackContextStore playbackContextStore;
 
     /**
+     * Pre-stream metadata from the most recent MEDIACMD_STREAMINFO (command 40),
+     * consumed by the next MEDIACMD_OPENURL for player routing + decoder
+     * pre-configuration. Null for legacy servers (never send command 40) and
+     * cleared when media closes.
+     */
+    private volatile sagex.miniclient.streaminfo.StreamInfo pendingStreamInfo;
+
+    /**
      * Resolves whether this connection should advertise the fixed Placeshifter
      * legacy capability profile to the server. Order of precedence:
      *
@@ -1746,9 +1754,15 @@ public class MiniClientConnection implements SageTVInputCallback
                         //                        (.vtt or .json with word
                         //                        timestamps).
                         StringBuilder caps = new StringBuilder();
+                        // STREAMINFO: advertise support for MEDIACMD_STREAMINFO
+                        // (command 40) pre-stream metadata. Independent of the
+                        // download provider — the client always has the parser +
+                        // decoder pre-config path wired. The server gates command
+                        // 40 on this token; legacy servers ignore it entirely.
+                        caps.append("STREAMINFO");
                         if (client.getDownloadStatusProvider() != null)
                         {
-                            caps.append("DOWNLOAD,DOWNLOAD_REFRESH,OFFLINE_METADATA,OFFLINE_ARTWORK");
+                            caps.append(",DOWNLOAD,DOWNLOAD_REFRESH,OFFLINE_METADATA,OFFLINE_ARTWORK");
                             if (client.properties().getBoolean(PrefStore.Keys.offline_cap_captions, true))
                             {
                                 caps.append(",OFFLINE_CAPTIONS");
@@ -4383,6 +4397,16 @@ public class MiniClientConnection implements SageTVInputCallback
 
     public NgPlaybackContextStore getPlaybackContextStore() {
         return playbackContextStore;
+    }
+
+    /** @return pre-stream metadata from the last STREAMINFO, or null (legacy server / none). */
+    public sagex.miniclient.streaminfo.StreamInfo getPendingStreamInfo() {
+        return pendingStreamInfo;
+    }
+
+    /** Set the pre-stream metadata received via MEDIACMD_STREAMINFO (command 40). */
+    public void setPendingStreamInfo(sagex.miniclient.streaminfo.StreamInfo info) {
+        this.pendingStreamInfo = info;
     }
 
     public boolean hasFontServer() {

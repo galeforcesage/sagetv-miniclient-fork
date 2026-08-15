@@ -732,56 +732,22 @@ public class OpenGLRenderer implements UIRenderer<OpenGLTexture>, GLSurfaceView.
         }
       
         boolean useExoPlayer = client.properties().getString(PrefStore.Keys.default_player, "exoplayer").equalsIgnoreCase("exoplayer");
-        String swapReason = null;
 
-        if (activity.isSwitchingPlayerOneTime()) {
-            useExoPlayer = !useExoPlayer;
-            swapReason = "one-time player swap (user-initiated)";
-        }
-
-        // URL-inspection landmine swap: ExoPlayer 2.18.1's PsExtractor crashes
-        // on MPEG-4 Part 2 inside MPEG-PS (the 9.2.x "dynamic Placeshifter"
-        // transcode path). Force IJK for that exact pattern even when the user
-        // prefers ExoPlayer — avoids 12 wasted retry cycles and a black screen.
-        if (useExoPlayer && PlayerSelectionUtil.isExoPsMpeg4Landmine(urlString)) {
-            log.warn("ExoPlayer landmine detected (MPEG-4 in MPEG-PS): swapping to IJK for this stream. URL={}", urlString);
-            PlayerSelectionUtil.notifyLandmineSwap(activity.getContext(), "PS+MPEG-4 compat");
-            useExoPlayer = false;
-            swapReason = "PS+MPEG-4 compat (ExoPlayer PsExtractor crashes on MPEG-4 Part 2 in MPEG-PS)";
-        }
-        // NG bare-push landmine: NG server emits OPENURL `push:` with no
-        // format hint, ExoPlayer can't pick the right Extractor, audio plays
-        // but video stays black. IJK's libavformat sniffs and handles it.
-        else if (useExoPlayer && PlayerSelectionUtil.isBarePushUrl(urlString)) {
-            log.warn("NG bare-push landmine detected (no format hint): swapping to IJK. URL={}", urlString);
-            PlayerSelectionUtil.notifyLandmineSwap(activity.getContext(), "NG bare-push compat");
-            useExoPlayer = false;
-            swapReason = "NG bare-push compat (server emitted push: with no format hint)";
-        }
-        else if (useExoPlayer && PlayerSelectionUtil.isExoHevcPushLandmine(urlString)) {
-            log.warn("ExoPlayer HEVC push landmine detected: swapping to IJK. URL={}", urlString);
-            PlayerSelectionUtil.notifyLandmineSwap(activity.getContext(), "HEVC push compat");
-            useExoPlayer = false;
-            swapReason = "HEVC push compat (ExoPlayer video did not render reliably)";
-        }
-        else if (useExoPlayer && PlayerSelectionUtil.isExoPushMp4Landmine(urlString)) {
-            log.warn("ExoPlayer push-MP4 landmine detected: swapping to IJK. URL={}", urlString);
-            PlayerSelectionUtil.notifyLandmineSwap(activity.getContext(), "Push MP4 compat");
-            useExoPlayer = false;
-            swapReason = "Push MP4 compat (ExoPlayer source mismatch on affected streams)";
-        }
-        else if (useExoPlayer)
-        {
-            boolean exoCanDecodeMpeg2 = CodecCapabilityDetector.isVideoCodecSupportedByExo(
-                    activity.getContext(), VideoCodec.MPEG2);
-            if (PlayerSelectionUtil.isExoMpeg2NoDecoderLandmine(urlString, exoCanDecodeMpeg2))
-            {
-                log.warn("ExoPlayer lacks MPEG-2 decoder for this PUSH stream: swapping to IJK. URL={}", urlString);
-                PlayerSelectionUtil.notifyLandmineSwap(activity.getContext(), "MPEG2 video compat");
-                useExoPlayer = false;
-                swapReason = "MPEG2 video compat (ExoPlayer has no video/mpeg2 decoder on this device)";
-            }
-        }
+        // Unified routing: user one-time swap, then NG STREAMINFO fact-routing
+        // (if the server sent pre-stream metadata), else legacy URL heuristics.
+        boolean exoCanDecodeMpeg2 = CodecCapabilityDetector.isVideoCodecSupportedByExo(
+                activity.getContext(), VideoCodec.MPEG2);
+        sagex.miniclient.streaminfo.StreamInfo streamInfo =
+                (connection != null) ? connection.getPendingStreamInfo() : null;
+        PlayerSelectionUtil.PlayerDecision decision = PlayerSelectionUtil.decide(
+                activity.getContext(),
+                urlString,
+                useExoPlayer,
+                activity.isSwitchingPlayerOneTime(),
+                streamInfo,
+                exoCanDecodeMpeg2);
+        useExoPlayer = decision.useExoPlayer;
+        String swapReason = decision.swapReason;
 
         if (useExoPlayer) {
             log.debug("Using ExoPlayer");

@@ -26,6 +26,9 @@ import java.util.TimerTask;
 
 import sagex.miniclient.ngcontext.NgPlaybackContextStore;
 import sagex.miniclient.ngcontext.NgSeekPolicy;
+import sagex.miniclient.streaminfo.StreamInfo;
+import sagex.miniclient.streaminfo.StreamInfoAck;
+import sagex.miniclient.streaminfo.StreamInfoParser;
 import sagex.miniclient.prefs.PrefStore;
 import sagex.miniclient.uibridge.Dimension;
 import sagex.miniclient.uibridge.Rectangle;
@@ -61,6 +64,15 @@ public class MediaCmd
     public static final int MEDIACMD_SEEK = 29;
 
     public static final int MEDIACMD_DVD_STREAMS = 36;
+
+    /**
+     * Pre-stream metadata announcement (SageTV-NG). Sent BEFORE MEDIACMD_OPENURL
+     * to STREAMINFO-capable clients so the demuxer/decoder pipeline can be
+     * pre-configured (0 probe time). Reply is a 32-bit ACK bitmask
+     * ({@link sagex.miniclient.streaminfo.StreamInfoAck}). Never sent by legacy
+     * servers.
+     */
+    public static final int MEDIACMD_STREAMINFO = 40;
 
 
     public static final int STREAM_TYPE_AUDIO = 0;
@@ -159,6 +171,7 @@ public class MediaCmd
         CMDMAP.put(MEDIACMD_SEEK, "MEDIACMD_SEEK");
 
         CMDMAP.put(MEDIACMD_DVD_STREAMS, "MEDIACMD_DVD_STREAMS");
+        CMDMAP.put(MEDIACMD_STREAMINFO, "MEDIACMD_STREAMINFO");
     }
 
     /**
@@ -211,6 +224,8 @@ public class MediaCmd
         pendingPushBuf = null;
         pendingPushSize = 0;
         pendingPushOverflow = false;
+        // Drop stale pre-stream metadata so it can't leak into a later open.
+        myConn.setPendingStreamInfo(null);
 
         NgPlaybackContextStore contextStore = myConn.getPlaybackContextStore();
         if (contextStore != null)
@@ -289,6 +304,43 @@ public class MediaCmd
                 writeInt(1, retbuf, 0);
                 close();
                 return 4;
+
+            case MEDIACMD_STREAMINFO:
+            {
+                // Pre-stream metadata (SageTV-NG). Parse the length-prefixed,
+                // null-terminated UTF-8 JSON, stash it for the imminent OPENURL,
+                // and reply with the ACK bitmask the server is synchronously
+                // waiting for. Keep this fast: parse + map only, no I/O.
+                int ack = 0x00;
+                try
+                {
+                    int siLen = readInt(0, cmddata);
+                    if (siLen > 1)
+                    {
+                        String json = new String(cmddata, 4, siLen - 1, MiniClient.BYTE_CHARSET);
+                        StreamInfo info = StreamInfoParser.parse(json);
+                        myConn.setPendingStreamInfo(info);
+                        ack = StreamInfoAck.compute(info);
+                        if (info != null)
+                        {
+                            log.debug("MEDIACMD_STREAMINFO parsed: {} -> ACK {}",
+                                    info, StreamInfoAck.describe(ack));
+                        }
+                        else
+                        {
+                            log.warn("MEDIACMD_STREAMINFO could not be parsed; ACK 0x00");
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    log.error("MEDIACMD_STREAMINFO: ERROR", e);
+                    ack = 0x00;
+                    myConn.setPendingStreamInfo(null);
+                }
+                writeInt(ack, retbuf, 0);
+                return 4;
+            }
 
             case MEDIACMD_OPENURL:
 
