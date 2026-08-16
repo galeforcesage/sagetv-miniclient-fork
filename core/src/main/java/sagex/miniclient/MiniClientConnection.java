@@ -1375,33 +1375,39 @@ public class MiniClientConnection implements SageTVInputCallback
                                 }
                                 catch (Exception e1) { }
 
-                                // Exponential backoff reconnect loop
+                                // Reconnect loop. Probe first, then back off:
+                                // an intentional disconnect (server reachable but
+                                // refusing the session) is detected on the very first
+                                // probe and aborts immediately, while a genuine network
+                                // drop (connect throws) backs off exponentially between
+                                // retries.
                                 boolean reconnected = false;
+                                boolean serverRefused = false;
                                 for (int attempt = 0; attempt < MAX_RECONNECT_ATTEMPTS; attempt++)
                                 {
-                                    long delay = Math.min(
-                                            RECONNECT_BASE_DELAY_MS * (1L << attempt),
-                                            RECONNECT_MAX_DELAY_MS);
-                                    log.logInfo("Reconnect attempt " + (attempt + 1) + "/" + MAX_RECONNECT_ATTEMPTS + " after " + delay + "ms");
-                                    try
-                                    {
-                                        Thread.sleep(delay);
-                                    }
-                                    catch (InterruptedException ie)
-                                    {
-                                        Thread.currentThread().interrupt();
-                                        break;
-                                    }
-
                                     if (!alive) break;
 
+                                    log.logInfo("Reconnect attempt " + (attempt + 1) + "/" + MAX_RECONNECT_ATTEMPTS);
                                     try
                                     {
                                         gfxSocket = EstablishServerConnection(5);
                                         if (gfxSocket == null)
                                         {
-                                            log.logWarning("Reconnect attempt " + (attempt + 1) + " failed: null socket");
-                                            continue;
+                                            // EstablishServerConnection() returns null ONLY when the
+                                            // server completed the TCP handshake but replied with a
+                                            // non-accept code (rez != 2) — i.e. the server is up and
+                                            // reachable but is deliberately refusing to re-establish
+                                            // this session. That is what happens on an intentional
+                                            // disconnect (user exited; server closed the session).
+                                            // A genuine network drop throws IOException instead and is
+                                            // handled by the catch below. Treat a refusal as an
+                                            // intentional close and stop reconnecting immediately,
+                                            // matching legacy behaviour (return to server list), rather
+                                            // than burning the full backoff schedule.
+                                            serverRefused = true;
+                                            log.logWarning("Reconnect attempt " + (attempt + 1)
+                                                    + ": server refused reconnect (intentional disconnect) — aborting reconnect");
+                                            break;
                                         }
                                         eventChannel = new java.io.DataOutputStream(new java.io.BufferedOutputStream(gfxSocket.getOutputStream()));
                                         myStream = gfxIs = new java.io.DataInputStream(gfxSocket.getInputStream());
@@ -1421,13 +1427,37 @@ public class MiniClientConnection implements SageTVInputCallback
                                     }
                                     catch (Exception ex)
                                     {
-                                        log.logWarning("Reconnect attempt " + (attempt + 1) + " failed: " + ex.getMessage());
+                                        log.logWarning("Reconnect attempt " + (attempt + 1) + "/" + MAX_RECONNECT_ATTEMPTS + " failed: " + ex.getMessage());
+                                    }
+
+                                    // Genuine (network) failure — back off before the next attempt.
+                                    if (attempt < MAX_RECONNECT_ATTEMPTS - 1)
+                                    {
+                                        long delay = Math.min(
+                                                RECONNECT_BASE_DELAY_MS * (1L << attempt),
+                                                RECONNECT_MAX_DELAY_MS);
+                                        try
+                                        {
+                                            Thread.sleep(delay);
+                                        }
+                                        catch (InterruptedException ie)
+                                        {
+                                            Thread.currentThread().interrupt();
+                                            break;
+                                        }
                                     }
                                 }
 
                                 if (!reconnected)
                                 {
-                                    log.logError("All " + MAX_RECONNECT_ATTEMPTS + " reconnect attempts failed, aborting client");
+                                    if (serverRefused)
+                                    {
+                                        log.logInfo("Server refused reconnect — treating as intentional disconnect, returning to server list");
+                                    }
+                                    else
+                                    {
+                                        log.logError("All " + MAX_RECONNECT_ATTEMPTS + " reconnect attempts failed, aborting client");
+                                    }
                                     performingReconnect = false;
                                     if (client != null)
                                     {

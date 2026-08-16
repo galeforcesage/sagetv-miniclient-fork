@@ -71,7 +71,7 @@ public class Logger implements ILogger
     public void logError(String message, Throwable t)
     {
         if (getCrashlytics() != null) { getCrashlytics().log(message); getCrashlytics().recordException(t); }
-        log.error(message);
+        log.error(message, t);
     }
 
     @Override
