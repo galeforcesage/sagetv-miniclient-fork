@@ -37,6 +37,8 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     boolean resumeMode = false;
     int initialAudioStreamPos = -1;
     int initialTextStreamPos = -1;
+    /** Last audio session id the client EQ was attached to (0 = not yet attached). */
+    int eqSessionId = 0;
     long logTime = -1;
     MediaSessionCompat mediaSession;
 
@@ -439,6 +441,14 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                             trickplayController.onPlayerPosition(player.getCurrentPosition());
                         }
                     }
+
+                    // Attach the client EQ once audio is actually rendering: only then has
+                    // IJK created its internal AudioTrack, so getAudioSessionId() returns a
+                    // real (>0) effect-capable session. At onPrepared it is still 0.
+                    if (what == IMediaPlayer.MEDIA_INFO_AUDIO_RENDERING_START)
+                    {
+                        attachEqFromIjkSession();
+                    }
                     return false;
                 }
             });
@@ -465,18 +475,9 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                     player.start();
                     state = PLAY_STATE;
 
-                    // Attach the client-side audio equalizer to IJK's audio session.
-                    // IJK downmixes to stereo PCM, so on-device EQ is always applicable.
-                    try
-                    {
-                        int sid = player.getAudioSessionId();
-                        sagex.miniclient.android.audio.eq.EqManager.get()
-                                .onAudioSessionChanged(sid, 2, true);
-                    }
-                    catch (Throwable t)
-                    {
-                        log.warn("EQ attach (IJK) failed: {}", t.getMessage());
-                    }
+                    // First attempt (often still session 0 here); the real attach happens
+                    // on MEDIA_INFO_AUDIO_RENDERING_START once the AudioTrack exists.
+                    attachEqFromIjkSession();
 
                     if (!pushMode)
                     {
@@ -594,6 +595,98 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
             resumeMode = false;
             logTime = -1;
         }
+    }
+
+    /**
+     * Read IJK's live audio session id and (re)attach the client EQ to it. IJK creates
+     * its internal AudioTrack lazily on the audio output thread, so a valid (&gt;0) session
+     * id is only available once audio is rendering. If it is still 0, retry shortly.
+     */
+    private void attachEqFromIjkSession()
+    {
+        attachEqFromIjkSession(0);
+    }
+
+    private void attachEqFromIjkSession(final int attempt)
+    {
+        if (player == null) return;
+        int sid;
+        try
+        {
+            sid = player.getAudioSessionId();
+        }
+        catch (Throwable t)
+        {
+            log.warn("EQ: IJK getAudioSessionId() failed: {}", t.getMessage());
+            return;
+        }
+
+        if (sid > 0)
+        {
+            int ch = ijkOutputChannelCount();
+            if (sid != eqSessionId)
+            {
+                eqSessionId = sid;
+                log.info("EQ: attaching to IJK audio session id={} ch={} (attempt {})", sid, ch, attempt);
+            }
+            // Feed IJK's REAL output channel count so the engine builds a matching
+            // DynamicsProcessing config. A stereo processor on a 5.1 stream (or vice
+            // versa) garbles audio into chirps.
+            sagex.miniclient.android.audio.eq.EqManager.get().onAudioSessionChanged(sid, ch, true);
+            return;
+        }
+
+        if (attempt < 10)
+        {
+            // AudioTrack not up yet; retry on the main thread.
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable()
+            {
+                @Override
+                public void run()
+                {
+                    attachEqFromIjkSession(attempt + 1);
+                }
+            }, 250);
+        }
+        else
+        {
+            log.warn("EQ: IJK audio session id still 0 after {} attempts; EQ not attached", attempt);
+        }
+    }
+
+    /**
+     * Best-effort read of IJK's decoded audio channel count from the active audio
+     * stream's ffmpeg channel-layout bitmask (popcount = channel count). This is the
+     * number of PCM channels IJK feeds its AudioTrack, which the EQ engine must match.
+     * Falls back to stereo when unknown. Clamped to 1..8.
+     */
+    private int ijkOutputChannelCount()
+    {
+        try
+        {
+            if (player != null)
+            {
+                MediaInfo mi = player.getMediaInfo();
+                if (mi != null && mi.mMeta != null && mi.mMeta.mAudioStream != null)
+                {
+                    long layout = mi.mMeta.mAudioStream.mChannelLayout;
+                    int ch = Long.bitCount(layout);
+                    if (ch >= 1 && ch <= 8)
+                    {
+                        log.info("EQ: IJK audio channelLayout=0x{} -> {} ch",
+                                Long.toHexString(layout), ch);
+                        return ch;
+                    }
+                    log.info("EQ: IJK audio channelLayout=0x{} out of range ({}); using stereo",
+                            Long.toHexString(layout), ch);
+                }
+            }
+        }
+        catch (Throwable t)
+        {
+            log.warn("EQ: could not read IJK channel count: {}", t.getMessage());
+        }
+        return 2;
     }
 
     /**

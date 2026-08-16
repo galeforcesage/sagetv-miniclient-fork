@@ -128,7 +128,10 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                     AudioCapabilities.getCapabilities(context.getContext());
             // If the device would bitstream this format to a receiver, it's passthrough
             // (no PCM for the client to touch); otherwise ExoPlayer decodes it to PCM.
-            return !caps.isPassthroughPlaybackSupported(format);
+            boolean pcm = !caps.isPassthroughPlaybackSupported(format);
+            log.logInfo("EQ: PCM-output decision=" + pcm + " for mime="
+                    + format.sampleMimeType + " ch=" + format.channelCount);
+            return pcm;
         }
         catch (Throwable t)
         {
@@ -855,6 +858,41 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
         builder.setTrackSelector(trackSelector);
         player = builder.build();
         //player.addAnalyticsListener(new EventLogger(trackSelector));
+
+        // ── Client EQ: own a STABLE, effect-capable audio session id ──
+        // Reacting to onAudioSessionIdChanged alone is unreliable on Android TV /
+        // HDMI: the audio output stream is torn down and recreated frequently
+        // (underruns/format changes), and a session effect attached to a
+        // transient id ends up on a dead session (dumpsys shows 0 effect chains).
+        // By generating one id up front and pinning it on the player, every
+        // AudioTrack ExoPlayer creates (including recreations) shares the same
+        // session, so the framework keeps our Equalizer/DynamicsProcessing in the
+        // chain for the whole playback.
+        try
+        {
+            android.media.AudioManager am = (android.media.AudioManager)
+                    context.getContext().getSystemService(android.content.Context.AUDIO_SERVICE);
+            int generated = (am != null) ? am.generateAudioSessionId()
+                                         : android.media.AudioManager.ERROR;
+            if (generated != android.media.AudioManager.ERROR && generated > 0)
+            {
+                player.setAudioSessionId(generated);
+                eqSessionId = generated;
+                log.logInfo("EQ: pinned stable audio session id " + generated);
+                // Attach now (stereo/PCM assumption) so the effect is live before
+                // the first AudioTrack is built; the analytics listener below
+                // refines channel count and PCM-vs-passthrough and re-applies.
+                pushEqAudioState();
+            }
+            else
+            {
+                log.logWarning("EQ: generateAudioSessionId failed; falling back to ExoPlayer session", null);
+            }
+        }
+        catch (Throwable t)
+        {
+            log.logError("EQ: could not pin a stable audio session id", t);
+        }
 
         // Attach the client-side audio equalizer to this player's audio session.
         // We track the output channel count and PCM-vs-passthrough encoding so the
