@@ -861,7 +861,7 @@ public class GFXCMD2 {
                         placeholder.setDecodePending(true);
                         client.getImageCache().put(asyncHandle, placeholder, 1, 1);
 
-                        client.getBackgroundService().submit(new Runnable() {
+                        Runnable decodeTask = new Runnable() {
                             @Override
                             public void run() {
                                 try {
@@ -882,7 +882,16 @@ public class GFXCMD2 {
                                     }
                                 }
                             }
-                        });
+                        };
+                        try {
+                            client.getBackgroundService().submit(decodeTask);
+                        } catch (java.util.concurrent.RejectedExecutionException ree) {
+                            // Background pool unavailable (e.g. shut down mid-teardown).
+                            // Never let a rejected submit kill the GFX thread — decode
+                            // synchronously as a fallback (legacy behavior).
+                            log.warn("Background pool rejected image decode for handle {}; decoding synchronously", asyncHandle);
+                            decodeTask.run();
+                        }
                         return handle;
                     }
                     if (deleteCacheFile && cacheFile != null)

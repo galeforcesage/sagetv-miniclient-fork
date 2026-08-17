@@ -77,7 +77,18 @@ public class MiniClient
      *
      * @return
      */
-    public ExecutorService getBackgroundService() {
+    public synchronized ExecutorService getBackgroundService() {
+        // The MiniClient is an application-scoped singleton, but shutdown() (called
+        // from MiniclientService.onDestroy) terminates this pool via shutdownNow().
+        // The same singleton is then reused for the next connection, so a terminated
+        // pool would reject every subsequent submit (RejectedExecutionException),
+        // killing the GFX thread and bouncing the user back to the server list
+        // (seen when loading image-heavy screens like All/Current Recordings).
+        // Lazily recreate the pool whenever it is missing or has been shut down.
+        if (backgroundService == null || backgroundService.isShutdown()) {
+            log.logInfo("Creating background service thread pool");
+            backgroundService = Executors.newFixedThreadPool(5);
+        }
         return backgroundService;
     }
 
