@@ -224,6 +224,51 @@ public final class CodecCapabilityDetector
     }
 
     /**
+     * NG Server Video Enhancement (4K upscale) contract, Phase 0: per-codec
+     * decode-capability extras for the <b>IJK</b> path.
+     *
+     * <p>IJK decodes hardware content through the very same MediaCodec decoders
+     * ExoPlayer uses (it enables {@code mediacodec-*=1} and lets
+     * {@link sagex.miniclient.android.video.ijkplayer.CodecSelector} choose one),
+     * so when a real HW decoder would be selected the honest ceiling is the same
+     * {@link android.media.MediaCodecInfo.VideoCapabilities} we already compute
+     * for Exo. When IJK would fall back to software we return {@code ""} (no
+     * geometry) so the server has no HW ceiling to route an enhanced codec to —
+     * fail-closed.</p>
+     */
+    public static String getVideoConstraintExtrasByIjk(Context ctx, VideoCodec codec)
+    {
+        if (codec == null) return "";
+        final String mime = codec.getAndroidMimeType();
+        if (mime == null || mime.isEmpty()) return "";
+        if (!sagex.miniclient.android.video.ijkplayer.CodecSelector.hasSelectableHardwareDecoder(mime))
+            return "";
+        return getVideoConstraintExtrasByExo(ctx, codec);
+    }
+
+    /**
+     * NG Server Video Enhancement (4K upscale) contract, Phase 0: honest
+     * {@code decoder=hw|sw} for the given codec on the given player path.
+     *
+     * <ul>
+     *   <li>Exo path: {@code "hw"} — ExoPlayer decodes video via MediaCodec
+     *       hardware on the paths this fork uses.</li>
+     *   <li>IJK path: {@code "hw"} iff {@link
+     *       sagex.miniclient.android.video.ijkplayer.CodecSelector#hasSelectableHardwareDecoder}
+     *       is true for the codec's MIME, else {@code "sw"} (fail-closed).</li>
+     * </ul>
+     */
+    public static String getVideoDecoderKind(VideoCodec codec, boolean exoPath)
+    {
+        if (exoPath) return "hw";
+        if (codec == null) return "sw";
+        final String mime = codec.getAndroidMimeType();
+        if (mime == null || mime.isEmpty()) return "sw";
+        return sagex.miniclient.android.video.ijkplayer.CodecSelector.hasSelectableHardwareDecoder(mime)
+                ? "hw" : "sw";
+    }
+
+    /**
      * True when the audio sink reports passthrough (bitstream) capability
      * for any of the codec's Android encoding constants. Independent of
      * the per-codec MediaCodec / FFmpeg software decode path used by

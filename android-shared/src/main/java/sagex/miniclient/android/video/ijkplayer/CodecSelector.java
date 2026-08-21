@@ -193,4 +193,80 @@ public class CodecSelector implements IjkMediaPlayer.OnMediaCodecSelectListener 
 
         return true;
     }
+
+    /**
+     * NG Server Video Enhancement (4K upscale) contract, Phase 0: honest report
+     * of whether IJK would decode {@code mimeType} on a <b>hardware</b>
+     * MediaCodec on this device right now.
+     *
+     * <p>This mirrors {@link #onMediaCodecSelect(IMediaPlayer, String, int, int)}
+     * exactly — same {@code disable_hardware_decoders} short-circuit, same
+     * per-codec block list ({@link CodecAdapter#getCodecKey}), same
+     * {@link #isCodecUsableDecoder} filter, same rank-based software rejection,
+     * and the same {@code OMX.google.} / {@code c2.android.} hardware test — so
+     * the geometry the client advertises for the IJK path can never claim a
+     * hardware ceiling the player would not actually use. Returns {@code false}
+     * (fail-closed) whenever IJK would fall back to a software decoder, so the
+     * server never routes an enhanced codec to software IJK.</p>
+     *
+     * @param mimeType Android decoder MIME (e.g. {@code video/hevc})
+     * @return true iff the codec IJK would select for this MIME is hardware
+     */
+    @SuppressWarnings("deprecation")
+    public static boolean hasSelectableHardwareDecoder(String mimeType) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN)
+            return false;
+        if (TextUtils.isEmpty(mimeType))
+            return false;
+        if (MiniclientApplication.get().getClient().properties().getBoolean(PrefStore.Keys.disable_hardware_decoders, false))
+            return false;
+
+        ArrayList<IjkMediaCodecInfo> candidateCodecList = new ArrayList<IjkMediaCodecInfo>();
+        MediaCodecList codecList = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
+        for (MediaCodecInfo codecInfo : codecList.getCodecInfos()) {
+            if (codecInfo.isEncoder())
+                continue;
+            if (MiniclientApplication.get().getClient().properties().getBoolean(CodecAdapter.getCodecKey(codecInfo.getName()), false))
+                continue;
+            if (!isCodecUsableDecoder(codecInfo, codecInfo.getName(), false))
+                continue;
+
+            String[] types = codecInfo.getSupportedTypes();
+            if (types == null)
+                continue;
+
+            for (String type : types) {
+                if (TextUtils.isEmpty(type))
+                    continue;
+                if (!type.equalsIgnoreCase(mimeType))
+                    continue;
+
+                IjkMediaCodecInfo candidate = IjkMediaCodecInfo.setupCandidate(codecInfo, mimeType);
+                if (candidate == null)
+                    continue;
+                candidateCodecList.add(candidate);
+            }
+        }
+
+        if (candidateCodecList.isEmpty())
+            return false;
+
+        IjkMediaCodecInfo bestCodec = candidateCodecList.get(0);
+        for (IjkMediaCodecInfo codec : candidateCodecList) {
+            if (codec.mRank > bestCodec.mRank) {
+                bestCodec = codec;
+            }
+        }
+
+        // Ijk ranks anything below RANK_LAST_CHANCE as "likely software"; unless
+        // the user explicitly opted into trying such codecs, onMediaCodecSelect
+        // returns null (-> software), so fail closed here too.
+        if (bestCodec.mRank < IjkMediaCodecInfo.RANK_LAST_CHANCE
+                && !MiniclientApplication.get().getClient().properties().getBoolean(PrefStore.Keys.prefer_android_software_decoders, false)) {
+            return false;
+        }
+
+        return !bestCodec.mCodecInfo.getName().startsWith("OMX.google.")
+                && !bestCodec.mCodecInfo.getName().startsWith("c2.android.");
+    }
 }

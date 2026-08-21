@@ -440,24 +440,42 @@ public class AndroidMiniClientOptions implements MiniClientOptions {
     @Override
     public String getVideoConstraintExtras(String sageCodecToken, boolean exoPath)
     {
-        if (!exoPath || sageCodecToken == null) return "";
+        if (sageCodecToken == null) return "";
 
-        VideoCodec resolved = null;
+        VideoCodec resolved = resolveVideoCodec(sageCodecToken);
+        if (resolved == null) return "";
+
+        // NG 4K contract Phase 0: the IJK path now advertises real MediaCodec
+        // geometry too, but only when a hardware decoder would actually be
+        // selected (fail-closed otherwise so the server never routes an enhanced
+        // codec to software IJK).
+        return exoPath
+                ? CodecCapabilityDetector.getVideoConstraintExtrasByExo(context, resolved)
+                : CodecCapabilityDetector.getVideoConstraintExtrasByIjk(context, resolved);
+    }
+
+    @Override
+    public String getVideoDecoderKind(String sageCodecToken, boolean exoPath)
+    {
+        if (exoPath) return "hw";
+        VideoCodec resolved = resolveVideoCodec(sageCodecToken);
+        return CodecCapabilityDetector.getVideoDecoderKind(resolved, false);
+    }
+
+    private static VideoCodec resolveVideoCodec(String sageCodecToken)
+    {
+        if (sageCodecToken == null) return null;
         for (VideoCodec codec : VideoCodec.values())
         {
             for (String sageName : codec.sageTVNames())
             {
                 if (sageName != null && sageName.equalsIgnoreCase(sageCodecToken))
                 {
-                    resolved = codec;
-                    break;
+                    return codec;
                 }
             }
-            if (resolved != null) break;
         }
-
-        if (resolved == null) return "";
-        return CodecCapabilityDetector.getVideoConstraintExtrasByExo(context, resolved);
+        return null;
     }
 
     @Override

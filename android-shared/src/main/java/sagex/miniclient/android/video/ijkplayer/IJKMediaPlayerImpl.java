@@ -146,6 +146,30 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
         return time;
     }
 
+    // ---- NG-POSDIAG hooks ----
+    @Override
+    protected long getRenderedPositionMillis()
+    {
+        try
+        {
+            // IJK getCurrentPosition() is the rendered/output clock (on-screen frame).
+            return (player != null) ? player.getCurrentPosition() : -1;
+        }
+        catch (Throwable t)
+        {
+            return -1;
+        }
+    }
+
+    @Override
+    protected long getBufferedPositionMillis()
+    {
+        // IJK exposes buffered fill only as a percentage via onBufferingUpdate,
+        // not an absolute buffered-head time, so we can't report a comparable
+        // absolute value here.
+        return -1;
+    }
+
     @Override
     public void stop()
     {

@@ -87,6 +87,16 @@ public interface MiniPlayerPlugin extends Runnable
     long getMediaTimeMillis(long lastServerTime);
 
     /**
+     * SEEK_EPOCH_V1: align the player's client-side seek epoch to the server's
+     * {@code streamEpoch} from the NG playback context. Default no-op so
+     * non-Android / non-trickplay implementations are unaffected. Callers gate
+     * on {@code MiniClientConnection.seekEpochV1Negotiated} before invoking.
+     *
+     * @param streamEpoch the server-reported stream epoch
+     */
+    default void setStreamEpoch(int streamEpoch) { }
+
+    /**
      * Appears to be used only during detailed buffered stats
      * @return
      */

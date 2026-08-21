@@ -1,5 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string-array name="entries_quality_hint_preference">
+        <item>Auto (recommended)</item>
+        <item>Always prefer quality</item>
+        <item>Prefer bandwidth savings</item>
+    </string-array>
+
+    <string-array name="entryvalues_quality_hint_preference">
+        <item>auto</item>
+        <item>quality</item>
+        <item>savings</item>
+    </string-array>
+
     <string-array name="entries_list_loglevels_preference">
         <item>DEBUG</item>
         <item>INFO</item>

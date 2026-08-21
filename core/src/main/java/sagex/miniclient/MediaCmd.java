@@ -539,6 +539,22 @@ public class MediaCmd
                             log.debug("PushBuffer: PUSHED ServerMUXTime: {}, lastServerStartTime: {}", Utils.toHHMMSS(serverMuxTime, true), Utils.toHHMMSS(this.getLastServerStartPosition(), true));
                         }
 
+                        // SEEK_EPOCH_V1: keep the player's epoch aligned with the
+                        // server's streamEpoch from the current NG context. Gated so
+                        // legacy sessions incur zero overhead and no epoch state.
+                        if (MiniClientConnection.seekEpochV1Negotiated)
+                        {
+                            NgPlaybackContextStore epochStore = myConn.getPlaybackContextStore();
+                            if (epochStore != null)
+                            {
+                                sagex.miniclient.ngcontext.NgPlaybackContext ctx = epochStore.getCurrent();
+                                if (ctx != null)
+                                {
+                                    playa.setStreamEpoch(ctx.streamEpoch());
+                                }
+                            }
+                        }
+
                     }
                 }
 
@@ -714,7 +730,15 @@ public class MediaCmd
                         NgSeekPolicy policy = ctxStore.getSeekPolicy();
                         long currentPos = getMediaTimeMillis();
 
-                        if (policy.shouldIgnoreSeek(seekTime, currentPos))
+                        // DVR_WINDOW_V1: clamp-to-window and ignore-at-edge are the
+                        // DVR-window behaviors, gated behind the runtime
+                        // push_seek_dvr_clamp pref (default OFF) so the trick-play
+                        // A/B test can flip Run A (overshoot allowed) vs Run B
+                        // (saturate at edge) without a rebuild. Coalesce (rapid-skip
+                        // debounce) is independent and always applies.
+                        boolean dvrClamp = client.properties().getBoolean(PrefStore.Keys.push_seek_dvr_clamp, false);
+
+                        if (dvrClamp && policy.shouldIgnoreSeek(seekTime, currentPos))
                         {
                             log.debug("MEDIACMD_SEEK: NG policy IGNORED seek to {} (at live edge)", seekTime);
                             return 0;
@@ -724,7 +748,10 @@ public class MediaCmd
                             log.debug("MEDIACMD_SEEK: NG policy COALESCED seek to {}", seekTime);
                             return 0;
                         }
-                        seekTime = policy.clampSeekTarget(seekTime);
+                        if (dvrClamp)
+                        {
+                            seekTime = policy.clampSeekTarget(seekTime);
+                        }
                         policy.markSeekExecuted();
                     }
 

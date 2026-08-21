@@ -12,6 +12,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import sagex.miniclient.MiniPlayerPlugin;
+import sagex.miniclient.MiniClientConnection;
 import sagex.miniclient.android.AppUtil;
 import sagex.miniclient.android.R;
 import sagex.miniclient.android.middleware.TrickplayController;
@@ -550,6 +551,71 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
 
     @Override
     public long getMediaTimeMillis(long lastServerTime)
+    {
+        long reported = computeMediaTimeMillis(lastServerTime);
+        logPosDiag(reported);
+        return reported;
+    }
+
+    /**
+     * NG-POSDIAG telemetry (client-only, no wire change). Emits, at most once
+     * per second, the value we report to the server alongside the raw rendered
+     * (on-screen) position, the buffered head, the player state and the current
+     * seek epoch. This lets us PROVE whether {@code clientReportedMediaTime}
+     * tracks the on-screen frame or leads it by the buffer depth — the
+     * root-cause question behind the backward-skip-goes-forward bug. Grep
+     * {@code NG-POSDIAG}. Always on; independent of the negotiated flags.
+     */
+    private long lastPosDiagMs = 0;
+
+    private void logPosDiag(long reported)
+    {
+        long now = System.currentTimeMillis();
+        if (now - lastPosDiagMs < 1000) return;
+        lastPosDiagMs = now;
+        try
+        {
+            long rendered = getRenderedPositionMillis();
+            long buffered = getBufferedPositionMillis();
+            long lead = (buffered >= 0 && rendered >= 0) ? (buffered - rendered) : -1;
+            int epoch = (trickplayController != null) ? trickplayController.getEpoch() : -1;
+            log.debug("NG-POSDIAG reported={} rendered={} bufferedHead={} lead(buf-scr)={} state={} epoch={} push={} tp1={} epoch1={} dvr1={}",
+                    reported, rendered, buffered, lead, state, epoch, pushMode,
+                    MiniClientConnection.trickplayPositionV1Negotiated,
+                    MiniClientConnection.seekEpochV1Negotiated,
+                    MiniClientConnection.dvrWindowV1Negotiated);
+        }
+        catch (Throwable t)
+        {
+            // Telemetry must never affect playback.
+        }
+    }
+
+    /**
+     * Raw on-screen (rendered/output) position in the player's own timeline,
+     * or -1 if unavailable. Used only by NG-POSDIAG. Player subclasses override.
+     */
+    protected long getRenderedPositionMillis() { return -1; }
+
+    /**
+     * Buffered/read-ahead head position, or -1 if unavailable. Used only by
+     * NG-POSDIAG to measure how far the buffer leads the screen. Subclasses override.
+     */
+    protected long getBufferedPositionMillis() { return -1; }
+
+    @Override
+    public void setStreamEpoch(int streamEpoch)
+    {
+        // SEEK_EPOCH_V1 only: align the controller's epoch to the server's.
+        // Gated so a legacy session (flag false) never touches epoch state.
+        if (!MiniClientConnection.seekEpochV1Negotiated) return;
+        if (trickplayController != null)
+        {
+            trickplayController.setServerEpoch(streamEpoch);
+        }
+    }
+
+    private long computeMediaTimeMillis(long lastServerTime)
     {
         if (lastMediaTime == -1) lastMediaTime = lastServerTime;
 

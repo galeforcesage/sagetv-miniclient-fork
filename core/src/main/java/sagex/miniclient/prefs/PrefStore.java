@@ -316,5 +316,67 @@ public interface PrefStore
         String offline_cap_captions = "offline_cap_captions";
         String offline_cap_comskip = "offline_cap_comskip";
         String offline_cap_transcript = "offline_cap_transcript";
+
+        /**
+         * NG Trick-Play &amp; Position Reporting Contract capability toggles.
+         * Each gates advertisement of one independent, opt-in capability during
+         * the NG handshake. All default true. A legacy server never queries
+         * these property names, so toggling them has zero effect on legacy
+         * sessions; they exist so the capability can be disabled for debugging.
+         *   TRICKPLAY_POSITION_V1 - reported position == on-screen frame media-time
+         *   SEEK_EPOCH_V1         - epoch tags so stale samples can't cross a reposition
+         *   DVR_WINDOW_V1         - seekable-window / live-edge clamping
+         */
+        String cap_trickplay_position_v1 = "cap_trickplay_position_v1";
+        String cap_seek_epoch_v1 = "cap_seek_epoch_v1";
+        String cap_dvr_window_v1 = "cap_dvr_window_v1";
+
+        /**
+         * Boolean: default false. When true, seek/scrub intents are clamped to
+         * the server-advertised DVR window and forward skips saturate at the
+         * live edge (DVR_WINDOW_V1). Exposed as a runtime toggle so the trick-play
+         * A/B test can flip clamp OFF/ON without a rebuild.
+         */
+        String push_seek_dvr_clamp = "miniplayer/push_seek_dvr_clamp";
+
+        /**
+         * NG Server Video Enhancement (4K upscale) contract, Phase 1 capability
+         * toggles + policy scalars. All NG-gated: a legacy server never queries
+         * the matching GetProperty names, so these have zero effect on legacy
+         * sessions and keep the wire byte-identical.
+         *
+         *   cap_display_sink_v1     - master toggle for advertising the physical
+         *                             sink / refresh / HDR / local-enhancement
+         *                             capability set (default true).
+         *   display_sink_override_mode - DEPRECATED (server contract §7.3). The
+         *                             sink is a pure MEASUREMENT and is now always
+         *                             reported when measurable, so there is no
+         *                             report/suppress gate. The user's Auto /
+         *                             Always / Never enhancement preference moved
+         *                             to {@link #quality_hint_mode}. Key retained
+         *                             only so any persisted value is ignored
+         *                             cleanly; not read anywhere.
+         */
+        String cap_display_sink_v1 = "cap_display_sink_v1";
+        @Deprecated
+        String display_sink_override_mode = "display_sink_override_mode";
+
+        /**
+         * NG 4K contract: local-enhancement policy the client advertises via
+         * {@code LOCAL_ENHANCEMENT}. This fork runs no upscaler of its own, so
+         * the default is {@code auto} which reports {@code status=none} and lets
+         * the server decide. Values: {@code auto|local|server}.
+         */
+        String local_enhancement_mode = "local_enhancement_mode";
+
+        /**
+         * NG 4K contract §2.5 + §7.3: coarse quality/bandwidth hint advertised
+         * via {@code QUALITY_HINT}, and the home of the user's Auto / Always /
+         * Never enhancement preference (the sink itself is a measurement and no
+         * longer carries intent). Values: {@code auto} (server decides),
+         * {@code quality} (prefer enhancement), {@code savings} (prefer bandwidth,
+         * e.g. metered/battery). Advisory today. Default {@code auto}.
+         */
+        String quality_hint_mode = "quality_hint_mode";
     }
 }

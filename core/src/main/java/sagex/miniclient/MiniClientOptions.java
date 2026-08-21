@@ -100,6 +100,31 @@ public interface MiniClientOptions {
         return "";
     }
 
+    /**
+     * NG Server Video Enhancement (4K upscale) contract, Phase 0: the honest
+     * decoder kind for the given SageTV codec token on the given player path.
+     *
+     * <p>The server's enhancement decision tree treats {@code decoder=sw} as a
+     * hard block (software decode cannot sustain 4K realtime) and only routes an
+     * enhanced (e.g. 4K) codec to a {@code decoder=hw} entry whose advertised
+     * {@code maxW/maxH} covers the target. This method lets a platform report the
+     * real hardware-vs-software decode selection per codec.</p>
+     *
+     * <p>Return {@code "hw"} or {@code "sw"} (or the legacy {@code "sw_or_hw"}
+     * when the platform genuinely cannot tell). The default preserves the exact
+     * pre-contract wire: {@code "hw"} for the Exo path (Exo decodes via
+     * MediaCodec hardware) and {@code "sw_or_hw"} for the IJK path (unknown until
+     * a platform overrides). Android overrides this to advertise the real IJK
+     * MediaCodec HW/SW selection.</p>
+     *
+     * @param sageCodecToken SageTV codec token (e.g. MPEG2-VIDEO, H.264)
+     * @param exoPath true for Exo path, false for IJK path
+     */
+    default String getVideoDecoderKind(String sageCodecToken, boolean exoPath)
+    {
+        return exoPath ? "hw" : "sw_or_hw";
+    }
+
     public boolean isTouchUI();
     public boolean isTVUI();
     public boolean isDesktopUI();

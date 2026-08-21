@@ -106,6 +106,36 @@ public interface UIRenderer<Image extends Texture> {
      */
     Dimension getUISize();
 
+    /**
+     * NG Server Video Enhancement (4K upscale) contract, Phase 1: the true
+     * <b>physical</b> resolution of the display the client is actually rendering
+     * on, formatted {@code "WIDTHxHEIGHT"} (e.g. {@code "3840x2160"}), or an
+     * empty string when unknown, suppressed by the eligibility gate, or opted
+     * out. This is <b>never</b> a fabricated 4K value — it is the real panel /
+     * external-sink pixel count, which is itself the upscale ceiling the server
+     * must clamp to. Only the renderer can answer this because only it can reach
+     * the <em>activity's</em> Display (an Application-context WindowManager only
+     * sees the default display).
+     *
+     * <p>Default returns {@code ""} so non-Android renderers advertise nothing
+     * new and keep the wire byte-identical to legacy servers.</p>
+     */
+    default String getDisplaySinkResolution() { return ""; }
+
+    /**
+     * NG 4K contract, Phase 1: comma-separated supported refresh rates of the
+     * active display (e.g. {@code "24.00,50.00,60.00"}), or empty when unknown.
+     * Refinement only; safe to omit. Default {@code ""}.
+     */
+    default String getDisplayRefreshRates() { return ""; }
+
+    /**
+     * NG 4K contract, Phase 1: comma-separated HDR types the active display
+     * advertises (e.g. {@code "HDR10,DOLBY_VISION,HLG"}), {@code "none"} when the
+     * display reports SDR only, or empty when unknown. Default {@code ""}.
+     */
+    default String getDisplayHdrTypes() { return ""; }
+
     void setFullScreen(boolean b);
 
     void setSize(int w, int h);

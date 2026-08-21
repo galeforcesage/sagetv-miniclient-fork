@@ -280,6 +280,29 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
         return lastServerTime + position;
     }
 
+    // ---- NG-POSDIAG hooks ----
+    @Override
+    protected long getRenderedPositionMillis()
+    {
+        // currentPlaybackPosition is sampled from player.getCurrentPosition()
+        // (the rendered/output clock), i.e. the on-screen frame — not the
+        // buffered head.
+        return this.currentPlaybackPosition;
+    }
+
+    @Override
+    protected long getBufferedPositionMillis()
+    {
+        try
+        {
+            return (player != null) ? player.getBufferedPosition() : -1;
+        }
+        catch (Throwable t)
+        {
+            return -1;
+        }
+    }
+
     @Override
     public void stop()
     {

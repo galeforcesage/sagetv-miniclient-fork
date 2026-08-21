@@ -270,6 +270,29 @@ public class MiniClientConnection implements SageTVInputCallback
     // pathlen, path
     // 64-bit return value
     public static boolean detailedBufferStats = false;
+
+    // ---- NG Trick-Play & Position Reporting Contract: negotiated flags ----
+    // Each flag is set TRUE only when the server actually queries the matching
+    // capability property during the NG handshake (GetProperty round-trip).
+    // A legacy server never queries these names, so the flags stay FALSE and
+    // every gated behavior below falls back to the exact pre-contract code path
+    // (byte-for-byte identical on the wire). Never tighten reported values or
+    // state unless the corresponding flag is true.
+    public static volatile boolean trickplayPositionV1Negotiated = false;
+    public static volatile boolean seekEpochV1Negotiated = false;
+    public static volatile boolean dvrWindowV1Negotiated = false;
+
+    // NG Server Video Enhancement (4K upscale) contract: negotiated flag. Set
+    // TRUE only when the server queries DISPLAY_SINK_RESOLUTION in the NG round.
+    // Legacy servers never query it, so it stays FALSE and no enhancement state
+    // is ever assumed.
+    public static volatile boolean displaySinkV1Negotiated = false;
+
+    public static boolean isTrickplayPositionV1Negotiated() { return trickplayPositionV1Negotiated; }
+    public static boolean isSeekEpochV1Negotiated() { return seekEpochV1Negotiated; }
+    public static boolean isDvrWindowV1Negotiated() { return dvrWindowV1Negotiated; }
+    public static boolean isDisplaySinkV1Negotiated() { return displaySinkV1Negotiated; }
+
     // pathlen, path
     // 64-bit return value
     public static String CONNECT_FAILURE_GENERAL_INTERNET = "The SageTV Placeshifter is having trouble connecting to the Internet. "
@@ -974,7 +997,9 @@ public class MiniClientConnection implements SageTVInputCallback
 
             String scan = "any";
             String interlaced = "unknown";
-            String decoder = exoPath ? "hw" : "sw_or_hw";
+            String decoder = (options != null)
+                    ? options.getVideoDecoderKind(token, exoPath)
+                    : (exoPath ? "hw" : "sw_or_hw");
             final boolean interlacedSafe = (options == null)
                     || options.isInterlacedVideoSafe(token, exoPath);
 
@@ -1158,6 +1183,12 @@ public class MiniClientConnection implements SageTVInputCallback
         myGfx = new GFXCMD2(client);
 
         detailedBufferStats = false;
+        // Reset NG contract negotiated flags on every (re)connect so a legacy
+        // server after an NG server never inherits a stale TRUE.
+        trickplayPositionV1Negotiated = false;
+        seekEpochV1Negotiated = false;
+        dvrWindowV1Negotiated = false;
+        displaySinkV1Negotiated = false;
         byte[] cmd = new byte[4];
         int command, len;
         int[] hasret = new int[1];
@@ -1871,6 +1902,31 @@ public class MiniClientConnection implements SageTVInputCallback
                                 caps.append(",OFFLINE_TRANSCRIPT");
                             }
                         }
+                        // NG Trick-Play & Position Reporting Contract capabilities.
+                        // Mirrored here in the summary string (in addition to the
+                        // individual GetProperty branches) so a server that reads
+                        // the aggregate token list sees them too. Independent + additive.
+                        if (client.properties().getBoolean(PrefStore.Keys.cap_trickplay_position_v1, true))
+                        {
+                            caps.append(",TRICKPLAY_POSITION_V1");
+                        }
+                        if (client.properties().getBoolean(PrefStore.Keys.cap_seek_epoch_v1, true))
+                        {
+                            caps.append(",SEEK_EPOCH_V1");
+                        }
+                        if (client.properties().getBoolean(PrefStore.Keys.cap_dvr_window_v1, true))
+                        {
+                            caps.append(",DVR_WINDOW_V1");
+                        }
+                        // NG Server Video Enhancement (4K upscale) contract.
+                        // Advertised in the summary (flag-free, pref-gated) so an
+                        // NG server knows it may query the DISPLAY_* / QUALITY_HINT
+                        // / LOCAL_ENHANCEMENT props. Does NOT flip the negotiated
+                        // flag (only the individual branch does).
+                        if (client.properties().getBoolean(PrefStore.Keys.cap_display_sink_v1, true))
+                        {
+                            caps.append(",DISPLAY_SINK_V1");
+                        }
                         propVal = caps.toString();
                         log.logInfo("SAGETV_NG_CAPABILITIES -> '" + propVal + "'");
                     }
@@ -1898,9 +1954,144 @@ public class MiniClientConnection implements SageTVInputCallback
                         // path (MEDIACMD_FLUSH + new PUSHBUFFER stream).
                         propVal = "FALSE";
                     }
-                    else if ("GFX_SUBTITLES".equals(propName))
+                    else if ("TRICKPLAY_POSITION_V1".equals(propName))
                     {
-                        propVal = "TRUE";
+                        // NG Trick-Play & Position Reporting Contract, capability 1.
+                        // Promise: clientReportedMediaTime is the media-time of the
+                        // frame currently ON SCREEN (not the buffered/read-ahead head),
+                        // advancing only during PLAY, frozen while paused/buffering,
+                        // reset near 0 after a flush, with an accurate play-state byte.
+                        // This is the root-cause fix for backward-skip-goes-forward.
+                        if (client.properties().getBoolean(PrefStore.Keys.cap_trickplay_position_v1, true))
+                        {
+                            propVal = "TRUE";
+                            trickplayPositionV1Negotiated = true;
+                        }
+                        else
+                        {
+                            propVal = "FALSE";
+                        }
+                        log.logInfo("TRICKPLAY_POSITION_V1 -> '" + propVal + "'");
+                    }
+                    else if ("SEEK_EPOCH_V1".equals(propName))
+                    {
+                        // NG Trick-Play & Position Reporting Contract, capability 2.
+                        // Every server-initiated reposition starts a new epoch; the
+                        // client tags position reports with the epoch it is rendering
+                        // and discards samples from a superseded epoch, so a report
+                        // sampled before a reposition can never be applied after it.
+                        if (client.properties().getBoolean(PrefStore.Keys.cap_seek_epoch_v1, true))
+                        {
+                            propVal = "TRUE";
+                            seekEpochV1Negotiated = true;
+                        }
+                        else
+                        {
+                            propVal = "FALSE";
+                        }
+                        log.logInfo("SEEK_EPOCH_V1 -> '" + propVal + "'");
+                    }
+                    else if ("DVR_WINDOW_V1".equals(propName))
+                    {
+                        // NG Trick-Play & Position Reporting Contract, capability 3.
+                        // Server advertises the seekable window / live edge; the
+                        // client clamps scrub/seek intents to it and saturates forward
+                        // skips at the live edge instead of overshooting.
+                        if (client.properties().getBoolean(PrefStore.Keys.cap_dvr_window_v1, true))
+                        {
+                            propVal = "TRUE";
+                            dvrWindowV1Negotiated = true;
+                        }
+                        else
+                        {
+                            propVal = "FALSE";
+                        }
+                        log.logInfo("DVR_WINDOW_V1 -> '" + propVal + "'");
+                    }
+                    else if ("DISPLAY_SINK_RESOLUTION".equals(propName))
+                    {
+                        // NG Server Video Enhancement (4K upscale) contract §2.1
+                        // + §7.3. Report the TRUE physical resolution of the display
+                        // we are actually rendering on (never a fabricated 4K). This
+                        // is a MEASUREMENT, not a preference: we always report it
+                        // when measurable, on every device class, because the value
+                        // is itself the upscale ceiling — the server clamps the
+                        // enhancement target to min(tier, this). Empty means UNKNOWN
+                        // (fail-closed), which the server reads as an abstention: it
+                        // may still infer from decode ceilings but skips the panel
+                        // clamp. The user's opt-out lives in QUALITY_HINT, not here.
+                        if (client.properties().getBoolean(PrefStore.Keys.cap_display_sink_v1, true)
+                                && uiRenderer != null)
+                        {
+                            propVal = uiRenderer.getDisplaySinkResolution();
+                            if (propVal == null) propVal = "";
+                            displaySinkV1Negotiated = true;
+                        }
+                        else
+                        {
+                            propVal = "";
+                        }
+                        log.logInfo("DISPLAY_SINK_RESOLUTION -> '" + propVal + "'");
+                    }
+                    else if ("DISPLAY_REFRESH_RATES".equals(propName))
+                    {
+                        // NG 4K contract: refresh-rate refinement (optional).
+                        if (client.properties().getBoolean(PrefStore.Keys.cap_display_sink_v1, true)
+                                && uiRenderer != null)
+                        {
+                            propVal = uiRenderer.getDisplayRefreshRates();
+                            if (propVal == null) propVal = "";
+                        }
+                        else
+                        {
+                            propVal = "";
+                        }
+                        log.logInfo("DISPLAY_REFRESH_RATES -> '" + propVal + "'");
+                    }
+                    else if ("DISPLAY_HDR_TYPES".equals(propName))
+                    {
+                        // NG 4K contract: HDR-type refinement (optional).
+                        if (client.properties().getBoolean(PrefStore.Keys.cap_display_sink_v1, true)
+                                && uiRenderer != null)
+                        {
+                            propVal = uiRenderer.getDisplayHdrTypes();
+                            if (propVal == null) propVal = "";
+                        }
+                        else
+                        {
+                            propVal = "";
+                        }
+                        log.logInfo("DISPLAY_HDR_TYPES -> '" + propVal + "'");
+                    }
+                    else if ("LOCAL_ENHANCEMENT".equals(propName))
+                    {
+                        // NG 4K contract: this fork runs no local upscaler, so we
+                        // advertise the user's declared preference with
+                        // status=none and let the SERVER decide. status=active
+                        // would tell the server to back off; we never send that.
+                        String mode = client.properties().getString(
+                                PrefStore.Keys.local_enhancement_mode, "auto");
+                        if (mode == null || mode.trim().isEmpty()) mode = "auto";
+                        propVal = "pref=" + mode + ";status=none";
+                        log.logInfo("LOCAL_ENHANCEMENT -> '" + propVal + "'");
+                    }
+                    else if ("QUALITY_HINT".equals(propName))
+                    {
+                        // NG 4K contract §2.5 + §7.3: this is where the user's
+                        // Auto/Always/Never enhancement preference lives now (NOT
+                        // the sink, which is a pure measurement). auto -> server
+                        // decides; quality -> user wants enhancement even where the
+                        // server might otherwise decline (§7.2 override); savings ->
+                        // user opts out for bandwidth/metered/thermal reasons. Note:
+                        // savings is advisory today (the server does not yet query
+                        // QUALITY_HINT), so it is not a hard client-side off.
+                        String hint = client.properties().getString(
+                                PrefStore.Keys.quality_hint_mode, "auto");
+                        if (hint != null) hint = hint.trim().toLowerCase();
+                        if (!"quality".equals(hint) && !"savings".equals(hint))
+                            hint = "auto";
+                        propVal = hint;
+                        log.logInfo("QUALITY_HINT -> '" + propVal + "'");
                     }
                     else if ("AUDIO_PROCESSING_CAPABILITIES".equals(propName))
                     {
@@ -2102,6 +2293,20 @@ public class MiniClientConnection implements SageTVInputCallback
                         // have worked (e.g. HEVC + MPEG2-TS). The push vs. pull decision is made per-stream when the
                         // server returns a push:// or stv:// URL to OPENURL; capability advertisement should describe
                         // what we can accept regardless of the currently-preferred mode.
+                        //
+                        // EXCEPTION: when the user has EXPLICITLY pinned THIS server to PULL (per-server override,
+                        // not the AUTOMATIC default), honor that intent by advertising no push containers, so the
+                        // NG server returns stv:// pull URLs. That gives client-local seeking (FF/REW without a
+                        // per-seek server re-stream) — the whole point of opting into PULL. The blanket removal
+                        // above (done to fix the HEVC+MPEG2-TS transcode regression) also silently disabled this
+                        // opt-in; this branch restores it WITHOUT affecting AUTOMATIC sessions, which fall through
+                        // to the advertise-everything branch and keep choosing push.
+                        else if (perServerExplicit && "pull".equalsIgnoreCase(effectiveStreamingMode))
+                        {
+                            propVal = "NONE";
+                            log.logInfo("STREAMING per-server PULL: PUSH_AV_CONTAINERS -> 'NONE' "
+                                    + "(force server to emit stv:// pull URLs for client-local seeking)");
+                        }
                         else
                         {
                             if(pushFormats.size() == 0)

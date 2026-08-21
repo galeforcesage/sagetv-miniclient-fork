@@ -812,6 +812,48 @@ public class MiniClientGDXRenderer implements ApplicationListener, UIRenderer<Gd
         return uiSize;
     }
 
+    /**
+     * The {@link Display} the activity is actually rendering on. On an
+     * activity-scoped WindowManager this returns the external display when the
+     * activity has been relocated there, so the NG 4K sink report reflects the
+     * real output surface.
+     */
+    private Display getActiveDisplay() {
+        try {
+            WindowManager wm = (WindowManager) activity.getSystemService(Context.WINDOW_SERVICE);
+            return (wm != null) ? wm.getDefaultDisplay() : null;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    @Override
+    public String getDisplaySinkResolution() {
+        try {
+            return sagex.miniclient.android.display.SinkResolutionResolver.resolveSink(getActiveDisplay());
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    @Override
+    public String getDisplayRefreshRates() {
+        try {
+            return sagex.miniclient.android.display.SinkResolutionResolver.refreshRates(getActiveDisplay());
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    @Override
+    public String getDisplayHdrTypes() {
+        try {
+            return sagex.miniclient.android.display.SinkResolutionResolver.hdrTypes(getActiveDisplay());
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
     @Override
     public void setFullScreen(boolean b) {
         log.warn("Set FullScreen was called but we did nothing with {}", b);

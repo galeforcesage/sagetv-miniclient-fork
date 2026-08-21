@@ -184,6 +184,21 @@
             android:summary="@string/summary_debug_ar_preference"
             android:title="@string/title_debug_ar_preference"/>
 
+        <CheckBoxPreference
+            android:defaultValue="false"
+            android:key="miniplayer/push_seek_dvr_clamp"
+            android:summary="@string/summary_push_seek_dvr_clamp_preference"
+            android:title="@string/title_push_seek_dvr_clamp_preference"/>
+
+        <ListPreference
+            android:defaultValue="auto"
+            android:key="quality_hint_mode"
+            android:dialogTitle="@string/dialog_title_quality_hint_preference"
+            android:entries="@array/entries_quality_hint_preference"
+            android:entryValues="@array/entryvalues_quality_hint_preference"
+            android:summary="@string/summary_quality_hint_preference"
+            android:title="@string/title_quality_hint_preference"/>
+
         <!--
         <CheckBoxPreference
             android:defaultValue="false"

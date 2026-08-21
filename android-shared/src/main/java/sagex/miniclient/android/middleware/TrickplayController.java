@@ -157,6 +157,15 @@ public class TrickplayController
     // Paused indicator (used only by isStable / getState).
     private boolean paused = false;
 
+    // ---- Seek epoch (SEEK_EPOCH_V1) ----
+    // Monotonically increasing id of the current contiguous run of stream
+    // content. Every reposition (flush) starts a new epoch. Position reports
+    // are tagged with the epoch they render so the server (and the client's
+    // own stale-sample guard) can reject a sample sampled before a reposition
+    // from being applied after it. Bumped in flush(); can also be aligned to
+    // the server's streamEpoch via setServerEpoch().
+    private int epoch = 0;
+
     /* ------------ Pending pre-ready seek ------------ */
     // If beginSeek() arrives before the player has been prepared, the
     // commit Runnable will fail. We park the target here and replay it
@@ -356,6 +365,10 @@ public class TrickplayController
         synchronized (this)
         {
             mappingValid = false;
+            // A flush is a reposition boundary: start a new epoch so any
+            // in-flight position sample tagged with the prior epoch is
+            // discarded rather than applied to the new content.
+            epoch++;
             // Note: we do NOT clear seekTargetMs / seekArmed / seekCommitted.
             // A typical sequence is beginSeek() → flush() → push new data
             // → onPlayerPosition() converges → mapping established.
@@ -598,11 +611,30 @@ public class TrickplayController
         return serverStartTimeMs;
     }
 
-    /* ---- Epoch (deprecated; no consumer) ---- */
+    /* ---- Seek epoch (SEEK_EPOCH_V1) ---- */
 
-    public int getEpoch()
+    /**
+     * Current client-side epoch. Bumped on every {@link #flush()} (reposition
+     * boundary). Consumers tag position reports with this so stale samples are
+     * dropped across a reposition.
+     */
+    public synchronized int getEpoch()
     {
-        return 0;
+        return epoch;
+    }
+
+    /**
+     * Align the client epoch to the server's {@code streamEpoch} (from the NG
+     * playback context). If the server reports a newer epoch than we've locally
+     * observed, advance to it so subsequent reports carry the server's id.
+     * No-op when SEEK_EPOCH_V1 was not negotiated (caller-gated).
+     */
+    public synchronized void setServerEpoch(int serverEpoch)
+    {
+        if (serverEpoch > epoch)
+        {
+            epoch = serverEpoch;
+        }
     }
 
     public long getNativeHandle()
