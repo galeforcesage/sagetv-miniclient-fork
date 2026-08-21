@@ -362,11 +362,15 @@ public interface PrefStore
         String display_sink_override_mode = "display_sink_override_mode";
 
         /**
-         * NG 4K contract: local-enhancement policy the client advertises via
-         * {@code LOCAL_ENHANCEMENT}. This fork runs no upscaler of its own, so
-         * the default is {@code auto} which reports {@code status=none} and lets
-         * the server decide. Values: {@code auto|local|server}.
+         * NG 4K contract: local-enhancement policy advertised via
+         * {@code LOCAL_ENHANCEMENT}. DEPRECATED as a user pref: the single
+         * Never/Auto/Always control ({@link #quality_hint_mode}) now drives the
+         * advertised preference (Always -> {@code pref=server}, else
+         * {@code pref=auto}), and status is always {@code none} because this fork
+         * runs no upscaler. Key retained only so any persisted value is ignored
+         * cleanly; not read anywhere.
          */
+        @Deprecated
         String local_enhancement_mode = "local_enhancement_mode";
 
         /**

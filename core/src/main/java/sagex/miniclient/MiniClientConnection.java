@@ -982,6 +982,19 @@ public class MiniClientConnection implements SageTVInputCallback
         return !isLegacyServerCompat();
     }
 
+    /**
+     * Normalizes the user's Never/Auto/Always 4K-enhancement control (persisted
+     * in {@code quality_hint_mode}) to the canonical {@code QUALITY_HINT} wire
+     * value. Never -> {@code savings}, Always -> {@code quality}, everything else
+     * (including unset) -> {@code auto}.
+     */
+    private static String normalizeQualityHint(String raw)
+    {
+        String hint = (raw == null) ? "" : raw.trim().toLowerCase();
+        if ("quality".equals(hint) || "savings".equals(hint)) return hint;
+        return "auto";
+    }
+
     private String buildVideoConstraintCsv(List<String> codecs, String deviceClass, boolean exoPath)
     {
         if (codecs == null || codecs.isEmpty()) return "";
@@ -2065,14 +2078,20 @@ public class MiniClientConnection implements SageTVInputCallback
                     }
                     else if ("LOCAL_ENHANCEMENT".equals(propName))
                     {
-                        // NG 4K contract: this fork runs no local upscaler, so we
-                        // advertise the user's declared preference with
-                        // status=none and let the SERVER decide. status=active
-                        // would tell the server to back off; we never send that.
-                        String mode = client.properties().getString(
-                                PrefStore.Keys.local_enhancement_mode, "auto");
-                        if (mode == null || mode.trim().isEmpty()) mode = "auto";
-                        propVal = "pref=" + mode + ";status=none";
+                        // NG 4K contract §2.4 + §7.3. This fork runs no local
+                        // upscaler, so status is ALWAYS none (honest; we never send
+                        // status=active, which would tell the server to back off).
+                        // The single Never/Auto/Always control (quality_hint_mode)
+                        // drives the preference: Always (quality) sends
+                        // pref=server, an affirmative "please enhance server-side"
+                        // request that pairs with the honest sink + per-codec
+                        // ceilings we already send every session; Auto/Never send
+                        // pref=auto and let the server decide (Never expresses the
+                        // opt-out via QUALITY_HINT=savings instead).
+                        String hint = normalizeQualityHint(client.properties()
+                                .getString(PrefStore.Keys.quality_hint_mode, "auto"));
+                        String pref = "quality".equals(hint) ? "server" : "auto";
+                        propVal = "pref=" + pref + ";status=none";
                         log.logInfo("LOCAL_ENHANCEMENT -> '" + propVal + "'");
                     }
                     else if ("QUALITY_HINT".equals(propName))
@@ -2085,11 +2104,8 @@ public class MiniClientConnection implements SageTVInputCallback
                         // user opts out for bandwidth/metered/thermal reasons. Note:
                         // savings is advisory today (the server does not yet query
                         // QUALITY_HINT), so it is not a hard client-side off.
-                        String hint = client.properties().getString(
-                                PrefStore.Keys.quality_hint_mode, "auto");
-                        if (hint != null) hint = hint.trim().toLowerCase();
-                        if (!"quality".equals(hint) && !"savings".equals(hint))
-                            hint = "auto";
+                        String hint = normalizeQualityHint(client.properties()
+                                .getString(PrefStore.Keys.quality_hint_mode, "auto"));
                         propVal = hint;
                         log.logInfo("QUALITY_HINT -> '" + propVal + "'");
                     }

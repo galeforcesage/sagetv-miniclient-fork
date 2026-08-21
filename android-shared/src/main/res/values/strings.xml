@@ -87,9 +87,9 @@
     <string name="summary_debug_ar_preference">Turns on logging and UI tools for debugging Aspect Ratios</string>
     <string name="title_push_seek_dvr_clamp_preference">DVR seek clamp (push)</string>
     <string name="summary_push_seek_dvr_clamp_preference">When on, push-mode seeks are clamped to the server DVR window and forward skips saturate at the live edge instead of overshooting. Off (default) allows overshoot.</string>
-    <string name="title_quality_hint_preference">4K enhancement: quality preference</string>
-    <string name="summary_quality_hint_preference">Tells the server how much you value picture quality versus bandwidth for server-side upscaling/deinterlacing. Auto lets the server decide. Always prefer quality asks for enhancement even where the server might otherwise hold back. Prefer bandwidth savings asks the server to go easy (useful on metered or battery-limited connections). This is a hint: the server always clamps enhancement to your real screen size, so a phone never receives wasteful 4K regardless of this setting.</string>
-    <string name="dialog_title_quality_hint_preference">4K enhancement quality preference</string>
+    <string name="title_quality_hint_preference">4K enhancement: Never / Auto / Always</string>
+    <string name="summary_quality_hint_preference">Controls server-side 4K upscaling/deinterlacing. Auto lets the server decide. Always affirmatively requests server enhancement (sends QUALITY_HINT=quality plus LOCAL_ENHANCEMENT pref=server) for when Auto isn\'t upscaling but you want it — the server still clamps to your real screen size and decode limits, so a small screen is never sent wasteful 4K. Never asks the server to save bandwidth (QUALITY_HINT=savings). Your real screen size and per-codec decode limits are always reported regardless of this setting.</string>
+    <string name="dialog_title_quality_hint_preference">4K enhancement</string>
     <string name="dialog_title_list_mem_cache_preference">Set Memory Image Cache</string>
     <string name="title_list_mem_cache_preference">Memory Image Cache</string>
     <string name="summary_list_mem_cache_preference">Sets the amount of Memory to use for Image Caching.  Higher values will result in better peformance, especially with Fanart enabled.</string>
