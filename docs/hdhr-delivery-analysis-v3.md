@@ -173,7 +173,7 @@ Sending them is harmless (SET_PROPERTY for unknown names returns 0 = success), b
 
 The repo carries a `third_party/ffmpeg/` directory with SageTV-patched ffmpeg (per user note). Concrete patch enumeration not yet performed in this iteration. Two operationally-visible upstream fingerprints already known to this codebase (from repo memory):
 
-- `-stdinctrl` flag for live transcode control — accepted by SageTV-patched ffmpeg, rejected by stock BtbN n7.x ([sagetv-miniclient repo memory: "sagetv-mine Server FFmpeg Wrapper"]).
+- `-stdinctrl` flag for live transcode control — accepted by SageTV-patched ffmpeg, rejected by stock BtbN n7.x (SageTV server FFmpeg wrapper).
 - `-activefile`, `-brokendts`, `-dumpmetadata`, numeric `-v <N>` levels — same patched-only surface.
 
 [google/SageTV@f55505f:java/sage/FFMPEGTranscoder.java] confirms these are emitted unconditionally (e.g. `-stdinctrl` line ~1 path, `-brokendts` guarded by `xcode_fix_broken_hdpvr_streams`, `-priority` Windows-only).

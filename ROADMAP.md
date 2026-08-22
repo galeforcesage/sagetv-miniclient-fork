@@ -202,7 +202,7 @@ the user doesn't have to know which player handles which codec.
      stream) — `PsExtractor.H262Reader.parseCsdBuffer` AIOOBE in
      ExoPlayer 2.18.1; IJK demuxes natively.
    - `isBarePushUrl(url)` — empty/garbled `push:` URL with no `F=`
-     format descriptor (observed on sagetv-mine NG May 2026 where the
+     format descriptor (observed on an NG server May 2026 where the
      server's profile resolver emitted DIRECT_PLAY/REMUX with an empty
      payload descriptor). Without the hint, ExoPlayer's sniff path
      partially succeeds on the Fold — audio plays, video stays black.

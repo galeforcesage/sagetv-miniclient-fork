@@ -83,7 +83,7 @@ public final class PlayerSelectionUtil
 
     /**
      * NG-server landmine: bare {@code push:} OPENURL with no format hint
-     * string after the colon. Observed on sagetv-mine NG May 2026: the
+     * string after the colon. Observed on an NG server May 2026: the
      * server's profile resolver picked DIRECT_PLAY / REMUX but emitted an
      * OPENURL whose payload-format descriptor is empty. ExoPlayer needs
      * the container hint to pick the right Extractor; without it the
