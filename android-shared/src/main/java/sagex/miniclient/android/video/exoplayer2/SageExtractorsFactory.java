@@ -80,9 +80,9 @@ public final class SageExtractorsFactory implements ExtractorsFactory {
         // If we have a container hint from the server, return only the matching
         // extractor. This eliminates the sniff phase (~200-500ms savings).
         if (containerHint != null) {
-            Extractor hinted = resolveHintedExtractor(psExtractor);
+            Extractor[] hinted = resolveHintedExtractor(psExtractor);
             if (hinted != null) {
-                return new Extractor[]{ hinted };
+                return hinted;
             }
             // Fall through to normal logic if hint didn't resolve
         }
@@ -117,21 +117,29 @@ public final class SageExtractorsFactory implements ExtractorsFactory {
     }
 
     /**
-     * Map the container hint to a single Extractor instance.
+     * Map the container hint to the Extractor(s) to use.
      * Returns null if the hint is unrecognized (caller falls through to normal logic).
+     *
+     * <p>Most hints resolve to a single extractor so the sniff phase is skipped.
+     * The {@code MP4} hint is the exception: the {@code video/quicktime} /
+     * {@code video/mp4} container MIME does not tell us whether the file is a
+     * fragmented MP4 (moof/trex) or a regular moov-based MP4, and
+     * {@link FragmentedMp4Extractor} throws a NullPointerException in
+     * {@code onMoovContainerAtomRead} when fed a non-fragmented MP4. So for MP4
+     * we return both extractors (fragmented first) and let ExoPlayer's sniff
+     * pick the correct one — fragmented sniff correctly rejects a plain MP4.
      */
-    private Extractor resolveHintedExtractor(SagePsExtractor psExtractor) {
+    private Extractor[] resolveHintedExtractor(SagePsExtractor psExtractor) {
         switch (containerHint) {
             case "MPEG2-TS":
-                return new TsExtractor();
+                return new Extractor[]{ new TsExtractor() };
             case "MPEG2-PS":
             case "MPEG1-PS":
-                return psExtractor;
+                return new Extractor[]{ psExtractor };
             case "MATROSKA":
-                return new MatroskaExtractor();
+                return new Extractor[]{ new MatroskaExtractor() };
             case "MP4":
-                // Prefer fragmented to handle both fMP4 and regular MP4
-                return new FragmentedMp4Extractor();
+                return new Extractor[]{ new FragmentedMp4Extractor(), new Mp4Extractor() };
             default:
                 return null;
         }
