@@ -362,6 +362,22 @@ public interface PrefStore
         String display_sink_override_mode = "display_sink_override_mode";
 
         /**
+         * Playback Surface capability model (server Protocol 2.1). Master toggle
+         * for advertising {@code PLAYBACK_SURFACES} + the per-surface
+         * {@code PLAYBACK_SURFACE_<id>_*} descriptor built from the existing
+         * per-player capability sets ({@code EXO_*} / {@code IJK_*}).
+         *
+         * <p>Baseline NG-client data, NOT a user-facing on/off (the user's
+         * enhancement preference lives in {@link #quality_hint_mode}). Default
+         * {@code true}, exactly like {@link #cap_display_sink_v1} and the
+         * trick-play caps: always advertised to an NG server, and inherently
+         * invisible to a legacy server (which never queries the NG property
+         * names, so the wire stays byte-identical). The key is retained only as a
+         * debug kill-switch, consistent with the other NG capability toggles.
+         */
+        String cap_playback_surfaces_v1 = "cap_playback_surfaces_v1";
+
+        /**
          * NG 4K contract: local-enhancement policy advertised via
          * {@code LOCAL_ENHANCEMENT}. DEPRECATED as a user pref: the single
          * Never/Auto/Always control ({@link #quality_hint_mode}) now drives the

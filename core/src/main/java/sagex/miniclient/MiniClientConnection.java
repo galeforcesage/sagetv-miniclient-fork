@@ -31,6 +31,7 @@ import sagex.miniclient.events.OfflineGuideSnapshotEvent;
 import sagex.miniclient.events.OfflineScheduleSnapshotEvent;
 import sagex.miniclient.logging.ILogger;
 import sagex.miniclient.media.Container;
+import sagex.miniclient.media.PlaybackSurfaceCanon;
 import sagex.miniclient.media.VideoCodec;
 import sagex.miniclient.prefs.PrefStore;
 import sagex.miniclient.uibridge.Dimension;
@@ -288,10 +289,17 @@ public class MiniClientConnection implements SageTVInputCallback
     // is ever assumed.
     public static volatile boolean displaySinkV1Negotiated = false;
 
+    // Playback Surface capability model (Protocol 2.1): negotiated flag. Set TRUE
+    // only when the server queries PLAYBACK_SURFACES in the NG round. Legacy
+    // servers never query it, so it stays FALSE and the server keeps its legacy
+    // codec-based negotiation (surface support is purely additive server-side).
+    public static volatile boolean playbackSurfacesV1Negotiated = false;
+
     public static boolean isTrickplayPositionV1Negotiated() { return trickplayPositionV1Negotiated; }
     public static boolean isSeekEpochV1Negotiated() { return seekEpochV1Negotiated; }
     public static boolean isDvrWindowV1Negotiated() { return dvrWindowV1Negotiated; }
     public static boolean isDisplaySinkV1Negotiated() { return displaySinkV1Negotiated; }
+    public static boolean isPlaybackSurfacesV1Negotiated() { return playbackSurfacesV1Negotiated; }
 
     // pathlen, path
     // 64-bit return value
@@ -1202,6 +1210,7 @@ public class MiniClientConnection implements SageTVInputCallback
         seekEpochV1Negotiated = false;
         dvrWindowV1Negotiated = false;
         displaySinkV1Negotiated = false;
+        playbackSurfacesV1Negotiated = false;
         byte[] cmd = new byte[4];
         int command, len;
         int[] hasret = new int[1];
@@ -1940,6 +1949,18 @@ public class MiniClientConnection implements SageTVInputCallback
                         {
                             caps.append(",DISPLAY_SINK_V1");
                         }
+                        // Playback Surface capability model (Protocol 2.1).
+                        // Advertised in the summary (flag-free, pref-gated) so an
+                        // NG server knows it may query PLAYBACK_SURFACES + the
+                        // per-surface descriptor props. Does NOT flip the negotiated
+                        // flag (only the PLAYBACK_SURFACES branch does). Default-on
+                        // like the other NG caps; a legacy server never queries the
+                        // summary so this stays off the wire there.
+                        if (client.properties().getBoolean(PrefStore.Keys.cap_playback_surfaces_v1, true)
+                                && !advertisedSurfaceIds().isEmpty())
+                        {
+                            caps.append(",PLAYBACK_SURFACES_V1");
+                        }
                         propVal = caps.toString();
                         log.logInfo("SAGETV_NG_CAPABILITIES -> '" + propVal + "'");
                     }
@@ -2108,6 +2129,50 @@ public class MiniClientConnection implements SageTVInputCallback
                                 .getString(PrefStore.Keys.quality_hint_mode, "auto"));
                         propVal = hint;
                         log.logInfo("QUALITY_HINT -> '" + propVal + "'");
+                    }
+                    else if ("PLAYBACK_SURFACES".equals(propName))
+                    {
+                        // Playback Surface capability model (Protocol 2.1). Answers
+                        // the server's PLAYBACK_SURFACES query with the CSV of
+                        // surface ids we can decode on. Pref-gated (default false);
+                        // empty when off OR when no canonical codecs survive, which
+                        // makes the server fall through to legacy codec-based
+                        // negotiation (byte-identical to pre-contract behavior).
+                        if (client.properties().getBoolean(PrefStore.Keys.cap_playback_surfaces_v1, true))
+                        {
+                            List<String> ids = advertisedSurfaceIds();
+                            propVal = PlaybackSurfaceCanon.csv(ids);
+                            if (!ids.isEmpty())
+                            {
+                                // Only flip the negotiated flag once the server has
+                                // actually asked AND we advertised at least one
+                                // surface, so nothing tightens on a legacy server.
+                                playbackSurfacesV1Negotiated = true;
+                            }
+                        }
+                        else
+                        {
+                            propVal = "";
+                        }
+                        log.logInfo("PLAYBACK_SURFACES -> '" + propVal + "'");
+                    }
+                    else if (propName != null && propName.startsWith("PLAYBACK_SURFACE_"))
+                    {
+                        // Per-surface descriptor prop:
+                        //   PLAYBACK_SURFACE_<id>_<ATTR>
+                        // where ATTR in {ROUTE, PRIORITY, DELIVERY_MODES,
+                        // VIDEO_CODECS, AUDIO_CODECS, CONTAINERS}. Optional
+                        // track-access attrs are omitted (server applies
+                        // conservative defaults). Gated identically; empty when off.
+                        if (client.properties().getBoolean(PrefStore.Keys.cap_playback_surfaces_v1, true))
+                        {
+                            propVal = resolvePlaybackSurfaceAttr(propName);
+                        }
+                        else
+                        {
+                            propVal = "";
+                        }
+                        log.logInfo(propName + " -> '" + propVal + "'");
                     }
                     else if ("AUDIO_PROCESSING_CAPABILITIES".equals(propName))
                     {
@@ -3294,6 +3359,108 @@ public class MiniClientConnection implements SageTVInputCallback
      * </ol>
      * See docs/hdhr-delivery-analysis-v3.md for full provenance.
      */
+    /**
+     * Playback Surface capability model (Protocol 2.1): the ordered list of
+     * surface ids this client advertises. A surface is advertised only when its
+     * per-player capability set yields at least one canonical video codec (so we
+     * never advertise a surface the server could route a stream to but which can
+     * decode nothing canonical). {@code android_media3} = ExoPlayer/Media3 (HW,
+     * primary); {@code android_ijk} = IJKPlayer (fallback). Empty on platforms
+     * (e.g. desktop) that populate no per-player caps.
+     */
+    private List<String> advertisedSurfaceIds()
+    {
+        List<String> ids = new java.util.ArrayList<String>();
+        if (!PlaybackSurfaceCanon.canonVideo(perPlayerCapabilities.get("EXO_VIDEO_CODECS")).isEmpty())
+        {
+            ids.add("android_media3");
+        }
+        if (!PlaybackSurfaceCanon.canonVideo(perPlayerCapabilities.get("IJK_VIDEO_CODECS")).isEmpty())
+        {
+            ids.add("android_ijk");
+        }
+        return ids;
+    }
+
+    /**
+     * Resolve a {@code PLAYBACK_SURFACE_<id>_<ATTR>} property to its value by
+     * matching the longest advertised id that prefixes the remainder, then
+     * dispatching on the attribute suffix. Returns "" for an unknown id/attr so
+     * the server treats it as absent.
+     */
+    private String resolvePlaybackSurfaceAttr(String propName)
+    {
+        String rest = propName.substring("PLAYBACK_SURFACE_".length());
+        for (String id : advertisedSurfaceIds())
+        {
+            String prefix = id + "_";
+            if (rest.startsWith(prefix))
+            {
+                return surfaceAttr(id, rest.substring(prefix.length()));
+            }
+        }
+        return "";
+    }
+
+    /**
+     * Build a single per-surface descriptor attribute. Video/audio/container
+     * vocabularies come from the already-detected per-player capability sets,
+     * canonicalized to the server's Protocol 2.1 spelling. Containers are the
+     * PULL-playable set only (the push-only MPEG-PS/TS trio is excluded — see
+     * the CONTAINERS branch). DELIVERY_MODES advertises {@code push,pull}: the
+     * server prefers pull for a DIRECT_PLAY decision (the enhancement path) and
+     * push for conditioned/remuxed content (Android's traditional path), so both
+     * content classes keep working.
+     */
+    private String surfaceAttr(String id, String attr)
+    {
+        boolean media3 = "android_media3".equals(id);
+        String vKey = media3 ? "EXO_VIDEO_CODECS" : "IJK_VIDEO_CODECS";
+        String aKey = media3 ? "EXO_AUDIO_CODECS" : "IJK_AUDIO_CODECS";
+        String pullKey = media3 ? "EXO_PULL_AV_CONTAINERS" : "IJK_PULL_AV_CONTAINERS";
+
+        if ("ROUTE".equals(attr))
+        {
+            return media3 ? "native" : "software";
+        }
+        if ("PRIORITY".equals(attr))
+        {
+            return media3 ? "100" : "60";
+        }
+        if ("DELIVERY_MODES".equals(attr))
+        {
+            return "push,pull";
+        }
+        if ("VIDEO_CODECS".equals(attr))
+        {
+            return PlaybackSurfaceCanon.csv(
+                    PlaybackSurfaceCanon.canonVideo(perPlayerCapabilities.get(vKey)));
+        }
+        if ("AUDIO_CODECS".equals(attr))
+        {
+            return PlaybackSurfaceCanon.csv(
+                    PlaybackSurfaceCanon.canonAudio(perPlayerCapabilities.get(aKey)));
+        }
+        if ("CONTAINERS".equals(attr))
+        {
+            // Only the PULL-playable containers belong on a surface: these are the
+            // self-contained, seekable formats the player can direct-play from a
+            // pull (MP4, Matroska, MOV, WEBM, ...). The push-only trio
+            // (MPEG1-PS / MPEG2-PS / MPEG2-TS) is deliberately EXCLUDED here — the
+            // client architecture cannot direct-play those from a pull; the server
+            // must remux them (to Matroska) and push. Advertising them as surface
+            // containers makes the server pick DIRECT_PLAY + pull of the raw .mpg,
+            // whose stv pull OPEN returns NON_MEDIA (IJK error -10000). Omitting
+            // them leaves container-uncovered PS/TS sources to REMUX -> push, the
+            // path Android has always used, while native MP4/MKV still direct-play
+            // + enhance. (preparePerPlayerCapabilities already excludes the trio
+            // from the *_PULL_AV_CONTAINERS sets, so this is just that set.)
+            return PlaybackSurfaceCanon.csv(
+                    PlaybackSurfaceCanon.canonContainer(perPlayerCapabilities.get(pullKey)));
+        }
+        return "";
+    }
+
     private boolean isPhaseBExtenderRemuxActive(String effectiveStreamingMode)
     {
         return isLegacyServerCompat() && "fixed".equalsIgnoreCase(effectiveStreamingMode);
