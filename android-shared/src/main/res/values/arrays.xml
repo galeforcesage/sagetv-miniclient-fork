@@ -2,8 +2,8 @@
 <resources>
     <string-array name="entries_quality_hint_preference">
         <item>Auto (recommended)</item>
-        <item>Always — request server upscale</item>
-        <item>Never — save bandwidth</item>
+        <item>Always - force 4K (debug)</item>
+        <item>Never - save bandwidth</item>
     </string-array>
 
     <string-array name="entryvalues_quality_hint_preference">

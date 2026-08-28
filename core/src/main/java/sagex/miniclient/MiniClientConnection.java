@@ -289,6 +289,12 @@ public class MiniClientConnection implements SageTVInputCallback
     // is ever assumed.
     public static volatile boolean displaySinkV1Negotiated = false;
 
+    // DEBUG force-4K sink reported when quality_hint_mode="quality" (the "Always"
+    // setting). Manual escape hatch for a large external display the client failed
+    // to auto-detect: forces the server to clamp enhancement to 2160p. See the
+    // DISPLAY_SINK_RESOLUTION GetProperty branch.
+    private static final String FORCE_4K_SINK_RESOLUTION = "3840x2160";
+
     // Playback Surface capability model (Protocol 2.1): negotiated flag. Set TRUE
     // only when the server queries PLAYBACK_SURFACES in the NG round. Legacy
     // servers never query it, so it stays FALSE and the server keeps its legacy
@@ -2045,27 +2051,50 @@ public class MiniClientConnection implements SageTVInputCallback
                     else if ("DISPLAY_SINK_RESOLUTION".equals(propName))
                     {
                         // NG Server Video Enhancement (4K upscale) contract §2.1
-                        // + §7.3. Report the TRUE physical resolution of the display
-                        // we are actually rendering on (never a fabricated 4K). This
-                        // is a MEASUREMENT, not a preference: we always report it
-                        // when measurable, on every device class, because the value
-                        // is itself the upscale ceiling — the server clamps the
-                        // enhancement target to min(tier, this). Empty means UNKNOWN
-                        // (fail-closed), which the server reads as an abstention: it
-                        // may still infer from decode ceilings but skips the panel
-                        // clamp. The user's opt-out lives in QUALITY_HINT, not here.
+                        // + §7.3. Normally the sink is a MEASUREMENT: report the
+                        // TRUE physical resolution of the display we render on
+                        // (never fabricated), on every device class, because the
+                        // value is itself the upscale ceiling — the server clamps
+                        // the target to min(tier, this). Empty means UNKNOWN
+                        // (fail-closed), read by the server as an abstention.
+                        // EXCEPTION: the user's "Always" setting is a deliberate
+                        // DEBUG force-4K override (see the if-block below) for
+                        // undetected external displays — it reports 3840x2160 so
+                        // the server targets 2160p. Auto/Never stay honest.
                         if (client.properties().getBoolean(PrefStore.Keys.cap_display_sink_v1, true)
                                 && uiRenderer != null)
                         {
-                            propVal = uiRenderer.getDisplaySinkResolution();
-                            if (propVal == null) propVal = "";
+                            // DEBUG force-4K escape hatch: the "Always" setting
+                            // (quality_hint_mode=quality) is a manual override for
+                            // when a large external display IS attached but the
+                            // client could not auto-detect it (or read it wrong).
+                            // In that mode we report a synthetic 3840x2160 sink so
+                            // the server's panel clamp targets 2160p instead of the
+                            // built-in phone panel. Auto/Never always report the
+                            // honest measured panel (a pure measurement).
+                            String sinkHint = normalizeQualityHint(client.properties()
+                                    .getString(PrefStore.Keys.quality_hint_mode, "auto"));
+                            String honestSink = uiRenderer.getDisplaySinkResolution();
+                            if (honestSink == null) honestSink = "";
+                            if ("quality".equals(sinkHint))
+                            {
+                                propVal = FORCE_4K_SINK_RESOLUTION;
+                                log.logInfo("DISPLAY_SINK_RESOLUTION -> '" + propVal
+                                        + "' (Always/force-4K debug override; honest sink='"
+                                        + honestSink + "')");
+                            }
+                            else
+                            {
+                                propVal = honestSink;
+                                log.logInfo("DISPLAY_SINK_RESOLUTION -> '" + propVal + "'");
+                            }
                             displaySinkV1Negotiated = true;
                         }
                         else
                         {
                             propVal = "";
+                            log.logInfo("DISPLAY_SINK_RESOLUTION -> '" + propVal + "'");
                         }
-                        log.logInfo("DISPLAY_SINK_RESOLUTION -> '" + propVal + "'");
                     }
                     else if ("DISPLAY_REFRESH_RATES".equals(propName))
                     {
