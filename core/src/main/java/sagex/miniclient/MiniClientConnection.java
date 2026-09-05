@@ -2426,6 +2426,62 @@ public class MiniClientConnection implements SageTVInputCallback
                             else
                             {
                                 propVal = toStringList(pushFormats);
+
+                                // NG push-container hardening (HEVC-in-PS fix), Option B:
+                                // adaptive on the 4K-enhancement setting.
+                                // When the NG server enhances/upscales it re-encodes to
+                                // HEVC and muxes the PUSH stream into whichever push
+                                // container we advertise. Given both MPEG2-PS and
+                                // MPEG2-TS, the server's copy-family remux picks
+                                // mpeg2psremux and puts HEVC inside an MPEG2 *Program*
+                                // Stream — a broken pairing: SCR/PCR discontinuities,
+                                // demux desync, frozen video blocks + corrupt audio.
+                                // MPEG2-TS (mpeg2tsremux) carries HEVC cleanly and the
+                                // server has a dedicated GPU-enhance TS push path.
+                                //
+                                // We only steer away from PS when enhancement is actually
+                                // in play. The quality_hint_mode setting is "auto" (server
+                                // may enhance), "quality" (Always / force enhance) or
+                                // "savings" (Never — no enhancement). For Never we leave
+                                // the traditional MPEG2-PS DIRECT_PLAY push untouched; for
+                                // Auto/Always we drop MPEG2-PS (whenever MPEG2-TS is also
+                                // advertised, so a TS push target always remains), forcing
+                                // the server onto mpeg2tsremux for the enhanced push.
+                                // Legacy 9.2.x servers are unaffected either way — they use
+                                // the isLegacyServerCompat() branch above, which keeps
+                                // MPEG2-PS for placeshifter DIRECT_PLAY (google/SageTV).
+                                String qHint = normalizeQualityHint(client.properties()
+                                        .getString(PrefStore.Keys.quality_hint_mode, "auto"));
+                                boolean enhancePossible = !"savings".equals(qHint);
+                                String pushUpper = propVal.toUpperCase(java.util.Locale.ROOT);
+                                // Strip the ENTIRE Program-Stream family, not just the
+                                // "MPEG2-PS" spelling. In the Container enum MPEG2PS
+                                // carries two SageTV names {"MPEG2-PS","MPEG"} and the
+                                // server maps the bare "MPEG" alias back to MPEG2_PS, so
+                                // leaving it in keeps isSupportedPushContainerFormat(
+                                // MPEG2_PS) == true and the server still picks
+                                // mpeg2psremux. MPEG1-PS is likewise a program stream.
+                                // Only act when MPEG2-TS remains as a push target.
+                                if (enhancePossible && pushUpper.contains("MPEG2-TS"))
+                                {
+                                    String filtered = removeCsvToken(propVal, "MPEG2-PS");
+                                    filtered = removeCsvToken(filtered, "MPEG");     // MPEG2-PS alias
+                                    filtered = removeCsvToken(filtered, "MPEG1-PS"); // MPEG1 program stream
+                                    if (!filtered.equals(propVal))
+                                    {
+                                        log.logInfo("NG PUSH hardening [enhance=" + qHint + "]: dropped"
+                                                + " Program-Stream family (MPEG2-PS/MPEG/MPEG1-PS, kept"
+                                                + " MPEG2-TS) so enhanced HEVC push routes via mpeg2tsremux"
+                                                + " instead of the broken HEVC-in-MPEG2-PS mpeg2psremux"
+                                                + " path -> " + filtered);
+                                        propVal = filtered;
+                                    }
+                                }
+                                else if (!enhancePossible)
+                                {
+                                    log.logInfo("NG PUSH hardening [enhance=" + qHint + "]: Program-Stream"
+                                            + " family retained (enhancement opted out; legacy PS push kept)");
+                                }
                             }
 
                         }
@@ -2502,6 +2558,32 @@ public class MiniClientConnection implements SageTVInputCallback
                         // parsed as a literal codec name and break fallback.
                         List<String> list = perPlayerCapabilities.get(propName);
                         propVal = (list == null || list.isEmpty()) ? "" : toStringList(list);
+                        // Mirror the union PUSH_AV_CONTAINERS hardening onto the
+                        // per-player EXO_/IJK_ push lists. The NG server biases its
+                        // pushContainers set to the DEFAULT player's per-player list
+                        // (IJK_PUSH_AV_CONTAINERS when IJK is default), so leaving the
+                        // Program-Stream family here re-enables the broken HEVC-in-
+                        // MPEG2-PS mpeg2psremux path even after the union list is
+                        // cleaned. Strip MPEG2-PS + its "MPEG" alias + MPEG1-PS when
+                        // enhancement is possible and MPEG2-TS remains available.
+                        if (propName.endsWith("PUSH_AV_CONTAINERS") && propVal != null && !propVal.isEmpty())
+                        {
+                            String qHintPP = normalizeQualityHint(client.properties()
+                                    .getString(PrefStore.Keys.quality_hint_mode, "auto"));
+                            if (!"savings".equals(qHintPP)
+                                    && propVal.toUpperCase(java.util.Locale.ROOT).contains("MPEG2-TS"))
+                            {
+                                String filteredPP = removeCsvToken(propVal, "MPEG2-PS");
+                                filteredPP = removeCsvToken(filteredPP, "MPEG");
+                                filteredPP = removeCsvToken(filteredPP, "MPEG1-PS");
+                                if (!filteredPP.equals(propVal))
+                                {
+                                    log.logInfo("NG PUSH hardening [enhance=" + qHintPP + "]: dropped"
+                                            + " Program-Stream family from " + propName + " -> " + filteredPP);
+                                    propVal = filteredPP;
+                                }
+                            }
+                        }
                     }
                     else if ("MINICLIENT_DEFAULT_PLAYER".equals(propName))
                     {
