@@ -2132,28 +2132,44 @@ public class MiniClientConnection implements SageTVInputCallback
                         // upscaler, so status is ALWAYS none (honest; we never send
                         // status=active, which would tell the server to back off).
                         // The single Never/Auto/Always control (quality_hint_mode)
-                        // drives the preference: Always (quality) sends
-                        // pref=server, an affirmative "please enhance server-side"
-                        // request that pairs with the honest sink + per-codec
-                        // ceilings we already send every session; Auto/Never send
-                        // pref=auto and let the server decide (Never expresses the
-                        // opt-out via QUALITY_HINT=savings instead).
+                        // drives the preference:
+                        //  * Always (quality) -> pref=server, an affirmative "please
+                        //    enhance server-side" request that pairs with the honest
+                        //    sink + per-codec ceilings we already send every session.
+                        //  * Never (savings) -> pref=local. This is the ONLY hard
+                        //    opt-out the server's EnhancementAdvisor actually honors:
+                        //    it does NOT read QUALITY_HINT (savings is invisible to
+                        //    the advise() decision), and on a 4K TV the honest sink
+                        //    we report is 3840x2160, which would otherwise clamp the
+                        //    server straight to ENHANCE_2160P — making Never
+                        //    byte-identical to Auto. pref=local trips the advisor's
+                        //    CLIENT_PREFERS_LOCAL verdict (a slight white lie for a
+                        //    fork with no local upscaler, but it is the documented
+                        //    lever that reliably returns tier=NONE and is not subject
+                        //    to the server's override-local flag).
+                        //  * Auto -> pref=auto, let the server decide from the sink
+                        //    and per-codec ceilings.
                         String hint = normalizeQualityHint(client.properties()
                                 .getString(PrefStore.Keys.quality_hint_mode, "auto"));
-                        String pref = "quality".equals(hint) ? "server" : "auto";
+                        String pref = "quality".equals(hint) ? "server"
+                                : "savings".equals(hint) ? "local"
+                                : "auto";
                         propVal = "pref=" + pref + ";status=none";
                         log.logInfo("LOCAL_ENHANCEMENT -> '" + propVal + "'");
                     }
                     else if ("QUALITY_HINT".equals(propName))
                     {
-                        // NG 4K contract §2.5 + §7.3: this is where the user's
-                        // Auto/Always/Never enhancement preference lives now (NOT
-                        // the sink, which is a pure measurement). auto -> server
-                        // decides; quality -> user wants enhancement even where the
-                        // server might otherwise decline (§7.2 override); savings ->
-                        // user opts out for bandwidth/metered/thermal reasons. Note:
-                        // savings is advisory today (the server does not yet query
-                        // QUALITY_HINT), so it is not a hard client-side off.
+                        // NG 4K contract §2.5 + §7.3: advisory quality/bandwidth
+                        // hint. auto -> server decides; quality -> user wants
+                        // enhancement even where the server might otherwise decline
+                        // (§7.2 override); savings -> user opts out for
+                        // bandwidth/metered/thermal reasons. NOTE: QUALITY_HINT is
+                        // advisory only — the server's EnhancementAdvisor does not
+                        // read it, so this is NOT the enforcement point. The hard
+                        // Never opt-out is carried by LOCAL_ENHANCEMENT pref=local
+                        // (above), which is the lever the advisor actually honors.
+                        // We still send the hint so a future server that consults it
+                        // gets the user's intent.
                         String hint = normalizeQualityHint(client.properties()
                                 .getString(PrefStore.Keys.quality_hint_mode, "auto"));
                         propVal = hint;
