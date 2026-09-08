@@ -753,8 +753,10 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
         this.url = sageTVurl;
 
-        // Strip ng_fmt query parameter (format hint for extractor selection only —
-        // the data source / server doesn't understand it as part of the file path).
+        // Transition-only URL hygiene: drop any ?ng_fmt= query the server may
+        // still append pre-cutover. The client no longer derives format from it
+        // (STREAMINFO is the sole NG format channel); this just keeps the query
+        // out of the data-source URL.
         sageTVurl = stripNgFmt(sageTVurl);
 
         // VerboseLogUtil.setEnableAllTags(true);
@@ -1152,7 +1154,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
         final String sageTVurlFinal = sageTVurl;
 
         // Pre-validate audio decoder availability. If the server told us the
-        // audio codec (via push:bf=aud;f=... or ng_fmt) and we have no decoder
+        // audio codec (via STREAMINFO, or push:bf=aud;f=...) and we have no decoder
         // for it, log a warning immediately. This catches cases like AC-4 on
         // devices without a decoder — the stream will play video but be silent,
         // so at minimum we surface the issue in logs for diagnosis.
@@ -1242,7 +1244,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             {
                 if (containerHint != null)
                 {
-                    // Container hint available (from push:f= or ng_fmt) — the
+                    // Container hint available (from STREAMINFO, or push:f=) — the
                     // SageExtractorsFactory will return a single extractor with no
                     // sniff phase, so we can call prepare() immediately. The
                     // extractor's read() will simply block until data arrives in

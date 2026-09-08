@@ -74,26 +74,27 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     protected boolean httpls = false;
 
     /**
-     * Container format hint extracted from the server's OPENURL string.
-     * For push mode: parsed from {@code push:f=MPEG2-TS;...}
-     * For pull mode (NG): parsed from {@code ?ng_fmt=video/mp2t,...}
+     * Container format hint for the player.
+     * Primary source: MEDIACMD_STREAMINFO (command 40) container field.
+     * Fallback (STREAMINFO absent): push OPENURL string {@code push:f=MPEG2-TS;...}.
      * Used by ExoPlayer to skip extractor sniffing and select the right
      * extractor immediately — saves 200-500ms on startup.
-     * Null if no hint is available (legacy server, unknown format).
+     * Null if no hint is available (legacy pull server, unknown format).
      */
     protected String containerHint = null;
 
     /**
-     * Video codec hint (SageTV name e.g. "HEVC", "H.264", "MPEG2-Video")
-     * parsed from the OPENURL. Used for pre-validation only.
+     * Video codec hint (SageTV name e.g. "HEVC", "H.264", "MPEG2-Video").
+     * Primary source: STREAMINFO primary video track; fallback: push [bf=vid;...].
+     * Used for pre-validation only.
      */
     protected String videoCodecHint = null;
 
     /**
-     * Audio codec hint (SageTV name e.g. "AC3", "EAC3", "AC-4", "AAC")
-     * parsed from the OPENURL. Used for decoder pre-validation — if the
-     * audio codec has no available decoder, the client can signal failure
-     * before wasting time buffering.
+     * Audio codec hint (SageTV name e.g. "AC3", "EAC3", "AC-4", "AAC").
+     * Primary source: STREAMINFO primary audio track; fallback: push [bf=aud;...].
+     * Used for decoder pre-validation — if the audio codec has no available
+     * decoder, the client can signal failure before wasting time buffering.
      */
     protected String audioCodecHint = null;
 
@@ -147,19 +148,22 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
         flushed = false;
         this.timeshifted = timeshifted;
 
-        // Extract format hints from the server URL for extractor selection
-        // and decoder pre-validation. Works for both legacy and NG servers
-        // in push mode (push:f=MPEG2-TS;[bf=vid;f=HEVC;][bf=aud;f=AC3;]).
-        // For NG pull mode: ?ng_fmt=video/mp2t,video/hevc,audio/eac3
-        containerHint = parseContainerHint(urlString);
-        videoCodecHint = parseVideoCodecHint(urlString);
-        audioCodecHint = parseAudioCodecHint(urlString);
-
-        // NG STREAMINFO fallback: when the URL carried no format hints (e.g. a
-        // bare push: with no f= tags), fill them from the pre-stream metadata
-        // the server sent via MEDIACMD_STREAMINFO. This lets SageExtractorsFactory
-        // skip the sniff/probe pass and lets the decoder be pre-validated,
-        // shaving cold-start latency. URL hints, when present, always win.
+        // Format hints for extractor selection + decoder pre-validation.
+        //
+        // Single NG format channel: MEDIACMD_STREAMINFO (command 40). When the
+        // server sent pre-stream metadata it is AUTHORITATIVE — container/codec
+        // hints are built straight from it, so SageExtractorsFactory skips the
+        // sniff/probe pass and the decoder is pre-validated. The legacy ng_fmt
+        // side channel (|ng_fmt= push suffix and ?ng_fmt= pull query) has been
+        // removed; STREAMINFO is its strict superset.
+        //
+        // Fallback (STREAMINFO absent — legacy 9.2.x servers, or the pre-cutover
+        // window): parse the push format string blocks
+        // (push:f=MPEG2-TS;[bf=vid;f=HEVC;][bf=aud;f=AC3;]). A legacy pull URL
+        // carries no format hint at all, so we probe as before.
+        containerHint = null;
+        videoCodecHint = null;
+        audioCodecHint = null;
         try
         {
             sagex.miniclient.MiniClientConnection conn =
@@ -169,19 +173,25 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
                     (conn != null) ? conn.getPendingStreamInfo() : null;
             if (si != null)
             {
-                if (containerHint == null && si.container != null)
+                if (si.container != null && !"unknown".equalsIgnoreCase(si.container))
                     containerHint = si.container;
                 sagex.miniclient.streaminfo.StreamInfo.VideoTrack v = si.primaryVideo();
-                if (videoCodecHint == null && v != null && v.codec != null)
+                if (v != null && v.codec != null)
                     videoCodecHint = v.codec;
                 sagex.miniclient.streaminfo.StreamInfo.AudioTrack a = si.primaryAudio();
-                if (audioCodecHint == null && a != null && a.codec != null)
+                if (a != null && a.codec != null)
                     audioCodecHint = a.codec;
-                log.debug("load(): STREAMINFO hints applied container={} video={} audio={}",
+                log.debug("load(): STREAMINFO hints (authoritative) container={} video={} audio={}",
                         containerHint, videoCodecHint, audioCodecHint);
             }
         }
         catch (RuntimeException ignored) { }
+
+        // Legacy fallback: fill any hint STREAMINFO didn't supply from the push
+        // format string blocks. These parsers no longer read ng_fmt.
+        if (containerHint == null) containerHint = parseContainerHint(urlString);
+        if (videoCodecHint == null) videoCodecHint = parseVideoCodecHint(urlString);
+        if (audioCodecHint == null) audioCodecHint = parseAudioCodecHint(urlString);
 
         String url = urlString;
         httpls = urlString.startsWith("http://");
@@ -302,50 +312,19 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
                     if (!container.isEmpty()) return container;
                 }
             }
-            else
-            {
-                // Pull mode: look for ng_fmt query parameter
-                // ?ng_fmt=video/mp2t,video/hevc,audio/eac3
-                int ngIdx = url.indexOf("ng_fmt=");
-                if (ngIdx >= 0)
-                {
-                    int start = ngIdx + "ng_fmt=".length();
-                    int end = url.indexOf('&', start);
-                    if (end < 0) end = url.length();
-                    String mimeStr = url.substring(start, end);
-                    // First field is container MIME → map to SageTV name
-                    int comma = mimeStr.indexOf(',');
-                    String containerMime = (comma >= 0) ? mimeStr.substring(0, comma) : mimeStr;
-                    return mapMimeToContainer(containerMime.trim());
-                }
-            }
         }
         catch (RuntimeException ignored) { }
         return null;
     }
 
     /**
-     * Map a container MIME type from ng_fmt to the internal container name
-     * used by SageExtractorsFactory.
-     */
-    private static String mapMimeToContainer(String mime)
-    {
-        if (mime == null || mime.isEmpty()) return null;
-        switch (mime)
-        {
-            case "video/mp2t":        return "MPEG2-TS";
-            case "video/mpeg":        return "MPEG2-PS";
-            case "video/x-matroska":  return "MATROSKA";
-            case "video/mp4":         return "MP4";
-            case "video/quicktime":   return "MP4";
-            case "video/x-msvideo":   return null; // AVI — no dedicated extractor priority
-            default:                  return null;
-        }
-    }
-
-    /**
-     * Strip the ng_fmt query parameter from a URL before passing to the data source.
-     * Returns the URL unchanged if ng_fmt is not present.
+     * Strip the ng_fmt query parameter from a URL before passing to the data
+     * source. This is transition-only URL hygiene, NOT a format channel: the
+     * server may still append {@code ?ng_fmt=...} to the pull URL until its own
+     * cutover completes (client migrates first per the coordinated rollout), so
+     * we keep the query out of the data-source URL. No format hint is derived
+     * from it — STREAMINFO is the sole NG format source. Returns the URL
+     * unchanged if ng_fmt is not present.
      */
     protected static String stripNgFmt(String url)
     {
@@ -370,9 +349,9 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     }
 
     /**
-     * Parse the video codec hint from a server OPENURL string.
-     * Push: extracts from [bf=vid;f=HEVC;...] block.
-     * Pull NG: extracts from ng_fmt second field (video MIME → SageTV name).
+     * Parse the video codec hint from a server push OPENURL string
+     * ([bf=vid;f=HEVC;...] block). Returns null for non-push URLs (NG format
+     * now arrives via STREAMINFO, not the URL).
      */
     protected static String parseVideoCodecHint(String url)
     {
@@ -383,20 +362,15 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
             {
                 return extractTrackCodec(url.substring("push:".length()), "bf=vid");
             }
-            else
-            {
-                String mime = extractNgFmtField(url, 1);
-                return mapVideoMimeToCodec(mime);
-            }
         }
         catch (RuntimeException ignored) { }
         return null;
     }
 
     /**
-     * Parse the audio codec hint from a server OPENURL string.
-     * Push: extracts from [bf=aud;f=AC3;...] block.
-     * Pull NG: extracts from ng_fmt third field (audio MIME → SageTV name).
+     * Parse the audio codec hint from a server push OPENURL string
+     * ([bf=aud;f=AC3;...] block). Returns null for non-push URLs (NG format
+     * now arrives via STREAMINFO, not the URL).
      */
     protected static String parseAudioCodecHint(String url)
     {
@@ -406,11 +380,6 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
             if (url.startsWith("push:"))
             {
                 return extractTrackCodec(url.substring("push:".length()), "bf=aud");
-            }
-            else
-            {
-                String mime = extractNgFmtField(url, 2);
-                return mapAudioMimeToCodec(mime);
             }
         }
         catch (RuntimeException ignored) { }
@@ -442,59 +411,6 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
         return codec.isEmpty() ? null : codec;
     }
 
-    /**
-     * Extract a positional field from the ng_fmt query parameter value.
-     * Index 0 = container, 1 = video, 2 = audio.
-     */
-    private static String extractNgFmtField(String url, int fieldIndex)
-    {
-        int ngIdx = url.indexOf("ng_fmt=");
-        if (ngIdx < 0) return null;
-        int start = ngIdx + "ng_fmt=".length();
-        int end = url.indexOf('&', start);
-        if (end < 0) end = url.length();
-        String mimeStr = url.substring(start, end);
-        String[] parts = mimeStr.split(",", -1);
-        if (fieldIndex >= parts.length) return null;
-        String field = parts[fieldIndex].trim();
-        return field.isEmpty() ? null : field;
-    }
-
-    /** Map video MIME to SageTV codec name. */
-    private static String mapVideoMimeToCodec(String mime)
-    {
-        if (mime == null) return null;
-        switch (mime)
-        {
-            case "video/hevc":     return "HEVC";
-            case "video/avc":      return "H.264";
-            case "video/mpeg2":    return "MPEG2-Video";
-            case "video/mp4v-es":  return "MPEG4-Video";
-            case "video/x-ms-wmv": return "VC1";
-            default:               return null;
-        }
-    }
-
-    /** Map audio MIME to SageTV codec name. */
-    private static String mapAudioMimeToCodec(String mime)
-    {
-        if (mime == null) return null;
-        switch (mime)
-        {
-            case "audio/ac4":       return "AC-4";
-            case "audio/eac3":      return "EAC3";
-            case "audio/ac3":       return "AC3";
-            case "audio/mp4a-latm": return "AAC";
-            case "audio/mpeg":      return "MP3";
-            case "audio/mpeg-L2":   return "MP2";
-            case "audio/flac":      return "FLAC";
-            case "audio/vnd.dts":   return "DTS";
-            case "audio/vnd.dts.hd":return "DTS-HD";
-            case "audio/vorbis":    return "Vorbis";
-            case "audio/alac":      return "ALAC";
-            default:                return null;
-        }
-    }
 
     /**
      * Map a SageTV audio codec name to Android MIME type for MediaCodec lookup.
