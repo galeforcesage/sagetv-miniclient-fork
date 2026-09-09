@@ -200,6 +200,25 @@ public final class PlayerSelectionUtil
                 || window.contains("F=MPEG2-VIDEO@HL]");
     }
 
+    /**
+     * @return true if the OPENURL's DELIVERY container (the outer {@code f=}
+     *         token right after {@code push:}) is an MPEG Program Stream.
+     *         This is the delivery container the server actually muxed to
+     *         &mdash; NOT the source-asset container in STREAMINFO, which the
+     *         server populates with the pre-remux container and is therefore
+     *         unreliable for demuxer selection. ExoPlayer cannot demux PS
+     *         (burn-proven crash/freeze), so any delivery PS must go to IJK.
+     */
+    public static boolean isDeliveryProgramStream(String url)
+    {
+        if (url == null) return false;
+        String u = url.toUpperCase(java.util.Locale.ROOT);
+        if (!u.contains("PUSH:")) return false;
+        return u.contains("F=MPEG2-PS")
+                || u.contains("F=MPEG1-PS")
+                || u.contains("F=MPEG-PS");
+    }
+
     // ── Unified routing decision ────────────────────────────────────────
 
     private static final org.slf4j.Logger log =
@@ -245,6 +264,10 @@ public final class PlayerSelectionUtil
      * @param oneTimeSwap       user-initiated one-time player swap active
      * @param streamInfo        NG pre-stream metadata, or null (legacy / absent)
      * @param exoCanDecodeMpeg2 whether this device exposes an Exo MPEG-2 decoder
+     * @param serverEffectivePlayerHint normalized CAP_EFFECTIVE_PLAYER from the
+     *        server ({@code "ijkplayer"}/{@code "exoplayer"}/{@code ""}). An
+     *        {@code ijkplayer} hint forces IJK (the server resolved the stream to
+     *        IJK via its per-player switch); it is never allowed to force Exo.
      */
     public static PlayerDecision decide(
             android.content.Context toastCtx,
@@ -252,7 +275,8 @@ public final class PlayerSelectionUtil
             boolean userPrefersExo,
             boolean oneTimeSwap,
             sagex.miniclient.streaminfo.StreamInfo streamInfo,
-            boolean exoCanDecodeMpeg2)
+            boolean exoCanDecodeMpeg2,
+            String serverEffectivePlayerHint)
     {
         boolean useExo = userPrefersExo;
         String swapReason = null;
@@ -261,6 +285,34 @@ public final class PlayerSelectionUtil
         {
             useExo = !useExo;
             swapReason = "one-time player swap (user-initiated)";
+        }
+
+        // ── Delivery Program Stream: single source of truth for PS routing ──
+        // ExoPlayer's PS extractor is not viable (burn-proven crash on
+        // MPEG-2-Video-in-PS, freeze on HEVC-in-PS). Route ANY delivery PS to
+        // IJK, keyed off the DELIVERY f= container (not STREAMINFO's source
+        // container). Authoritative and codec-agnostic — supersedes the
+        // codec-specific PS landmine heuristics below for delivery PS.
+        if (useExo && isDeliveryProgramStream(urlString))
+        {
+            useExo = false;
+            swapReason = "Program Stream delivery (Exo PsExtractor not viable; IJK/libavformat demuxes PS)";
+            notifyLandmineSwap(toastCtx, "Program Stream compat");
+            log.warn("Delivery-PS routing -> IJK. url={}", urlString);
+            return new PlayerDecision(useExo, swapReason);
+        }
+
+        // ── Server per-player switch hint (advisory) ──
+        // NG server's evaluateWithPlayerSwitch resolved this stream to IJK and
+        // emitted CAP_EFFECTIVE_PLAYER=ijkplayer. Honor it. We only ever let the
+        // hint force IJK, never Exo — local decode-safety rules stay authoritative.
+        if (useExo && "ijkplayer".equalsIgnoreCase(serverEffectivePlayerHint))
+        {
+            useExo = false;
+            swapReason = "server CAP_EFFECTIVE_PLAYER=ijkplayer (server per-player switch chose IJK)";
+            notifyLandmineSwap(toastCtx, "server-selected IJK");
+            log.info("Honoring server effective-player hint -> IJK. url={}", urlString);
+            return new PlayerDecision(useExo, swapReason);
         }
 
         if (useExo && streamInfo != null)

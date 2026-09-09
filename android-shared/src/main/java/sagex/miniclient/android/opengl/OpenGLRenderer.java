@@ -748,7 +748,8 @@ public class OpenGLRenderer implements UIRenderer<OpenGLTexture>, GLSurfaceView.
                 useExoPlayer,
                 activity.isSwitchingPlayerOneTime(),
                 streamInfo,
-                exoCanDecodeMpeg2);
+                exoCanDecodeMpeg2,
+                (connection != null) ? connection.getServerEffectivePlayerHint() : "");
         useExoPlayer = decision.useExoPlayer;
         String swapReason = decision.swapReason;
 

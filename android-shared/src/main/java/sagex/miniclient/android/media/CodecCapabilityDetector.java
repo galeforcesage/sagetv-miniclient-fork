@@ -707,12 +707,20 @@ public final class CodecCapabilityDetector
             case MP3:
             case OGG:
             case WAV:
-            case MPEG1PS:
-            case MPEG2PS:
             case MPEG2TS:
             case FLASHVIDEO:
             case AAC:
                 return true;
+            // MPEG1PS / MPEG2PS deliberately NOT reported as Exo-supported.
+            // This is burn-proven: ExoPlayer's PS demux path (SagePsExtractor /
+            // upstream PsExtractor) crashes on MPEG-2-Video-in-PS
+            // (H262Reader IllegalStateException -> ERROR_CODE_IO_UNSPECIFIED)
+            // and freezes on HEVC-in-PS. IJK (libavformat) demuxes Program
+            // Streams reliably, so PS is advertised via the IJK per-player
+            // capability set only and routed to IJK at OPENURL time. Advertising
+            // Exo PS support here would be a lie that makes the NG server's
+            // per-player switch (evaluateWithPlayerSwitch) believe Exo can
+            // DIRECT_PLAY PS, so it never hands PS to IJK.
             default:
                 return false;
         }

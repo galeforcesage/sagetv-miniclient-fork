@@ -146,7 +146,15 @@ public class AndroidMiniClientOptions implements MiniClientOptions {
         for (Container c : allContainers)
         {
             TriState state = TriState.fromPrefValue(prefs.getContainerSupport(c.getName()));
-            boolean detected = CodecCapabilityDetector.isContainerSupported(context, prefs, c);
+            // Merged (union) push advertisement: a container is receivable by
+            // THIS CLIENT if EITHER engine can demux it, independent of the
+            // user's default-player preference. This is the honest client-level
+            // truth (e.g. Program Streams are receivable because IJK handles
+            // them even though Exo cannot). Per-player refinement (which engine
+            // actually gets the stream) is carried by the EXO_/IJK_ constraint
+            // lists + OPENURL routing, not by this coarse union.
+            boolean detected = CodecCapabilityDetector.isContainerSupportedByExo(c)
+                    || CodecCapabilityDetector.isContainerSupportedByIjk(c);
             if (state.resolve(detected))
             {
                 log.debug("Push Container added [{}]: {}", state, c.getName());

@@ -173,16 +173,33 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
                     (conn != null) ? conn.getPendingStreamInfo() : null;
             if (si != null)
             {
-                if (si.container != null && !"unknown".equalsIgnoreCase(si.container))
-                    containerHint = si.container;
+                // CODECS: STREAMINFO is authoritative. Elementary codecs are
+                // delivery-invariant — a remux changes the container, never the
+                // codec — so MPEG2-Video/HEVC/AC3 from STREAMINFO always match
+                // the bytes on the wire.
                 sagex.miniclient.streaminfo.StreamInfo.VideoTrack v = si.primaryVideo();
                 if (v != null && v.codec != null)
                     videoCodecHint = v.codec;
                 sagex.miniclient.streaminfo.StreamInfo.AudioTrack a = si.primaryAudio();
                 if (a != null && a.codec != null)
                     audioCodecHint = a.codec;
-                log.debug("load(): STREAMINFO hints (authoritative) container={} video={} audio={}",
-                        containerHint, videoCodecHint, audioCodecHint);
+                // CONTAINER: STREAMINFO.container is NOT authoritative. It
+                // describes the SOURCE asset, which can differ from what the
+                // server actually writes to the push socket (e.g. a MPEG2-PS
+                // source remuxed to MPEG2-TS for delivery). Choosing an
+                // extractor off the source container selects the wrong parser
+                // (the Program-Stream extractor for a Transport-Stream wire) and
+                // crashes in H262Reader -> ERROR_CODE_IO_UNSPECIFIED. The
+                // delivery container from the push "f=" block is what is truly on
+                // the wire, so it wins. STREAMINFO.container is only a fallback
+                // for pull/legacy URLs that carry no f= block.
+                String deliveryContainer = parseContainerHint(urlString);
+                if (deliveryContainer != null)
+                    containerHint = deliveryContainer;
+                else if (si.container != null && !"unknown".equalsIgnoreCase(si.container))
+                    containerHint = si.container;
+                log.debug("load(): hints container={} (delivery f= authoritative; STREAMINFO source={}) video={} audio={} [STREAMINFO codecs authoritative]",
+                        containerHint, si.container, videoCodecHint, audioCodecHint);
             }
         }
         catch (RuntimeException ignored) { }
