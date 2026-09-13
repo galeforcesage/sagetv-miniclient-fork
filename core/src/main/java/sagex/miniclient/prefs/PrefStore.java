@@ -297,6 +297,15 @@ public interface PrefStore
         String client_id = "clientid";
         String use_opengl_ui = "use_opengl_ui";
 
+        /**
+         * Phase 1 external-display output ("play on TV, phone as remote").
+         * When true (default) and a genuine extended display is present on a
+         * mobile-flavor build, connecting launches the SageTV UI on the external
+         * display and turns the phone into a remote. Mirror-only setups never
+         * trigger it regardless of this value.
+         */
+        String play_on_external_display = "play_on_external_display";
+
         String exit_on_standby = "exit_on_standby";
 
         /**

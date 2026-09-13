@@ -1,4 +1,4 @@
-# Roadmap
+﻿# Roadmap
 
 Planned / candidate work for the Android MiniClient.
 
@@ -12,11 +12,11 @@ Planned / candidate work for the Android MiniClient.
 - **AC-4 audio** decoding requires Media3 1.2+ (late 2023). It is not available
   in any 2.x release. Now that SageTV can record ATSC 3.0 streams with HEVC and
   AC-4, this is the blocker for playing those recordings on the client.
-- Media3 continues to receive HEVC quirks, HDR metadata, and ATSC 3.0–related
+- Media3 continues to receive HEVC quirks, HDR metadata, and ATSC 3.0â€“related
   fixes that 2.x will not.
 
 **Scope:**
-- Package rename across all imports: `com.google.android.exoplayer2.*` →
+- Package rename across all imports: `com.google.android.exoplayer2.*` â†’
   `androidx.media3.*`.
 - Re-fork our custom files against Media3's current versions:
   - `SagePsExtractor` (forked from `PsExtractor`, includes
@@ -37,7 +37,7 @@ Planned / candidate work for the Android MiniClient.
 
 ## Settings UX
 
-### Phase 2 — Automatic-First Settings UX
+### Phase 2 â€” Automatic-First Settings UX
 
 Goal: most users never open settings. Each capability defaults to **Automatic**;
 the user can opt out per-setting when they want a hard override.
@@ -45,45 +45,45 @@ the user can opt out per-setting when they want a hard override.
 Done so far:
 - `TriState` enum + `PrefStore.getTriState()` / `setTriState()` API
   (`core/src/main/java/sagex/miniclient/prefs/TriState.java`). Persisted as
-  `"auto"` / `"on"` / `"off"`. Cycle order: AUTO → ON → OFF → AUTO.
+  `"auto"` / `"on"` / `"off"`. Cycle order: AUTO â†’ ON â†’ OFF â†’ AUTO.
 - Streaming Mode: XML default flipped to `automatic`, label rendered as
-  "Automatic ᵃ", summary rewritten to describe Automatic instead of "Fixed
+  "Automatic áµƒ", summary rewritten to describe Automatic instead of "Fixed
   is preferred".
-- "Fixed Transcoding Settings" → **"Transcoding Settings"**.
-- "Fixed Remuxing Settings" → **"Remuxing Settings"**.
+- "Fixed Transcoding Settings" â†’ **"Transcoding Settings"**.
+- "Fixed Remuxing Settings" â†’ **"Remuxing Settings"**.
 - Transcoding/Remuxing submenus enabled in any non-Pull mode (was previously
-  gated to `fixed` only — they apply whenever the server actually transcodes
+  gated to `fixed` only â€” they apply whenever the server actually transcodes
   or remuxes, which can happen in Automatic / Dynamic / Fixed).
 
 To do:
-- ~~`TriStatePreference` custom widget~~ ✅ Replaced ambiguous checkbox
-  with a coloured pill on the right of each row (`AUTO·ON` / `AUTO·OFF`
+- ~~`TriStatePreference` custom widget~~ âœ… Replaced ambiguous checkbox
+  with a coloured pill on the right of each row (`AUTOÂ·ON` / `AUTOÂ·OFF`
   grey, `ON` green, `OFF` red) plus the title-superscript marker. Tap
-  cycles AUTO → ON → OFF → AUTO; long-press resets to AUTO.
-- ~~Convert ExoPlayer FFmpeg Extension setting to tri-state.~~ ✅ Done
+  cycles AUTO â†’ ON â†’ OFF â†’ AUTO; long-press resets to AUTO.
+- ~~Convert ExoPlayer FFmpeg Extension setting to tri-state.~~ âœ… Done
   (`exoplayer_prefs.xml` key `exoplayer_ffmpeg_extension_tri`,
   `defaultValue="auto"`).
-- ~~Codec & Container Settings submenu rebuild.~~ ✅ Done. `CodecContainerFragment`
+- ~~Codec & Container Settings submenu rebuild.~~ âœ… Done. `CodecContainerFragment`
   generates rows dynamically for every `Container`, `VideoCodec`, and
   `AudioCodec` from `CodecCapabilityDetector.is*Supported()`; each row is a
   `TriStatePreference` with summary showing the auto-detected baseline.
 - ~~Wire `MiniClientConnection` capability emission (`PUSH_AV_CONTAINERS`,
   `PULL_AV_CONTAINERS`, `VIDEO_CODECS`, `AUDIO_CODECS`) to consult tri-state
-  values.~~ ✅ Done. `AndroidMiniClientOptions.prepareCodecs()` →
+  values.~~ âœ… Done. `AndroidMiniClientOptions.prepareCodecs()` â†’
   `getSupportedPushContainers/PullContainers/AudioCodecs/VideoCodecs` each read
   `TriState.fromPrefValue(prefs.get*Support(name))` and apply
-  `state.resolve(detected)` (auto → include if capable, on → always include,
-  off → always exclude). Verified in field logs (`Audio codec added [AUTO]: DTS`
+  `state.resolve(detected)` (auto â†’ include if capable, on â†’ always include,
+  off â†’ always exclude). Verified in field logs (`Audio codec added [AUTO]: DTS`
   / `Pull Container excluded [AUTO]: AC3`).
 - ~~Audio Passthrough sub-section (AC3 / EAC3 / DTS / TrueHD / AC4 / etc.),
-  tri-state.~~ ✅ Done (1.15.119). Auto = `AudioCapabilities.supportsEncoding()`
+  tri-state.~~ âœ… Done (1.15.119). Auto = `AudioCapabilities.supportsEncoding()`
   per codec via `CodecCapabilityDetector.isAudioPassthroughSupported()`.
   Pref keys `codec/audio_passthrough/<NAME>/support` (default `automatic`).
   UI: new `audio_passthrough` PreferenceCategory in `codec_container_prefs.xml`
   populated by `CodecContainerFragment` (skips codecs with no Android encoding
   constant). Runtime: `AndroidMiniClientOptions.prepareAudioPassthrough()`
-  resolves the tri-state → SageTV codec name list → `MiniClientConnection`
-  field `passthroughCodecs` → new `AUDIO_PASSTHROUGH` GetProperty handler
+  resolves the tri-state â†’ SageTV codec name list â†’ `MiniClientConnection`
+  field `passthroughCodecs` â†’ new `AUDIO_PASSTHROUGH` GetProperty handler
   (emits the CSV; `NONE` when empty). Legacy 9.2.x servers ignore the
   property; NG servers consult it to decide whether compressed surround
   can be pushed without PCM transcode.
@@ -91,11 +91,11 @@ To do:
 Notes:
 - Default Player stays **manual** (ExoPlayer / IJK radio).
 - Migration: existing explicit choices (e.g. `streaming_mode=fixed`) are
-  preserved — no automatic reset.
+  preserved â€” no automatic reset.
 
-### Phase 3 — Per-player honest codec advertisement
+### Phase 3 â€” Per-player honest codec advertisement
 
-✅ Done (1.15.120). Plumbing-only on the client; legacy 9.2.x servers are
+âœ… Done (1.15.120). Plumbing-only on the client; legacy 9.2.x servers are
 unaffected (they don't query the new property names). NG-server team can
 opt in by reading the new properties to bias profile selection.
 
@@ -131,14 +131,14 @@ opt in by reading the new properties to bias profile selection.
   match is found. Existing `VIDEO_CODECS` / `AUDIO_CODECS` /
   `PUSH_AV_CONTAINERS` / `PULL_AV_CONTAINERS` remain authoritative for
   legacy compatibility and as a union fallback.
-- No protocol-level handshake change required — these are just additional
+- No protocol-level handshake change required â€” these are just additional
   GetProperty keys.
 
 **Legacy 9.2.x server compatibility:** the new property names are not in
 the stock 9.2.x advertisement vocabulary, so legacy servers never query
 them. Existing `VIDEO_CODECS` / `AUDIO_CODECS` / `PUSH_AV_CONTAINERS` /
 `PULL_AV_CONTAINERS` continue to flow through `legacyAdvertise()` against
-the same `LEGACY_*_UNIVERSE` filters as before — no behaviour change.
+the same `LEGACY_*_UNIVERSE` filters as before â€” no behaviour change.
 
 ## Phone / non-Leanback mode
 
@@ -146,7 +146,7 @@ The app primarily targets Android TV (Leanback). Phone/tablet/foldable support
 landed via two helpers gated on `PackageManager.FEATURE_LEANBACK`; on Leanback
 both are no-ops so the existing TV pipeline is untouched.
 
-- ~~**Aspect-ratio scaling.**~~ ✅ Done.
+- ~~**Aspect-ratio scaling.**~~ âœ… Done.
   `android-shared/.../video/NonLeanbackAspect.java` implements Fit / Fill / Zoom
   by transforming the destination rectangle the server hands the client. Mode
   is persisted under pref `non_leanback_aspect_mode` (default FIT). Applied in
@@ -155,7 +155,7 @@ both are no-ops so the existing TV pipeline is untouched.
   `NavigationFragment` (line ~390). FILL preserves legacy stretch-to-fit
   behaviour. Has no effect on menus (UI is rendered on a separate GL/GDX canvas).
 
-- ~~**Screen rotation.**~~ ✅ Done.
+- ~~**Screen rotation.**~~ âœ… Done.
   `android-shared/.../video/OrientationController.java` programmatically calls
   `activity.setRequestedOrientation(...)` with a Leanback guard (no-op on TV).
   Mode is cycled from `NavigationFragment` (line ~410) and persisted across
@@ -167,14 +167,14 @@ both are no-ops so the existing TV pipeline is untouched.
 
 ## Per-server legacy / NG mode
 
-✅ Done (shipped through 1.15.117 → 1.15.118).
+âœ… Done (shipped through 1.15.117 â†’ 1.15.118).
 
 - `ServerInfo.legacyMode` enum (AUTO / LEGACY / NG) persisted as
   `servers/<key>/legacy_mode`. Default AUTO.
 - Long-press a server tile to set Auto / Legacy / NG.
 - `MiniClientConnection` consults `client.getConnectedServerInfo().legacyMode`
   via `isLegacyServerCompat()`. **AUTO now defaults to LEGACY** (was NG-with-
-  self-heal in the original plan — flipped because the IO_UNSPECIFIED path
+  self-heal in the original plan â€” flipped because the IO_UNSPECIFIED path
   was leaving people stuck mid-stream).
 - **Server self-declaration:** when an NG server sends
   `SetProperty SAGETV_NG_SERVER=1` during the initial post-auth property
@@ -187,25 +187,25 @@ both are no-ops so the existing TV pipeline is untouched.
 - The global `legacy_server_compat` checkbox path remains as a manual escape
   hatch; per-server mode takes precedence when set.
 
-## Auto player selection (Exo ↔ IJK)
+## Auto player selection (Exo â†” IJK)
 
 Default player is a manual user choice today (Exo or IJK). For known
 landmines the client silently picks the right one for that one stream so
 the user doesn't have to know which player handles which codec.
 
-1. ~~**Pre-emptive URL inspection (primary).**~~ ✅ Done.
+1. ~~**Pre-emptive URL inspection (primary).**~~ âœ… Done.
    `PlayerSelectionUtil` is consulted at OPENURL time by
    `MiniClientGDXRenderer`, `OpenGLRenderer`, and `Exo2MediaPlayerImpl`.
    Two landmine patterns recognised:
-   - `isExoPsMpeg4Landmine(url)` — `f=MPEG2-PS` (or `MPEG2-TS`) containing
+   - `isExoPsMpeg4Landmine(url)` â€” `f=MPEG2-PS` (or `MPEG2-TS`) containing
      `[bf=vid;f=MPEG4;...]` (MPEG-4 Part 2 in MPEG program/transport
-     stream) — `PsExtractor.H262Reader.parseCsdBuffer` AIOOBE in
+     stream) â€” `PsExtractor.H262Reader.parseCsdBuffer` AIOOBE in
      ExoPlayer 2.18.1; IJK demuxes natively.
-   - `isBarePushUrl(url)` — empty/garbled `push:` URL with no `F=`
+   - `isBarePushUrl(url)` â€” empty/garbled `push:` URL with no `F=`
      format descriptor (observed on an NG server May 2026 where the
      server's profile resolver emitted DIRECT_PLAY/REMUX with an empty
      payload descriptor). Without the hint, ExoPlayer's sniff path
-     partially succeeds on the Fold — audio plays, video stays black.
+     partially succeeds on the Fold â€” audio plays, video stays black.
      IJK uses libavformat sniff and handles a wider set of input shapes.
    First swap per process emits a one-shot toast via
    `PlayerSelectionUtil.notifyLandmineSwap()` so the user knows why we
@@ -225,7 +225,7 @@ the user doesn't have to know which player handles which codec.
    something on the landmine list shows up.
 
 Non-goals (for v1):
-- No keep-warm second player. Each swap pays the ~300–500 ms cold-start
+- No keep-warm second player. Each swap pays the ~300â€“500 ms cold-start
   cost. Revisit if instrumentation says it matters.
 - ~~No toast.~~ Implemented as one-shot per process to balance "user
   should know why" against "don't spam a marathon FF session".
@@ -238,16 +238,16 @@ VPN / Wi-Fi mesh). LAN behaviour today is solid; these items address the
 
 ### High-leverage
 
-- ~~**Pull-mode socket read timeout.**~~ ✅ Done. `SimplePullDataSource` now
+- ~~**Pull-mode socket read timeout.**~~ âœ… Done. `SimplePullDataSource` now
   sets a 30 s `setSoTimeout` after connecting (overridable via
   `-Dsagetv.pull.read.timeout.ms=N`, set 0 to restore legacy blocking
-  behaviour). A timeout surfaces as `SocketTimeoutException` → ExoPlayer load
-  error → existing 12-retry seek+prepare loop recovers transparently.
+  behaviour). A timeout surfaces as `SocketTimeoutException` â†’ ExoPlayer load
+  error â†’ existing 12-retry seek+prepare loop recovers transparently.
 
-- ~~**Control-channel heartbeat.**~~ ✅ Done. New `SocketKeepAlive` helper
+- ~~**Control-channel heartbeat.**~~ âœ… Done. New `SocketKeepAlive` helper
   tunes OS TCP keep-alive timing via `jdk.net.ExtendedSocketOptions`
   (reflective; Android API 30+ / Java 11+). Defaults: probe after 30 s
-  idle, retry every 10 s, give up after 5 — so a dead control or pull-mode
+  idle, retry every 10 s, give up after 5 â€” so a dead control or pull-mode
   connection is detected in ~80 s instead of the OS default ~2 h. Applied
   to both the GFX/media control sockets in `MiniClientConnection` and the
   pull-mode media socket in `SimplePullDataSource`. Tunable via
@@ -255,9 +255,9 @@ VPN / Wi-Fi mesh). LAN behaviour today is solid; these items address the
   `-Dsagetv.tcp.keepcount=N`. No-op on platforms that don't expose the
   options (falls back to OS defaults silently).
 
-- ~~**Larger ring buffer for non-LAN servers.**~~ ✅ Done. `TrickplayController`
-  default ring buffer bumped 4 MB → 16 MB (overridable via
-  `-Dsagetv.push.ring.bytes=N`). Roughly 4× the jitter-absorption window
+- ~~**Larger ring buffer for non-LAN servers.**~~ âœ… Done. `TrickplayController`
+  default ring buffer bumped 4 MB â†’ 16 MB (overridable via
+  `-Dsagetv.push.ring.bytes=N`). Roughly 4Ã— the jitter-absorption window
   before underrun; trivial memory cost on Shield-class hardware.
 
 ### Medium-leverage
@@ -268,16 +268,16 @@ VPN / Wi-Fi mesh). LAN behaviour today is solid; these items address the
   with >500 ms RTT a single seek can never converge inside 1500 ms, which
   forces the player into the repeated-flush state we just papered over for
   HEVC. Measure recent server reply latency on `Flush`/`Seek` and scale
-  these by ~3× of observed RTT.
+  these by ~3Ã— of observed RTT.
 
 - **Exponential backoff in retry loop.** `MAX_PLAYBACK_RETRY_COUNT = 12`
   in `Exo2MediaPlayerImpl.java#L65` retries immediately at ~200 ms
   intervals. On a slow server that's a 2.4 s hot-loop that often gives
-  up before the server has even responded. Back off 200 → 400 → 800 → 1600
+  up before the server has even responded. Back off 200 â†’ 400 â†’ 800 â†’ 1600
   to give the server a chance to recover.
 
 - **Adaptive prebuffer threshold.** The 64 KB / 3 s prebuffer gate in
-  `Exo2MediaPlayerImpl.java#L616-L618` is fine for LAN but at ≤256 kbps
+  `Exo2MediaPlayerImpl.java#L616-L618` is fine for LAN but at â‰¤256 kbps
   the 64 KB takes ~2 s to arrive, leaving <1 s of slack before the safety
   timeout fires and triggers a sniff retry. Measure first-chunk arrival
   rate and scale the threshold (and timeout) to it.
@@ -305,7 +305,7 @@ AC4-capable extension AAR ships.
 Requires:
 - ExoPlayer FFmpeg extension AAR rebuilt against FFmpeg 7.1+ with
   `--enable-decoder=ac4` (current bundled extension is FFmpeg 6.0). Note
-  this dependency partially overlaps the Media3 migration above — Media3
+  this dependency partially overlaps the Media3 migration above â€” Media3
   1.2+ has the AC4 demuxer/reader already.
 - Shield Pro vendor AC4 decoder is **not** exposed via `MediaCodecList`
   even with `ALL_CODECS`, so a software path is the only viable route on
@@ -322,17 +322,17 @@ When revisited, re-add the code that was reverted in May 2026:
 - Add `"AC4"` to the audio codec capability list emitted to the server
   once Phase 2's codec/container submenu is in place.
 
-In the meantime the server transcodes AC4 → EAC3 and the client plays
+In the meantime the server transcodes AC4 â†’ EAC3 and the client plays
 EAC3 natively, which is the expected behaviour.
 
 ### Trickplay polish (low priority)
 
-- ~~**Pause-resume scrubber monotonicity guard.**~~ ✅ Done (1.15.119).
+- ~~**Pause-resume scrubber monotonicity guard.**~~ âœ… Done (1.15.119).
   `TrickplayController.onPlayerPosition()` now drops player-position
   samples whose backward delta from the previous sample falls inside
   `[MONOTONIC_GUARD_MIN_REGRESSION_MS, MONOTONIC_GUARD_MAX_REGRESSION_MS]`
-  (250 ms … 30 s) *when no seek is armed or committed*. Catches the
-  pause→resume re-anchor blip (player re-reports the last decoded
+  (250 ms â€¦ 30 s) *when no seek is armed or committed*. Catches the
+  pauseâ†’resume re-anchor blip (player re-reports the last decoded
   keyframe before catching up) without interfering with legitimate
   seeks (handled by the existing mapping path) or real loops/reloads
   (regression > 30 s, accepted).
@@ -340,4 +340,51 @@ EAC3 natively, which is the expected behaviour.
   on retry, but worth investigating for a cleaner first-frame latency.
 - Native trickplay state-machine transitions are observed only by
   position polling. Adding explicit JNI callbacks would tighten
-  RECOVERING → STABLE detection.
+  RECOVERING â†’ STABLE detection.
+
+## External display output (phone -> TV, phone as remote)
+
+Phase 1 shipped (1.15.152 -> 1.15.154, mobile flavor only): a genuine extended
+display (Samsung DeX / DisplayPort-extended) relocates the SageTV UI onto the
+TV via `ActivityOptions.setLaunchDisplayId()`, the phone becomes a touch remote
+(`RemoteControlActivity`), the UI is launched full-bleed (`setLaunchBounds`),
+the phone is kept awake while remoting, and the UI activity requests the sink's
+highest supported mode. Detection is generic AOSP (`DISPLAY_CATEGORY_PRESENTATION`
++ `FLAG_PRESENTATION`), no Samsung SDK; plain HDMI mirroring is deliberately
+ignored.
+
+### Investigate: external-sink resolution under-reported (client is NOT correct) -- TODO
+
+**Symptom:** On a 4K panel driven over DeX/HDMI, the client reported the sink as
+`1920x1080` (honest sink) to the server via `DISPLAY_SINK_RESOLUTION`, when the
+panel is capable of 4K. Do **not** assume the current active mode == the sink's
+true capability -- treat the resolver as suspect and re-derive what "sink
+resolution" should mean for the NG enhancement contract.
+
+**Current behaviour to re-examine:**
+- `SinkResolutionResolver.physicalSize()` returns `Display.getMode()` -- the
+  *current active output mode* only. On desktop-mode / DeX, the OS frequently
+  negotiates 1080p even when the panel + link can do 4K, so the active mode is
+  not the panel's capability.
+- One field observation was a genuinely 1080p-only sink (2015 Hisense EDID with
+  no 3840x2160 mode), but the reporting policy must be correct for the case
+  where a 4K mode *is* available yet not currently active.
+
+**Things to investigate / fix:**
+- Report the sink's **maximum** supported mode (scan `Display.getSupportedModes()`
+  for the largest width x height) instead of, or alongside, the active mode -- so
+  a 4K-capable sink advertises 4K even while the desktop is running at 1080p.
+- Decide the contract: does the server want (a) the panel's max capability, or
+  (b) the surface the client is actually compositing to right now? These differ
+  under desktop-mode. Align with the NG server team and the other clients.
+- Actively drive the panel to its best mode before measuring: the UI activity
+  now sets `preferredDisplayModeId` to the highest mode -- verify the OS honours
+  it on DeX and that the negotiated mode (and thus the reported sink) updates.
+- Confirm whether the USB-C->HDMI adapter / cable (HDMI 1.4 vs 2.0) or a DeX
+  output-resolution setting is clamping the EDID mode list, and whether the app
+  can/should surface that to the user.
+- Add a capture of `Display.getSupportedModes()` + `getMode()` + EDID product
+  info to the sink diagnostics so the max-vs-active gap is visible in logs
+  (partially done via `ExternalDisplayController.logModes`).
+- Re-validate `DISPLAY_SINK_RESOLUTION` / `DISPLAY_REFRESH_RATES` /
+  `DISPLAY_HDR_TYPES` against the chosen policy on a real 4K TV + HDMI 2.0 path.

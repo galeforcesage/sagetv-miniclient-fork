@@ -158,6 +158,44 @@ public class UIActivityLifeCycleHandler<UIRenderType extends UIRenderer> impleme
         }
 
         hideSystemUI(activity);
+        applyExternalDisplayPreferences(activity);
+    }
+
+    /**
+     * When this UI activity is running on an external/extended display (it was
+     * relocated there by the phone-remote feature), (1) keep that display awake
+     * and (2) ask the OS to drive the sink at its highest supported mode — many
+     * desktop-mode / DeX links default to 1080p even on a 4K-capable panel.
+     * No-op on the phone's own display, so normal handset behavior is unchanged.
+     */
+    private void applyExternalDisplayPreferences(Activity activity)
+    {
+        try
+        {
+            if (activity == null || android.os.Build.VERSION.SDK_INT < 23) return;
+            android.view.Display disp = activity.getWindowManager().getDefaultDisplay();
+            if (disp == null || disp.getDisplayId() == android.view.Display.DEFAULT_DISPLAY) return;
+
+            activity.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
+            int modeId = sagex.miniclient.android.display.ExternalDisplayController
+                    .getHighestModeId(activity, disp.getDisplayId());
+            if (modeId > 0)
+            {
+                android.view.WindowManager.LayoutParams lp = activity.getWindow().getAttributes();
+                if (lp.preferredDisplayModeId != modeId)
+                {
+                    lp.preferredDisplayModeId = modeId;
+                    activity.getWindow().setAttributes(lp);
+                    log.info("Requested highest external display mode id={} on displayId={}",
+                            modeId, disp.getDisplayId());
+                }
+            }
+        }
+        catch (Throwable t)
+        {
+            log.warn("applyExternalDisplayPreferences failed", t);
+        }
     }
 
     public void onPause(Activity activity)

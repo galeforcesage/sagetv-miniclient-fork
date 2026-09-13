@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Phase 1 external-display output ("play on TV, phone as remote").
+      Default OFF here (android-shared library baseline). The mobile product
+      flavor overrides this to true (see android-tv/src/mobile/res/values/
+      flavor_config.xml), so the feature is mobile-only. Online/TV builds keep
+      the library default and never offer it.
+    -->
+    <bool name="feature_external_display">false</bool>
+</resources>

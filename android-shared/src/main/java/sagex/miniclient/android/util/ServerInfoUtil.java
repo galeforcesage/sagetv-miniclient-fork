@@ -1,10 +1,12 @@
 package sagex.miniclient.android.util;
 
 import android.app.Activity;
+import android.app.ActivityOptions;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.os.Build;
 import android.view.MenuItem;
 import android.view.View;
 import android.widget.PopupMenu;
@@ -18,7 +20,9 @@ import sagex.miniclient.ServerInfo;
 import sagex.miniclient.android.AppUtil;
 import sagex.miniclient.android.MiniclientApplication;
 import sagex.miniclient.android.R;
+import sagex.miniclient.android.RemoteControlActivity;
 import sagex.miniclient.android.UIActivityLifeCycleHandler;
+import sagex.miniclient.android.display.ExternalDisplayController;
 import sagex.miniclient.android.gdx.MiniClientGDXActivity;
 import sagex.miniclient.android.opengl.MiniClientOpenGLActivity;
 import sagex.miniclient.prefs.PrefStore;
@@ -67,6 +71,19 @@ public class ServerInfoUtil {
 
     public static void connect(Context ctx, ServerInfo si)
     {
+        connect(ctx, si, true);
+    }
+
+    /**
+     * @param allowExternal when true, and this is a mobile-flavor build with the
+     *   external-display feature enabled, the pref on, API&ge;26, and a genuine
+     *   extended display present, the SageTV UI is launched on the external
+     *   display and this phone becomes a remote ({@link RemoteControlActivity}).
+     *   Pass false to force the normal on-phone path (used by "bring back to
+     *   phone").
+     */
+    public static void connect(Context ctx, ServerInfo si, boolean allowExternal)
+    {
         try
         {
             si.lastConnectTime = System.currentTimeMillis();
@@ -86,31 +103,14 @@ public class ServerInfoUtil {
                 i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             }
 
-            /*
-            Removed to make sure the code passes the Amazon App Store testing.  They do not approve of this functionallity for some reason
-            if (MiniclientApplication.get().getClient().properties().getBoolean(PrefStore.Keys.exit_to_home_screen, true)) {
-                log.debug("Starting SageTV with Exit TO Home Screen option");
-                //i.setFlags(Intent.FLAG_ACTIVITY_TASK_ON_HOME | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-                // http://stackoverflow.com/questions/3473168/clear-the-entire-history-stack-and-start-a-new-activity-on-android
-                i.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            int externalDisplayId = resolveExternalDisplay(ctx, allowExternal);
+            if (externalDisplayId >= 0)
+            {
+                launchOnExternalDisplay(ctx, i, externalDisplayId);
+                return;
             }
-            */
-
 
             ctx.startActivity(i);
-
-            /*
-            Removed to make sure the code passes the Amazon App Store testing
-            if (MiniclientApplication.get().getClient().properties().getBoolean(PrefStore.Keys.exit_to_home_screen, true))
-            {
-                if (ctx instanceof Activity)
-                {
-                    ((Activity) ctx).finish();
-                }
-            }
-            */
-
-
         }
         catch (Throwable t)
         {
@@ -118,6 +118,75 @@ public class ServerInfoUtil {
             Toast.makeText(ctx, "Failed to connect to server: " + t, Toast.LENGTH_LONG).show();
         }
 
+    }
+
+    /**
+     * @return the external display id to relocate the UI onto, or -1 when the
+     *   normal on-phone path should be used. Fails closed on every gate:
+     *   caller opt-in, mobile-flavor feature flag, user pref, API level, and a
+     *   real extended (non-mirrored) display actually being present.
+     */
+    private static int resolveExternalDisplay(Context ctx, boolean allowExternal)
+    {
+        if (!allowExternal) return -1;
+        try
+        {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return -1; // setLaunchDisplayId is API 26+
+            if (!ctx.getResources().getBoolean(R.bool.feature_external_display)) return -1;
+            if (!MiniclientApplication.get().getClient().properties()
+                    .getBoolean(PrefStore.Keys.play_on_external_display, true)) return -1;
+
+            // Spike/diagnostic: always dump the display topology at connect time.
+            ExternalDisplayController.logDisplays(ctx, "connect");
+
+            int id = ExternalDisplayController.getExternalDisplayId(ctx);
+            if (id < 0)
+            {
+                log.info("External-display feature eligible but no extended display present; using phone.");
+            }
+            return id;
+        }
+        catch (Throwable t)
+        {
+            log.warn("resolveExternalDisplay failed; falling back to phone", t);
+            return -1;
+        }
+    }
+
+    private static void launchOnExternalDisplay(Context ctx, Intent uiIntent, int externalDisplayId)
+    {
+        try
+        {
+            log.info("Launching SageTV UI on external display id={}, phone becomes remote", externalDisplayId);
+            ActivityOptions opts = ActivityOptions.makeBasic();
+            opts.setLaunchDisplayId(externalDisplayId);
+            // Force full-bleed on the external display. Desktop-mode / Samsung DeX
+            // opens apps in a freeform window by default; launching with bounds
+            // set to the whole display makes the UI cover the entire screen.
+            // setLaunchBounds is public API (24+) and generic across OEMs.
+            android.graphics.Point size = ExternalDisplayController.getDisplaySize(ctx, externalDisplayId);
+            if (size != null)
+            {
+                opts.setLaunchBounds(new android.graphics.Rect(0, 0, size.x, size.y));
+                log.info("External display size {}x{}; launching UI maximized", size.x, size.y);
+            }
+            uiIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            ctx.startActivity(uiIntent, opts.toBundle());
+
+            // Bring up the phone remote on the default (phone) display.
+            Intent remote = new Intent(ctx, RemoteControlActivity.class);
+            if (!(ctx instanceof Activity))
+            {
+                remote.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            }
+            ctx.startActivity(remote);
+        }
+        catch (Throwable t)
+        {
+            log.warn("launchOnExternalDisplay failed; falling back to phone", t);
+            try { ctx.startActivity(uiIntent); }
+            catch (Throwable t2) { log.error("phone fallback launch also failed", t2); }
+        }
     }
 
     public interface OnAfterCommands {

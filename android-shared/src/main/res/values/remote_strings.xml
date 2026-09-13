@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="remote_playing_on_tv">Playing on TV — this phone is now the remote</string>
+    <string name="remote_bring_back">Bring playback back to phone</string>
+    <string name="remote_up">▲</string>
+    <string name="remote_down">▼</string>
+    <string name="remote_left">◀</string>
+    <string name="remote_right">▶</string>
+    <string name="remote_ok">OK</string>
+    <string name="remote_back">Back</string>
+    <string name="remote_home">Home</string>
+    <string name="remote_options">Menu</string>
+    <string name="remote_play_pause">Play/Pause</string>
+    <string name="remote_info">Info</string>
+    <string name="remote_guide">Guide</string>
+    <string name="remote_rew">« Skip</string>
+    <string name="remote_pause">Pause</string>
+    <string name="remote_ff">Skip »</string>
+    <string name="remote_page_up">Page Up</string>
+    <string name="remote_page_down">Page Down</string>
+    <string name="remote_no_external_display">No external display detected. Connect an extended display (DeX / DisplayPort) and try again.</string>
+</resources>

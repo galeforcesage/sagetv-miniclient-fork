@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Mobile-flavor override: enable Phase 1 external-display output
+      ("play on TV, phone as remote"). See android-shared baseline
+      (feature_external_display=false). Only the mobile APK (phones/tablets
+      with DeX / DisplayPort-extended output) offers this feature; it still
+      only activates at runtime when a genuine extended display is present.
+    -->
+    <bool name="feature_external_display">true</bool>
+</resources>
