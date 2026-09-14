@@ -412,7 +412,7 @@ public class GFXCMD2 {
                     srcwidth = readInt(28, cmddata);
                     srcheight = readInt(32, cmddata);
                     blend = readInt(36, cmddata);
-                    sagex.miniclient.uibridge.ImageHolder texImg = client.getImageCache().get(handle);
+                    sagex.miniclient.uibridge.ImageHolder<?> texImg = client.getImageCache().get(handle);
                     if (texImg != null && !texImg.isDecodePending()) {
                         windowManager.drawTexture(x, y, width, height, handle, texImg, srcx, srcy, srcwidth, srcheight, blend);
                     }
