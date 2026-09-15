@@ -3474,12 +3474,13 @@ public class MiniClientConnection implements SageTVInputCallback
     /**
      * Build a single per-surface descriptor attribute. Video/audio/container
      * vocabularies come from the already-detected per-player capability sets,
-     * canonicalized to the server's Protocol 2.1 spelling. Containers are the
-     * PULL-playable set only (the push-only MPEG-PS/TS trio is excluded — see
-     * the CONTAINERS branch). DELIVERY_MODES advertises {@code push,pull}: the
-     * server prefers pull for a DIRECT_PLAY decision (the enhancement path) and
-     * push for conditioned/remuxed content (Android's traditional path), so both
-     * content classes keep working.
+     * canonicalized to the server's Protocol 2.1 spelling. Containers carry the
+     * PULL-playable set as bare tokens (fail-open both transports), plus, for the
+     * IJK surface, the push-only program-stream container as an explicit
+     * {@code MPEG2-PS;push=true;pull=false} token (see the CONTAINERS branch).
+     * DELIVERY_MODES advertises {@code push,pull}: the server prefers pull for a
+     * DIRECT_PLAY decision (the enhancement path) and push for conditioned/remuxed
+     * content (Android's traditional path), so both content classes keep working.
      */
     private String surfaceAttr(String id, String attr)
     {
@@ -3487,6 +3488,7 @@ public class MiniClientConnection implements SageTVInputCallback
         String vKey = media3 ? "EXO_VIDEO_CODECS" : "IJK_VIDEO_CODECS";
         String aKey = media3 ? "EXO_AUDIO_CODECS" : "IJK_AUDIO_CODECS";
         String pullKey = media3 ? "EXO_PULL_AV_CONTAINERS" : "IJK_PULL_AV_CONTAINERS";
+        String pushKey = media3 ? "EXO_PUSH_AV_CONTAINERS" : "IJK_PUSH_AV_CONTAINERS";
 
         if ("ROUTE".equals(attr))
         {
@@ -3512,20 +3514,44 @@ public class MiniClientConnection implements SageTVInputCallback
         }
         if ("CONTAINERS".equals(attr))
         {
-            // Only the PULL-playable containers belong on a surface: these are the
-            // self-contained, seekable formats the player can direct-play from a
-            // pull (MP4, Matroska, MOV, WEBM, ...). The push-only trio
-            // (MPEG1-PS / MPEG2-PS / MPEG2-TS) is deliberately EXCLUDED here — the
-            // client architecture cannot direct-play those from a pull; the server
-            // must remux them (to Matroska) and push. Advertising them as surface
-            // containers makes the server pick DIRECT_PLAY + pull of the raw .mpg,
-            // whose stv pull OPEN returns NON_MEDIA (IJK error -10000). Omitting
-            // them leaves container-uncovered PS/TS sources to REMUX -> push, the
-            // path Android has always used, while native MP4/MKV still direct-play
-            // + enhance. (preparePerPlayerCapabilities already excludes the trio
-            // from the *_PULL_AV_CONTAINERS sets, so this is just that set.)
-            return PlaybackSurfaceCanon.csv(
-                    PlaybackSurfaceCanon.canonContainer(perPlayerCapabilities.get(pullKey)));
+            // Pull-playable containers (MP4, Matroska, MOV, WEBM, ...) are emitted
+            // as BARE tokens = fail-open on both transports; these are the
+            // self-contained, seekable formats a surface can direct-play from a
+            // stv:// pull.
+            //
+            // The program-stream container is push-only: a raw PS pull OPEN returns
+            // NON_MEDIA (IJK error -10000), so it must be DIRECT_PLAY-over-push. The
+            // NG surface engine is the authoritative capability report for a surface
+            // client (the legacy evaluate()/IJK_CONTAINER_CONSTRAINTS path does not
+            // run), so PS must be advertised ON THE SURFACE or it is invisible to the
+            // decision. We advertise it with explicit per-container transport flags
+            // (grammar mirrors VIDEO_CODECS;scan=progressive) so the server pins PS to
+            // push while the same surface keeps pull for MP4/MKV:
+            //     MPEG2-PS;push=true;pull=false
+            // MPEG1-PS folds onto MPEG2-PS (same PS demuxer; the MPEG-1-vs-2 difference
+            // is carried by the video codec, not the container), so the single MPEG2-PS
+            // token covers both spellings. Only the IJK surface gets PS: ExoPlayer's
+            // PsExtractor is unreliable (crash on MPEG2-Video-in-PS, freeze on
+            // HEVC-in-PS), so the media3 surface honestly omits it. Gated on the push
+            // capability set so a user who disables PS support drops the advertisement.
+            // Contract: docs/NGSurfaceContainerTransport.md (server team).
+            java.util.List<String> pull =
+                    PlaybackSurfaceCanon.canonContainer(perPlayerCapabilities.get(pullKey));
+            String bare = PlaybackSurfaceCanon.csv(pull);
+            if (media3)
+            {
+                return bare;
+            }
+            java.util.List<String> push =
+                    PlaybackSurfaceCanon.canonContainer(perPlayerCapabilities.get(pushKey));
+            if (!push.contains("MPEG2-PS"))
+            {
+                return bare;
+            }
+            StringBuilder sb = new StringBuilder(bare);
+            if (sb.length() > 0) sb.append(',');
+            sb.append("MPEG2-PS;push=true;pull=false");
+            return sb.toString();
         }
         return "";
     }
