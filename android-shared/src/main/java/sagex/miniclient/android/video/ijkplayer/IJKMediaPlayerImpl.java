@@ -40,6 +40,13 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     /** Last audio session id the client EQ was attached to (0 = not yet attached). */
     int eqSessionId = 0;
     long logTime = -1;
+    /**
+     * Set true once the native player reports first video/audio render
+     * (MEDIA_INFO_*_RENDERING_START). Distinguishes a genuine end-of-stream
+     * from an immediate-EOF failed open (malformed/empty push stream that
+     * completes having never rendered a frame).
+     */
+    boolean firstFrameRendered = false;
     MediaSessionCompat mediaSession;
 
     public IJKMediaPlayerImpl(AndroidUIController activity)
@@ -287,6 +294,7 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
         preSeekPos = -1;
         resumeTimeOffset = -1;
         resumeMode = false;
+        firstFrameRendered = false;
         initialAudioStreamPos = -1;
         initialTextStreamPos = -1;
         logTime = -1;
@@ -428,7 +436,20 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                 public void onCompletion(IMediaPlayer iMediaPlayer)
                 {
                     if (VerboseLogging.DETAILED_PLAYER_LOGGING) log.debug("MEDIA COMPLETE");
-                    log.debug("OnCompletionListener fired.  Stoping playback and setting state to EOS");
+                    if (pushMode && !firstFrameRendered)
+                    {
+                        // Immediate EOF on a push stream that never rendered a frame:
+                        // this is a failed open (malformed/empty container from the server),
+                        // NOT a genuine end-of-stream. Surface one clear diagnostic for the
+                        // server team instead of silently spinning in EOS. Behavior is
+                        // otherwise unchanged (still enters EOS so getBufferLeft signals -1).
+                        log.warn("OnCompletionListener fired with NO rendered frame in push mode - "
+                            + "treating as immediate-EOF failed open (likely malformed/empty stream). uri={}", lastUri);
+                    }
+                    else
+                    {
+                        log.debug("OnCompletionListener fired.  Stoping playback and setting state to EOS");
+                    }
                     stop();
                     state = EOS_STATE;
                     eos = true;
@@ -460,6 +481,7 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                     if (what == IMediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START
                         || what == IMediaPlayer.MEDIA_INFO_AUDIO_RENDERING_START)
                     {
+                        firstFrameRendered = true;
                         if (trickplayController != null && trickplayController.isNativeAvailable() && player != null)
                         {
                             trickplayController.onPlayerPosition(player.getCurrentPosition());

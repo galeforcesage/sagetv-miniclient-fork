@@ -184,97 +184,25 @@ public class MediaMappingPreferences
 
     public SageCommand getRightLongPress()
     {
-        String key;
-
-        switch (prefix)
-        {
-            case "videoplaying":
-
-                key = preferences.getString(prefix + "_right_long_press", SageCommand.RIGHT.getKey());
-                break;
-
-            case "videopaused":
-
-                key = preferences.getString(prefix + "_right_long_press", SageCommand.RIGHT.getKey());
-                break;
-
-            default:
-
-                key = preferences.getString(prefix + "_right_long_press", SageCommand.RIGHT.getKey());
-        }
-
+        String key = preferences.getString(prefix + "_right_long_press", SageCommand.FF.getKey());
         return SageCommand.parseByKey(key);
     }
 
     public SageCommand getLeftLongPress()
     {
-        String key;
-
-        switch (prefix)
-        {
-            case "videoplaying":
-
-                key = preferences.getString(prefix + "_left_long_press", SageCommand.LEFT.getKey());
-                break;
-
-            case "videopaused":
-
-                key = preferences.getString(prefix + "_left_long_press", SageCommand.LEFT.getKey());
-                break;
-
-            default:
-
-                key = preferences.getString(prefix + "_left_long_press", SageCommand.LEFT.getKey());
-        }
-
+        String key = preferences.getString(prefix + "_left_long_press", SageCommand.REW.getKey());
         return SageCommand.parseByKey(key);
     }
 
     public SageCommand getUpLongPress()
     {
-        String key;
-
-        switch (prefix)
-        {
-            case "videoplaying":
-
-                key = preferences.getString(prefix + "_up_long_press", SageCommand.UP.getKey());
-                break;
-
-            case "videopaused":
-
-                key = preferences.getString(prefix + "_up_long_press", SageCommand.UP.getKey());
-                break;
-
-            default:
-
-                key = preferences.getString(prefix + "_up_long_press", SageCommand.UP.getKey());
-        }
-
+        String key = preferences.getString(prefix + "_up_long_press", SageCommand.CHANNEL_UP.getKey());
         return SageCommand.parseByKey(key);
     }
 
     public SageCommand getDownLongPress()
     {
-        String key;
-
-        switch (prefix)
-        {
-            case "videoplaying":
-
-                key = preferences.getString(prefix + "_down_long_press", SageCommand.DOWN.getKey());
-                break;
-
-            case "videopaused":
-
-                key = preferences.getString(prefix + "_down_long_press", SageCommand.DOWN.getKey());
-                break;
-
-            default:
-
-                key = preferences.getString(prefix + "_down_long_press", SageCommand.DOWN.getKey());
-        }
-
+        String key = preferences.getString(prefix + "_down_long_press", SageCommand.CHANNEL_DOWN.getKey());
         return SageCommand.parseByKey(key);
     }
 

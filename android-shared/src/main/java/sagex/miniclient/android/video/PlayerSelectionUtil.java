@@ -45,7 +45,7 @@ public final class PlayerSelectionUtil
         if (ctx == null) return;
         if (swapToastShown) return;
         swapToastShown = true;
-        final String msg = "Auto-switched to IJK player (" + reason + ")";
+        final String msg = "Auto-switched player (" + reason + ")";
         new android.os.Handler(android.os.Looper.getMainLooper()).post(new Runnable() {
             @Override public void run() {
                 try { android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_LONG).show(); }
@@ -264,10 +264,17 @@ public final class PlayerSelectionUtil
      * @param oneTimeSwap       user-initiated one-time player swap active
      * @param streamInfo        NG pre-stream metadata, or null (legacy / absent)
      * @param exoCanDecodeMpeg2 whether this device exposes an Exo MPEG-2 decoder
+     * @param exoCanDecodeHevc  whether this device exposes an Exo (MediaCodec)
+     *        HEVC decoder. Gates the IJK&rarr;Exo decode-safety rescue for
+     *        HEVC-in-Matroska so we never bump a device that has no HW HEVC
+     *        decoder (where IJK software decode is the only option) onto Exo.
      * @param serverEffectivePlayerHint normalized CAP_EFFECTIVE_PLAYER from the
      *        server ({@code "ijkplayer"}/{@code "exoplayer"}/{@code ""}). An
      *        {@code ijkplayer} hint forces IJK (the server resolved the stream to
      *        IJK via its per-player switch); it is never allowed to force Exo.
+     *        Note: it is advisory ("runtime decode checks may override"), so the
+     *        STREAMINFO decode-safety rescue below can still route to Exo for
+     *        shapes IJK physically cannot play.
      */
     public static PlayerDecision decide(
             android.content.Context toastCtx,
@@ -276,6 +283,7 @@ public final class PlayerSelectionUtil
             boolean oneTimeSwap,
             sagex.miniclient.streaminfo.StreamInfo streamInfo,
             boolean exoCanDecodeMpeg2,
+            boolean exoCanDecodeHevc,
             String serverEffectivePlayerHint)
     {
         boolean useExo = userPrefersExo;
@@ -300,6 +308,43 @@ public final class PlayerSelectionUtil
             notifyLandmineSwap(toastCtx, "Program Stream compat");
             log.warn("Delivery-PS routing -> IJK. url={}", urlString);
             return new PlayerDecision(useExo, swapReason);
+        }
+
+        // ── IJK→Exo decode-safety rescue (STREAMINFO fact-based) ──
+        // Some devices default to IJK (or the server hint selects it), but IJK's
+        // bundled ffmpeg physically cannot play certain NG delivery shapes that
+        // Exo/media3 demuxes and decodes cleanly:
+        //   • HEVC video in Matroska — IJK never sets up the video track (no
+        //     decoder is created → permanent black screen); Exo's
+        //     MatroskaExtractor + MediaCodec render it. Burn-proven on Shield
+        //     (channel 9-1, ATSC3): IJK rendered=0, Exo plays the identical
+        //     delivery.
+        //   • AC-4 audio — IJK's ffmpeg cannot decode AC-4 at all (silent);
+        //     Exo/media3 supports it.
+        // Delivery Program Stream is handled above and returns before this, so
+        // we never bump a PS stream onto Exo (Exo cannot demux PS). The server's
+        // CAP_EFFECTIVE_PLAYER hint is explicitly advisory, so this local
+        // decode-safety override legitimately takes precedence for these shapes.
+        // Only fires when the current choice is IJK (useExo == false); when Exo
+        // is already chosen there is nothing to rescue.
+        if (!useExo && streamInfo != null && !streamInfo.isProgramStream())
+        {
+            sagex.miniclient.streaminfo.StreamInfo.VideoTrack rv = streamInfo.primaryVideo();
+            sagex.miniclient.streaminfo.StreamInfo.AudioTrack ra = streamInfo.primaryAudio();
+            boolean hevcInMatroska = rv != null && rv.isHevc() && streamInfo.isMatroska()
+                    && exoCanDecodeHevc;
+            boolean ac4Audio = ra != null && ra.isAc4();
+            if (hevcInMatroska || ac4Audio)
+            {
+                useExo = true;
+                swapReason = hevcInMatroska
+                        ? "HEVC-in-Matroska decode-safety (IJK cannot set up the video track; Exo MatroskaExtractor renders it)"
+                        : "AC-4 audio decode-safety (IJK ffmpeg cannot decode AC-4; Exo/media3 supports it)";
+                notifyLandmineSwap(toastCtx, hevcInMatroska ? "HEVC/MKV compat" : "AC-4 audio compat");
+                log.warn("STREAMINFO decode-safety routing -> Exo ({}). video={}, audio={}, container={}",
+                        swapReason, rv, ra, streamInfo.container);
+                return new PlayerDecision(useExo, swapReason);
+            }
         }
 
         // ── Server per-player switch hint (advisory) ──

@@ -246,6 +246,12 @@ public class AppUtil {
                 Log.i(TAG, "Default Logging to DEBUG");
                 root.setLevel(Level.DEBUG);
             }
+            // Gate the verbose FREEZEDIAG playback telemetry (2s buffer/ring
+            // sampler + buffering/loading/dropped-frame hooks) on DEBUG level
+            // only. This keeps it off for normal users (default WARN) while
+            // letting anyone enable it by setting the client to Debug logging.
+            // Updates live when the log_level preference changes.
+            sagex.miniclient.util.VerboseLogging.FREEZE_DIAG = root.isDebugEnabled();
         } catch (Throwable t) {
             Log.e(TAG, "Invalid Log Level '" + logLevel + "'");
         }

@@ -55,6 +55,10 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     protected boolean waitForPlayer = true;
     protected int state;
     protected boolean eos = false;
+    // Guards the "EOS reached" server-poll log so it fires once per EOS episode
+    // instead of on every ~20Hz getBufferLeft() poll (prevents log-flood / CPU churn
+    // when a push session ends or a malformed stream hits immediate EOF).
+    protected boolean eosServerLogged = false;
     protected boolean seekPending = false;
     protected volatile boolean pendingPlay = false;
     protected volatile boolean pendingFlush = false;
@@ -144,6 +148,7 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
         lastUri = urlString;
         lastMediaTime = -1;
         eos = false;
+        eosServerLogged = false;
         seekPending = false;
         flushed = false;
         this.timeshifted = timeshifted;
@@ -882,7 +887,11 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
         {
             if (state == EOS_STATE || eos || trickplayController.isEOS())
             {
-                log.debug("------------------------- Telling SageTV that EOS was reached in client --------------------------------");
+                if (!eosServerLogged)
+                {
+                    log.debug("------------------------- Telling SageTV that EOS was reached in client (trickplay) --------------------------------");
+                    eosServerLogged = true;
+                }
                 return -1;
             }
             return trickplayController.bufferAvailable();
@@ -892,7 +901,11 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
         {
             if (state == EOS_STATE || eos)
             {
-                log.debug("------------------------- Telling SageTV that EOS was reached in client --------------------------------");
+                if (!eosServerLogged)
+                {
+                    log.debug("------------------------- Telling SageTV that EOS was reached in client (push) --------------------------------");
+                    eosServerLogged = true;
+                }
                 return -1;
             }
 

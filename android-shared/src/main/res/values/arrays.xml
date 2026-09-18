@@ -2,7 +2,7 @@
 <resources>
     <string-array name="entries_quality_hint_preference">
         <item>Auto (recommended)</item>
-        <item>Always - force 4K (debug)</item>
+        <item>Always - force 4K</item>
         <item>Never - save bandwidth</item>
     </string-array>
 

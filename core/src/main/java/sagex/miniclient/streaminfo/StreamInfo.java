@@ -80,6 +80,11 @@ public final class StreamInfo {
         return CONTAINER_MPEG2_PS.equals(c) || CONTAINER_MPEG1_PS.equals(c);
     }
 
+    /** @return true if the delivery container is Matroska/MKV. */
+    public boolean isMatroska() {
+        return CONTAINER_MATROSKA.equals(containerUpper());
+    }
+
     @Override
     public String toString() {
         return "StreamInfo{v=" + version + ", container=" + container
@@ -195,6 +200,11 @@ public final class StreamInfo {
         public String toString() {
             return codec + "(" + mime + "," + channels + "ch,"
                     + language + (primary ? ",primary" : "") + ")";
+        }
+
+        /** @return true if this is a Dolby AC-4 track (IJK's ffmpeg cannot decode AC-4). */
+        public boolean isAc4() {
+            return "audio/ac4".equals(mime);
         }
     }
 

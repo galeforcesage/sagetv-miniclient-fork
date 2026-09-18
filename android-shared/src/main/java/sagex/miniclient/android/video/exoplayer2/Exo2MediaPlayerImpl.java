@@ -79,6 +79,16 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     private boolean errorState = false;
     private int retryCount = 0;
 
+    // FREEZEDIAG: elapsedRealtime() when the player last entered STATE_BUFFERING,
+    // or -1 when not buffering. Used to measure rebuffer duration.
+    private long freezeDiagBufferingStartMs = -1;
+    // FREEZEDIAG: periodic buffer/ring-fill sampler (started on STATE_READY,
+    // stopped on release). Reveals the true cushion trajectory + server
+    // refill rate instead of only threshold snapshots.
+    private Runnable freezeDiagSampler;
+    private long freezeDiagLastSampleMs = -1;
+    private long freezeDiagLastBufMs = -1;
+
     private boolean showCaptions = false;
     private Handler handler;
     private Runnable progressRunnable;
@@ -186,8 +196,97 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
         player.setPlayWhenReady(true);
     }
 
+    // ── FREEZEDIAG continuous buffer/ring sampler ─────────────────────────
+    // Logs, every 2s while playing, the media3 buffered duration alongside the
+    // native push ring fill level, plus the delta since the last sample so the
+    // server refill rate (× real-time) is directly observable. This is what
+    // distinguishes a ring/window ceiling (ring stays full, media3 buffer low)
+    // from server real-time pacing (ring near-empty, buffer never grows).
+    private void startFreezeDiagSampler()
+    {
+        if (!VerboseLogging.FREEZE_DIAG) return;
+        if (handler == null) handler = new Handler();
+        if (freezeDiagSampler != null) return; // already running
+
+        freezeDiagLastSampleMs = -1;
+        freezeDiagLastBufMs = -1;
+        freezeDiagSampler = new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                try
+                {
+                    if (player == null) { freezeDiagSampler = null; return; }
+
+                    long nowMs = android.os.SystemClock.elapsedRealtime();
+                    long bufMs = player.getTotalBufferedDuration();
+                    long pos = player.getCurrentPosition();
+
+                    int ringFill = -1, ringFree = -1, ringPct = -1;
+                    if (pushMode && trickplayController != null && trickplayController.isNativeAvailable())
+                    {
+                        ringFill = trickplayController.bufferFilledBytes();
+                        ringFree = trickplayController.bufferAvailable();
+                        long cap = (long) ringFill + (long) ringFree;
+                        if (cap > 0) ringPct = (int) (100L * ringFill / cap);
+                    }
+
+                    // Refill/drain rate: media-ms gained per wall-ms since last sample.
+                    // >1.0 means buffer growing faster than real-time (server bursting);
+                    // ~0 during steady state at live edge; negative while draining.
+                    String rate = "n/a";
+                    if (freezeDiagLastSampleMs > 0 && freezeDiagLastBufMs >= 0)
+                    {
+                        long wall = nowMs - freezeDiagLastSampleMs;
+                        if (wall > 0)
+                        {
+                            // (bufDelta + wall) / wall = delivered media per wall time.
+                            double x = (double) ((bufMs - freezeDiagLastBufMs) + wall) / (double) wall;
+                            rate = String.format(java.util.Locale.US, "%.2fx", x);
+                        }
+                    }
+                    freezeDiagLastSampleMs = nowMs;
+                    freezeDiagLastBufMs = bufMs;
+
+                    log.logDebug("FREEZEDIAG SAMPLE bufMs=" + bufMs
+                            + " ringFill=" + ringFill
+                            + " ringFree=" + ringFree
+                            + " ringPct=" + ringPct
+                            + " deliverRate=" + rate
+                            + " pos=" + pos
+                            + " pushMode=" + pushMode);
+                }
+                catch (Throwable t)
+                {
+                    // best-effort diagnostics only
+                }
+                finally
+                {
+                    if (freezeDiagSampler != null && handler != null)
+                    {
+                        handler.postDelayed(freezeDiagSampler, 2000);
+                    }
+                }
+            }
+        };
+        handler.postDelayed(freezeDiagSampler, 2000);
+    }
+
+    private void stopFreezeDiagSampler()
+    {
+        Runnable r = freezeDiagSampler;
+        freezeDiagSampler = null;
+        if (r != null && handler != null)
+        {
+            handler.removeCallbacks(r);
+        }
+    }
+
     protected void releasePlayer()
     {
+        stopFreezeDiagSampler();
+
         if(mediaSession != null)
         {
             log.logDebug("Releaseing Android Media Session");
@@ -952,6 +1051,17 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 eqIsPcm = isPcmOutput(format);
                 pushEqAudioState();
             }
+
+            @Override
+            public void onDroppedVideoFrames(
+                    com.google.android.exoplayer2.analytics.AnalyticsListener.EventTime eventTime,
+                    int droppedFrames, long elapsedMs)
+            {
+                if (VerboseLogging.FREEZE_DIAG)
+                {
+                    log.logDebug("FREEZEDIAG droppedFrames=" + droppedFrames + " overMs=" + elapsedMs);
+                }
+            }
         });
 
         player.addListener(new Player.Listener()
@@ -1015,6 +1125,17 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             @Override
             public void onPlaybackStateChanged(int playbackState)
             {
+                if (playbackState == Player.STATE_BUFFERING)
+                {
+                    if (VerboseLogging.FREEZE_DIAG)
+                    {
+                        freezeDiagBufferingStartMs = android.os.SystemClock.elapsedRealtime();
+                        log.logDebug("FREEZEDIAG STATE_BUFFERING enter bufferedMs="
+                                + player.getTotalBufferedDuration()
+                                + " pos=" + player.getCurrentPosition()
+                                + " pushMode=" + pushMode);
+                    }
+                }
                 if (playbackState == Player.STATE_ENDED)
                 {
                     log.logDebug("Player.STATE_ENDED");
@@ -1027,6 +1148,17 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 if (playbackState == Player.STATE_READY)
                 {
                     log.logDebug("Player.STATE_READY - Media loaded and ready for playback");
+                    if (VerboseLogging.FREEZE_DIAG && freezeDiagBufferingStartMs >= 0)
+                    {
+                        long dur = android.os.SystemClock.elapsedRealtime() - freezeDiagBufferingStartMs;
+                        freezeDiagBufferingStartMs = -1;
+                        log.logDebug("FREEZEDIAG STATE_BUFFERING exit durMs=" + dur
+                                + " bufferedMs=" + player.getTotalBufferedDuration());
+                    }
+                    if (VerboseLogging.FREEZE_DIAG)
+                    {
+                        startFreezeDiagSampler();
+                    }
                     if (errorState)
                     {
                         errorState = false;
@@ -1087,6 +1219,16 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                     }
                 }
 
+            }
+
+            @Override
+            public void onIsLoadingChanged(boolean isLoading)
+            {
+                if (VerboseLogging.FREEZE_DIAG)
+                {
+                    log.logDebug("FREEZEDIAG isLoading=" + isLoading
+                            + " bufferedMs=" + player.getTotalBufferedDuration());
+                }
             }
 
             @Override

@@ -740,6 +740,8 @@ public class OpenGLRenderer implements UIRenderer<OpenGLTexture>, GLSurfaceView.
         // (if the server sent pre-stream metadata), else legacy URL heuristics.
         boolean exoCanDecodeMpeg2 = CodecCapabilityDetector.isVideoCodecSupportedByExo(
                 activity.getContext(), VideoCodec.MPEG2);
+        boolean exoCanDecodeHevc = CodecCapabilityDetector.isVideoCodecSupportedByExo(
+                activity.getContext(), VideoCodec.HEVC);
         sagex.miniclient.streaminfo.StreamInfo streamInfo =
                 (connection != null) ? connection.getPendingStreamInfo() : null;
         PlayerSelectionUtil.PlayerDecision decision = PlayerSelectionUtil.decide(
@@ -749,6 +751,7 @@ public class OpenGLRenderer implements UIRenderer<OpenGLTexture>, GLSurfaceView.
                 activity.isSwitchingPlayerOneTime(),
                 streamInfo,
                 exoCanDecodeMpeg2,
+                exoCanDecodeHevc,
                 (connection != null) ? connection.getServerEffectivePlayerHint() : "");
         useExoPlayer = decision.useExoPlayer;
         String swapReason = decision.swapReason;
