@@ -20,9 +20,11 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.RectF;
+import android.media.AudioDeviceInfo;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -82,7 +84,8 @@ import java.util.Locale;
  * Visual style matches the SageTV placeshifter video playback overlay:
  * black background, title bar at top, transport controls at bottom.
  */
-public class OfflinePlaybackActivity extends Activity {
+public class OfflinePlaybackActivity extends Activity
+        implements OfflineExternalDisplayManager.Host {
     private static final Logger log = LoggerFactory.getLogger(OfflinePlaybackActivity.class);
     private static OfflinePlaybackActivity currentInstance;
 
@@ -112,6 +115,8 @@ public class OfflinePlaybackActivity extends Activity {
     private Uri mediaUri;
     private StyledPlayerView playerView;
     private SurfaceView ijkSurfaceView;
+    private OfflineExternalDisplayManager externalDisplayManager;
+    private TextView playingOnTvHint;
     private View titleBar;
     private final Handler hideHandler = new Handler(Looper.getMainLooper());
     private final Handler autoSkipHandler = new Handler(Looper.getMainLooper());
@@ -276,6 +281,12 @@ public class OfflinePlaybackActivity extends Activity {
         overlay.setShowPlayerRow(true);
         overlay.setTimebarView(offlineTimeBar);
         overlay.install(null);
+
+        // HDMI / external-display output: when an extended display is attached
+        // (now or later), move video + audio to the TV and keep the transport
+        // controls here so the phone becomes the remote. Mobile-flavor only.
+        externalDisplayManager = new OfflineExternalDisplayManager(this);
+        externalDisplayManager.start();
     }
 
     private void initializePlayer(Uri mediaUri) {
@@ -1366,11 +1377,111 @@ public class OfflinePlaybackActivity extends Activity {
         if (currentInstance == this) {
             currentInstance = null;
         }
+        if (externalDisplayManager != null) {
+            externalDisplayManager.stop();
+            externalDisplayManager = null;
+        }
         if (player != null) {
             player.release();
             player = null;
         }
         releaseIjkPlayer();
+    }
+
+    // ── OfflineExternalDisplayManager.Host ────────────────────────────────
+    @Override
+    public Activity getActivity() {
+        return this;
+    }
+
+    @Override
+    public void onExternalDisplayReady(final SurfaceHolder holder, final AudioDeviceInfo audioSink) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (usingIjkPlayer) {
+                        // IJK has no preferred-audio-device API, so audio stays
+                        // on the phone for the IJK fallback path (rare offline).
+                        if (ijkPlayer != null) ijkPlayer.setDisplay(holder);
+                    } else if (player != null) {
+                        player.setVideoSurfaceHolder(holder);
+                        if (Build.VERSION.SDK_INT >= 23 && audioSink != null) {
+                            try {
+                                player.setPreferredAudioDevice(audioSink);
+                            } catch (Throwable t) {
+                                log.warn("offline_ext_audio_route_failed", t);
+                            }
+                        }
+                    }
+                    setPlayingOnTvHintVisible(true);
+                    log.info("offline_ext_video_moved_to_tv ijk={}", usingIjkPlayer);
+                } catch (Throwable t) {
+                    log.warn("offline_ext_ready_failed", t);
+                }
+            }
+        });
+    }
+
+    @Override
+    public void onExternalDisplayLost() {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (usingIjkPlayer) {
+                        if (ijkPlayer != null && ijkSurfaceView != null) {
+                            ijkPlayer.setDisplay(ijkSurfaceView.getHolder());
+                        }
+                    } else if (player != null) {
+                        View sv = (playerView != null) ? playerView.getVideoSurfaceView() : null;
+                        if (sv instanceof SurfaceView) {
+                            player.setVideoSurfaceView((SurfaceView) sv);
+                        }
+                        if (Build.VERSION.SDK_INT >= 23) {
+                            try {
+                                player.setPreferredAudioDevice(null);
+                            } catch (Throwable t) {
+                                log.warn("offline_ext_audio_restore_failed", t);
+                            }
+                        }
+                    }
+                    setPlayingOnTvHintVisible(false);
+                    log.info("offline_ext_video_returned_to_phone ijk={}", usingIjkPlayer);
+                } catch (Throwable t) {
+                    log.warn("offline_ext_lost_failed", t);
+                }
+            }
+        });
+    }
+
+    /**
+     * Show/hide a lightweight centered hint while video is on the TV, so the
+     * user knows the (now blank) phone surface is intentional and the on-screen
+     * controls act as a remote.
+     */
+    private void setPlayingOnTvHintVisible(boolean visible) {
+        try {
+            if (visible) {
+                if (playingOnTvHint == null) {
+                    playingOnTvHint = new TextView(this);
+                    playingOnTvHint.setText("\u25B6 Playing on TV\nUse the controls here as a remote");
+                    playingOnTvHint.setTextColor(0xFFFFFFFF);
+                    playingOnTvHint.setTextSize(18f);
+                    playingOnTvHint.setGravity(Gravity.CENTER);
+                    FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                            FrameLayout.LayoutParams.WRAP_CONTENT,
+                            FrameLayout.LayoutParams.WRAP_CONTENT,
+                            Gravity.CENTER);
+                    getWindow().addContentView(playingOnTvHint, lp);
+                }
+                playingOnTvHint.setVisibility(View.VISIBLE);
+            } else if (playingOnTvHint != null) {
+                playingOnTvHint.setVisibility(View.GONE);
+            }
+        } catch (Throwable t) {
+            log.warn("offline_ext_hint_failed", t);
+        }
     }
 
     private static final class CommercialSegment {

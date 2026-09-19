@@ -439,27 +439,39 @@ info/CC on the TV during live TV need the OSD there too.
   purely a client-side second-surface render. Keep legacy `GFXCMD2` byte
   compatibility intact.
 
-### TODO: bring surface-move (Path B) to the mobile offline / downloaded player
+### DONE: surface-move (Path B) for the mobile offline / downloaded player
 
-**Why:** Path B currently only covers *server-connected* playback (the
-`MiniClientConnection` media path). The mobile offline player
-(`android-offline` / `OfflinePlaybackActivity`) plays locally-downloaded
-recordings without a server session, so attaching a TV mid-playback does not
-move the video, audio, or controls onto the TV.
+**Status:** Implemented in v1.15.173 via `OfflineExternalDisplayManager`
+(`android-offline`), which is the offline-player counterpart to the server
+client's `ExternalVideoSurfaceController`. When a genuine extended display is
+attached — at cold start or mid-playback — the offline video is re-targeted onto
+a full-bleed `ExternalVideoPresentation` on the TV and audio is routed to the
+HDMI sink; the phone keeps the `StyledPlayerView` transport controls and becomes
+the remote. On detach the video returns to the phone.
 
-**Scope / approach:**
-- Either (a) wire `OfflinePlaybackActivity` into the existing
-  `ExternalVideoSurfaceController` by giving it a hot-swappable surface holder +
-  a player handle the controller can reach (it currently resolves the player via
-  `MiniClientConnection.getMediaCmd().getPlaya()`, which offline lacks), or
-  (b) factor the surface-move/audio-route/OSD/orientation logic into a small
-  reusable helper both the connected and offline activities call.
-- Offline has no server to nudge (`DISPLAY_SINK_RESOLUTION`), so the
-  sink-resolution override + `onSinkCapabilitiesChanged()` nudge are no-ops
-  there; just move the surface + audio and present at the TV's native size.
-- Reuse the same opt-in pref (`auto_move_to_tv`) and the mobile-only
-  `feature_external_display` gate.
-- Offline already has its own orientation toggle
-  (`OfflinePlaybackActivity` -> `OrientationController.cycleAndApply`), so the
-  same "lock landscape while casting / restore on detach" applies.
+**Why this was the easy half:** the offline player owns its own ExoPlayer /
+IjkMediaPlayer instance with no `MiniClientConnection` and **no server-drawn
+OSD**, so the move is a pure surface + audio-route swap — no activity relaunch,
+no teardown, no reconnect, playback position preserved. No OSD/CC layer to move.
+
+**Implementation notes:**
+- Reused `ExternalVideoPresentation` + `ExternalDisplayController` from
+  `android-shared` as-is; the shared `ExternalVideoSurfaceController` could not
+  drive it directly because it resolves the player via
+  `MiniClientConnection.getMediaCmd().getPlaya()`, which offline lacks — so the
+  player-specific re-targeting (Exo `setVideoSurfaceHolder` /
+  `setVideoSurfaceView`, Ijk `setDisplay`, `setPreferredAudioDevice`) is
+  delegated back to `OfflinePlaybackActivity` via an `OfflineExternalDisplayManager.Host`
+  callback, keeping the manager concerned only with display detection + the
+  presentation lifecycle.
+- Gated by the mobile-only `feature_external_display` resource and API&ge;17
+  (Presentation). Fails closed when no extended display is present.
+- **Known limitation:** the IJK fallback path (used for the rare offline
+  container ExoPlayer can't demux) has no preferred-audio-device API, so on that
+  path audio stays on the phone — same IJK constraint as the server live-TV path.
+
+**Possible follow-ups:** lock orientation while casting (offline already has
+`OrientationController.cycleAndApply`), and re-assert the external surface if the
+phone `StyledPlayerView` surface is recreated (e.g. rotation) while presenting.
+
 
