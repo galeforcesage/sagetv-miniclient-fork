@@ -404,8 +404,17 @@ public class MiniClientConnection implements SageTVInputCallback
      * {@code AndroidMiniClientOptions.preparePerPlayerCapabilities()}.
      * Legacy 9.2.x servers never query these keys; NG servers can opt in.
      */
-    private final java.util.Map<String, List<String>> perPlayerCapabilities = new java.util.HashMap<>();
+    private final java.util.Map<String, List<String>> perPlayerCapabilities = new java.util.concurrent.ConcurrentHashMap<>();
     private final java.util.Map<String, String> perPlayerConstraintProperties = new java.util.HashMap<>();
+    /**
+     * Bumped every time {@link #refreshClientCapabilities()} detects the output
+     * sink changed mid-session (HDMI hotplug, TV/AVR on/off, surround toggle).
+     * Exposed to the server as the {@code SURFACE_CAPS_REVISION} property so it
+     * can tell a stale advertised surface set from a fresh one and re-query.
+     */
+    private final java.util.concurrent.atomic.AtomicInteger surfaceCapsRevision =
+            new java.util.concurrent.atomic.AtomicInteger(0);
+    private volatile long lastSinkRenegotiateAtMs = 0L;
     /**
      * Server-provided session player hint from CAP_EFFECTIVE_PLAYER.
      * Advisory only: local runtime decoder safety remains authoritative.
@@ -952,6 +961,149 @@ public class MiniClientConnection implements SageTVInputCallback
         client.prepareAudioPassthrough(passthroughCodecs);
         client.preparePerPlayerCapabilities(perPlayerCapabilities);
         preparePerPlayerConstraintProperties();
+
+        // Begin watching the output sink so a mid-session HDMI/TV/AVR change
+        // (phone gains an HDMI monitor, Shield's TV powers on/off or is swapped,
+        // surround-sound setting flips) re-advertises honest surface caps and
+        // prompts the server to re-evaluate the running stream. Idempotent:
+        // safe to call again on reconnect.
+        try
+        {
+            client.options().startSinkCapabilityMonitoring(new Runnable()
+            {
+                @Override public void run() { onSinkCapabilitiesChanged(); }
+            });
+        }
+        catch (Throwable t)
+        {
+            log.logError("Failed to start sink capability monitoring (non-fatal)", t);
+        }
+    }
+
+    /**
+     * Re-runs the platform capability probe and refreshes the live
+     * {@link #perPlayerCapabilities} map in place, so every subsequent server
+     * query (including a server-initiated {@code refreshPlaybackSurfaces()})
+     * returns the current sink truth. Bumps {@link #surfaceCapsRevision} when
+     * the rebuilt values differ from the previous ones.
+     *
+     * <p>Built into a private map first, then merged key-by-key into the live
+     * {@link java.util.concurrent.ConcurrentHashMap} so a concurrent reader on
+     * the GFX thread never observes a half-cleared map.</p>
+     *
+     * @return true if anything actually changed.
+     */
+    public boolean refreshClientCapabilities()
+    {
+        if (client == null) return false;
+        java.util.Map<String, List<String>> fresh = new java.util.HashMap<>();
+        try
+        {
+            client.preparePerPlayerCapabilities(fresh);
+        }
+        catch (Throwable t)
+        {
+            log.logError("refreshClientCapabilities: probe failed (keeping previous caps)", t);
+            return false;
+        }
+
+        boolean changed = false;
+        // Update / add keys present in the fresh probe.
+        for (java.util.Map.Entry<String, List<String>> e : fresh.entrySet())
+        {
+            List<String> old = perPlayerCapabilities.get(e.getKey());
+            if (old == null || !old.equals(e.getValue()))
+            {
+                changed = true;
+            }
+            perPlayerCapabilities.put(e.getKey(), e.getValue());
+        }
+        // Remove keys that vanished (e.g. AUDIO_MAX_CHANNELS became undetectable).
+        for (String key : new java.util.ArrayList<>(perPlayerCapabilities.keySet()))
+        {
+            if (!fresh.containsKey(key))
+            {
+                perPlayerCapabilities.remove(key);
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            int rev = surfaceCapsRevision.incrementAndGet();
+            log.logInfo("Client capabilities refreshed (rev=" + rev + "); AUDIO_MAX_CHANNELS="
+                    + perPlayerCapabilities.get("AUDIO_MAX_CHANNELS"));
+        }
+        return changed;
+    }
+
+    /**
+     * Called (on the platform's main thread) by the sink monitor when the
+     * audio/display OUTPUT sink changed. Refreshes advertised capabilities and,
+     * if the change is material during active NG playback, prompts the server to
+     * re-negotiate the running stream.
+     *
+     * <p>Legacy servers never negotiated surfaces, so
+     * {@link #isPlaybackSurfacesV1Negotiated()} is false and nothing beyond the
+     * (harmless) cap refresh happens &mdash; byte-for-byte unchanged there.</p>
+     */
+    public void onSinkCapabilitiesChanged()
+    {
+        if (client == null || !alive) return;
+        boolean changed = refreshClientCapabilities();
+        if (!changed || client == null) return;
+
+        if (!client.properties().getBoolean(PrefStore.Keys.renegotiate_on_sink_change, true))
+            return;
+        if (!isPlaybackSurfacesV1Negotiated()) return;
+        if (!alive || !firstFrameStarted) return;
+        if (!client.isVideoVisible()) return;
+
+        // Debounce: a hotplug can still emit a couple of coalesced signatures.
+        long now = System.currentTimeMillis();
+        if (now - lastSinkRenegotiateAtMs < 2500L) return;
+        lastSinkRenegotiateAtMs = now;
+
+        log.logInfo("Sink change during active NG playback — prompting server to re-negotiate "
+                + "(surfaceCapsRevision=" + surfaceCapsRevision.get() + ")");
+
+        // Primary, low-impact path: nudge the server. On an NG server that
+        // honors mid-stream surface changes this triggers a
+        // refreshPlaybackSurfaces() + re-decision with the fresh caps.
+        try { postMediaPlayerUpdateEvent(); }
+        catch (Throwable t) { log.logError("sink-change server nudge failed", t); }
+
+        // Opt-in hard path: force a media reconnect so the server re-exchanges
+        // capabilities for the current stream even if it does not act on the
+        // nudge. Off by default because it briefly interrupts playback; the
+        // media channel reconnects and the server resumes.
+        if (client.properties().getBoolean(PrefStore.Keys.force_reconnect_on_sink_change, false))
+        {
+            forceMediaReconnect();
+        }
+    }
+
+    /**
+     * Force the media channel to reconnect (same primitive as the server's
+     * {@code GFXCMD_MEDIA_RECONNECT}). The {@code MediaThread} sees the closed
+     * socket, tears down the current player, reconnects, and the server
+     * re-establishes the stream — re-exchanging capabilities in the process.
+     */
+    private void forceMediaReconnect()
+    {
+        try
+        {
+            java.net.Socket s = mediaSocket;
+            if (s != null)
+            {
+                log.logInfo("Forcing media reconnect to apply new sink capabilities");
+                s.close();
+            }
+        }
+        catch (Throwable t)
+        {
+            log.logError("forceMediaReconnect failed", t);
+        }
     }
 
     private void preparePerPlayerConstraintProperties()
@@ -1177,6 +1329,10 @@ public class MiniClientConnection implements SageTVInputCallback
 
     public void close() {
         alive = false;
+        try {
+            client.options().stopSinkCapabilityMonitoring();
+        } catch (Exception e) {
+        }
         try {
             client.setCurrentConnection(null);
         } catch (Exception e) {
@@ -2174,6 +2330,16 @@ public class MiniClientConnection implements SageTVInputCallback
                                 .getString(PrefStore.Keys.quality_hint_mode, "auto"));
                         propVal = hint;
                         log.logInfo("QUALITY_HINT -> '" + propVal + "'");
+                    }
+                    else if ("SURFACE_CAPS_REVISION".equals(propName))
+                    {
+                        // Monotonic counter bumped whenever the output sink changed
+                        // mid-session (HDMI hotplug, TV/AVR on/off, surround toggle)
+                        // and the advertised surface caps were rebuilt. Lets an NG
+                        // server detect that a previously-read surface set is stale
+                        // and re-query. Starts at 0; legacy servers never ask.
+                        propVal = String.valueOf(surfaceCapsRevision.get());
+                        log.logInfo("SURFACE_CAPS_REVISION -> '" + propVal + "'");
                     }
                     else if ("PLAYBACK_SURFACES".equals(propName))
                     {
@@ -3511,6 +3677,13 @@ public class MiniClientConnection implements SageTVInputCallback
         {
             return PlaybackSurfaceCanon.csv(
                     PlaybackSurfaceCanon.canonAudio(perPlayerCapabilities.get(aKey)));
+        }
+        if ("AUDIO_MAX_CHANNELS".equals(attr))
+        {
+            // Device-wide sink capability (same for every surface). Omitted as
+            // "" when undetectable so the server keeps its legacy default.
+            List<String> ch = perPlayerCapabilities.get("AUDIO_MAX_CHANNELS");
+            return (ch == null || ch.isEmpty()) ? "" : ch.get(0);
         }
         if ("CONTAINERS".equals(attr))
         {

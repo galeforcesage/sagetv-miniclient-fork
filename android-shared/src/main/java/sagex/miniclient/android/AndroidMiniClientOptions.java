@@ -52,6 +52,7 @@ public class AndroidMiniClientOptions implements MiniClientOptions {
     private boolean isTOUCH=false;
     private boolean advancedAspects=false;
     private Context context;
+    private sagex.miniclient.android.media.SinkCapabilityMonitor sinkMonitor;
 
     AndroidMiniClientOptions(Application ctx)
     {
@@ -313,8 +314,43 @@ public class AndroidMiniClientOptions implements MiniClientOptions {
         caps.put("EXO_AUDIO_CODECS", exoAudio);
         caps.put("IJK_AUDIO_CODECS", ijkAudio);
 
-        log.debug("Per-player capabilities prepared: EXO_VIDEO={} IJK_VIDEO={} EXO_AUDIO={} IJK_AUDIO={}",
-                  exoVideo.size(), ijkVideo.size(), exoAudio.size(), ijkAudio.size());
+        // Max OUTPUT channel capability of the current sink (device-wide, same
+        // for every surface). Advertised in PLAYBACK_SURFACE_<id>_AUDIO_MAX_CHANNELS
+        // so the NG server can size the audio mix (upgrade to 7.1, or avoid
+        // sending 5.1 to a stereo-only sink). Omitted when undetectable so the
+        // server keeps its legacy default.
+        int maxAudioChannels = CodecCapabilityDetector.getMaxOutputAudioChannels(context);
+        if (maxAudioChannels > 0)
+        {
+            caps.put("AUDIO_MAX_CHANNELS",
+                    java.util.Collections.singletonList(String.valueOf(maxAudioChannels)));
+        }
+
+        log.debug("Per-player capabilities prepared: EXO_VIDEO={} IJK_VIDEO={} EXO_AUDIO={} IJK_AUDIO={} maxAudioChannels={}",
+                  exoVideo.size(), ijkVideo.size(), exoAudio.size(), ijkAudio.size(), maxAudioChannels);
+    }
+
+    @Override
+    public synchronized void startSinkCapabilityMonitoring(final Runnable onChange)
+    {
+        if (sinkMonitor != null || context == null || onChange == null) return;
+        sinkMonitor = new sagex.miniclient.android.media.SinkCapabilityMonitor(
+                context,
+                new sagex.miniclient.android.media.SinkCapabilityMonitor.Listener()
+                {
+                    @Override public void onSinkCapabilitiesChanged() { onChange.run(); }
+                });
+        sinkMonitor.start();
+    }
+
+    @Override
+    public synchronized void stopSinkCapabilityMonitoring()
+    {
+        if (sinkMonitor != null)
+        {
+            sinkMonitor.stop();
+            sinkMonitor = null;
+        }
     }
 
     private static void addAllSageNames(List<String> dst, String[] names)

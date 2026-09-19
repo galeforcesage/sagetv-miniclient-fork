@@ -516,6 +516,95 @@ public final class CodecCapabilityDetector
                 || support == Ac4Support.DIRECT_AUDIO_RENDER;
     }
 
+    /**
+     * Best-effort detection of the maximum number of audio OUTPUT channels the
+     * current sink can carry &mdash; e.g. 2 for a phone speaker/headset, 6 for a
+     * 5.1 receiver, 8 for a 7.1 receiver. This is the value advertised in
+     * {@code PLAYBACK_SURFACE_<id>_AUDIO_MAX_CHANNELS} so the NG server can size
+     * the audio mix to the sink (upgrade to 7.1, or avoid pushing 5.1 to a
+     * stereo-only sink). It is a property of the output sink, not the decoder,
+     * so it is the same for every surface/player.
+     *
+     * <p>Primary signal is ExoPlayer's {@link AudioCapabilities}, which already
+     * folds together the HDMI EDID max-channel report, the Android TV
+     * "external surround sound" system setting, and passthrough encodings
+     * (the same source used by the passthrough codec probe above). It is
+     * corroborated by the per-device channel masks from
+     * {@link AudioDeviceInfo#getChannelCounts()} on the connected media outputs.</p>
+     *
+     * <p>The result is clamped to the [2, 8] range EAC3/7.1 can express.
+     * Returns {@code 0} only when the capability genuinely cannot be read
+     * (e.g. an exception on a broken device), so the caller can OMIT the
+     * advertisement and let the server apply its legacy default.</p>
+     */
+    public static int getMaxOutputAudioChannels(Context ctx)
+    {
+        if (ctx == null) return 0;
+        int best = 0;
+
+        // 1. ExoPlayer AudioCapabilities (authoritative, purpose-built).
+        try
+        {
+            AudioCapabilities caps = AudioCapabilities.getCapabilities(ctx);
+            if (caps != null)
+            {
+                best = Math.max(best, caps.getMaxChannelCount());
+            }
+        }
+        catch (Throwable ignored) { }
+
+        // 2. Corroborate with OS per-output-device channel masks. An empty
+        //    getChannelCounts() means "not limited/unknown" and is skipped.
+        if (Build.VERSION.SDK_INT >= 23)
+        {
+            try
+            {
+                AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
+                if (am != null)
+                {
+                    for (AudioDeviceInfo dev : am.getDevices(AudioManager.GET_DEVICES_OUTPUTS))
+                    {
+                        if (!isMediaOutputDevice(dev.getType())) continue;
+                        int[] counts = dev.getChannelCounts();
+                        if (counts != null)
+                        {
+                            for (int c : counts) best = Math.max(best, c);
+                        }
+                    }
+                }
+            }
+            catch (Throwable ignored) { }
+        }
+
+        if (best <= 0) return 0;              // unknown -> caller omits
+        if (best < 2) best = 2;               // never advertise below stereo
+        if (best > 8) best = 8;               // EAC3/7.1 ceiling
+        return best;
+    }
+
+    /** True for real media playback sinks (excludes earpiece/telephony/SCO). */
+    private static boolean isMediaOutputDevice(int type)
+    {
+        switch (type)
+        {
+            case AudioDeviceInfo.TYPE_HDMI:
+            case AudioDeviceInfo.TYPE_HDMI_ARC:
+            case AudioDeviceInfo.TYPE_AUX_LINE:
+            case AudioDeviceInfo.TYPE_LINE_ANALOG:
+            case AudioDeviceInfo.TYPE_LINE_DIGITAL:
+            case AudioDeviceInfo.TYPE_USB_DEVICE:
+            case AudioDeviceInfo.TYPE_USB_HEADSET:
+            case AudioDeviceInfo.TYPE_BUILTIN_SPEAKER:
+            case AudioDeviceInfo.TYPE_WIRED_HEADPHONES:
+            case AudioDeviceInfo.TYPE_WIRED_HEADSET:
+            case AudioDeviceInfo.TYPE_BLUETOOTH_A2DP:
+                return true;
+            default:
+                // Newer HDMI-eARC constant (API 31) without a hard compile dep.
+                return Build.VERSION.SDK_INT >= 31 && type == 29 /* TYPE_HDMI_EARC */;
+        }
+    }
+
     // ─── Codec runtime smoke test ─────────────────────────────────────────
     //
     // MediaCodecList can lie: devices register decoders that throw or silently

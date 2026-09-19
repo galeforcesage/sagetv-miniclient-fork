@@ -72,6 +72,32 @@ public interface MiniClientOptions {
     }
 
     /**
+     * Begin watching the device's audio/display OUTPUT sink for capability
+     * changes (HDMI plugged into a phone, a TV/AVR attached to a Shield powering
+     * on/off, the surround-sound setting flipping, etc.). When such a change is
+     * detected, {@code onChange} is invoked so the connection can re-run
+     * {@link #preparePerPlayerCapabilities(Map)} and prompt the server to
+     * re-evaluate the current stream.
+     *
+     * <p>Default no-op: platforms without dynamic-sink detection simply never
+     * fire the callback, so their advertised capabilities remain the ones
+     * captured at connect time (unchanged behavior).</p>
+     *
+     * @param onChange invoked on a platform thread when the sink changes; may be
+     *                 called zero or more times between start and stop.
+     */
+    default void startSinkCapabilityMonitoring(Runnable onChange)
+    {
+        // no-op by default
+    }
+
+    /** Stop watching the output sink; safe to call even if never started. */
+    default void stopSinkCapabilityMonitoring()
+    {
+        // no-op by default
+    }
+
+    /**
      * Schema-v2 helper: returns whether the platform/player path can safely
      * render interlaced content for the given SageTV video codec token.
      *

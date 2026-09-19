@@ -387,6 +387,25 @@ public interface PrefStore
         String cap_playback_surfaces_v1 = "cap_playback_surfaces_v1";
 
         /**
+         * When the audio/display OUTPUT sink changes mid-session (HDMI plugged
+         * into a phone, a TV/AVR attached to a Shield powering on/off, the
+         * surround-sound setting flipping), re-advertise honest surface caps and
+         * nudge the server (via a MEDIA_PLAYER_UPDATE event) to re-evaluate the
+         * running stream. Default {@code true}. Inherently a no-op against a
+         * legacy server (surfaces were never negotiated). Debug kill-switch.
+         */
+        String renegotiate_on_sink_change = "renegotiate_on_sink_change";
+
+        /**
+         * Escalation for {@link #renegotiate_on_sink_change}: additionally force
+         * a media reconnect so the server re-exchanges capabilities for the
+         * current stream even if it does not act on the nudge. Briefly interrupts
+         * playback (the media channel reconnects and the server resumes), so this
+         * is OFF by default and opt-in.
+         */
+        String force_reconnect_on_sink_change = "force_reconnect_on_sink_change";
+
+        /**
          * NG 4K contract: local-enhancement policy advertised via
          * {@code LOCAL_ENHANCEMENT}. DEPRECATED as a user pref: the single
          * Never/Auto/Always control ({@link #quality_hint_mode}) now drives the
