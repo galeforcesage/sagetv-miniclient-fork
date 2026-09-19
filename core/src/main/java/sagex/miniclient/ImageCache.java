@@ -17,7 +17,15 @@ public class ImageCache
     private long offlineImageCacheLimit;
     private File cacheDir;
     private final MiniClient client;
-    private long imageCacheSize;
+    // Running total of cached texture bytes. Mutated from both the GFX thread
+    // (synchronous put/unload) and the background image-decode thread (async
+    // put), so it must be atomic to keep the budget accounting consistent.
+    private final java.util.concurrent.atomic.AtomicLong imageCacheSize = new java.util.concurrent.atomic.AtomicLong(0);
+    // Bytes we charged the cache for, keyed by handle. Lets put()/unloadImage()
+    // add and subtract the exact same amount even when a handle is replaced
+    // (e.g. an async 1x1 placeholder later swapped for the real bitmap), so the
+    // running total never drifts or double-counts.
+    private final java.util.concurrent.ConcurrentHashMap<Integer, Long> accountedSize = new java.util.concurrent.ConcurrentHashMap<Integer, Long>();
     // Access-order LRU (getOldestImage relies on iteration order) wrapped for
     // thread-safety now that image decode happens off the UI thread. Iterate
     // only inside synchronized(lruImageMap) per Collections.synchronizedMap.
@@ -42,10 +50,10 @@ public class ImageCache
      */
     public boolean canCache(int width, int height)
     {
-        boolean canDo =  (width * height * 4 + imageCacheSize) <= imageCacheLimit;
+        boolean canDo =  ((long) width * height * 4 + imageCacheSize.get()) <= imageCacheLimit;
         if (!canDo)
         {
-            log.logDebug("Can't cache {" + width + " }x{" + height + "} (" + Utils.toMB(width*height*4) + "mb).  Not enough room.  Cache Size: " + Utils.toMB(imageCacheSize) + "; Cache Limit: " + Utils.toMB(imageCacheLimit));
+            log.logDebug("Can't cache {" + width + " }x{" + height + "} (" + Utils.toMB(width*height*4) + "mb).  Not enough room.  Cache Size: " + Utils.toMB(imageCacheSize.get()) + "; Cache Limit: " + Utils.toMB(imageCacheLimit));
         }
         return canDo;
     }
@@ -53,7 +61,8 @@ public class ImageCache
     public void cleanUp()
     {
         log.logDebug("Resetting up in-memory cache states");
-        imageCacheSize=0;
+        imageCacheSize.set(0);
+        accountedSize.clear();
         lruImageMap.clear();
         if (imageMap.size()>0)
         {
@@ -83,11 +92,18 @@ public class ImageCache
             log.logWarning("ImageCache.put(" + imghandle + ") has image with different handle " + img.getHandle(), new Exception());
         }
         imageMap.put(imghandle, img);
-        imageCacheSize += width * height * 4;
+        // Charge the cache the delta versus whatever this handle was previously
+        // charged (0 if new). Replacing a handle in place — e.g. the async
+        // decode swapping its 1x1 placeholder for the real bitmap — must not
+        // double-count, or the running total drifts above the real usage and
+        // wedges the cache (canCache never succeeds again).
+        long newBytes = (long) width * height * 4;
+        Long prev = accountedSize.put(imghandle, newBytes);
+        long total = imageCacheSize.addAndGet(newBytes - (prev != null ? prev : 0L));
 
         if (VerboseLogging.DETAILED_IMAGE_CACHE)
         {
-            log.logDebug("Added " + imghandle + " with size: " + width + "x" + height + " (" + Utils.toMB(width*height*4) + "mb); Cache " + Utils.toMB(imageCacheSize) + "mb/" + Utils.toMB(imageCacheLimit)+ "mb)");
+            log.logDebug("Added " + imghandle + " with size: " + width + "x" + height + " (" + Utils.toMB(newBytes) + "mb); Cache " + Utils.toMB(total) + "mb/" + Utils.toMB(imageCacheLimit)+ "mb)");
         }
     }
 
@@ -101,7 +117,7 @@ public class ImageCache
             }
         }
 
-        while (width * height * 4 + imageCacheSize > imageCacheLimit)
+        while ((long) width * height * 4 + imageCacheSize.get() > imageCacheLimit)
         {
             // Keep freeing the oldest image until we have enough memory
             // to do this
@@ -124,7 +140,7 @@ public class ImageCache
         }
         if (VerboseLogging.DETAILED_IMAGE_CACHE)
         {
-            log.logDebug("Cache " + Utils.toMB(imageCacheSize) + "mb/" + Utils.toMB(imageCacheSize) + "mb");
+            log.logDebug("Cache " + Utils.toMB(imageCacheSize.get()) + "mb/" + Utils.toMB(imageCacheLimit) + "mb");
         }
     }
 
@@ -136,14 +152,20 @@ public class ImageCache
     public void unloadImage(int handle) {
         ImageHolder bi = imageMap.get(handle);
         imageMap.remove(handle);
+        Long acct = accountedSize.remove(handle);
         if (bi != null) {
-            imageCacheSize -= (bi.getWidth() * bi.getHeight() * 4);
+            // Free exactly what we charged for this handle (falling back to the
+            // holder's own dimensions if, for some reason, it was never tracked).
+            long freed = (acct != null) ? acct : ((long) bi.getWidth() * bi.getHeight() * 4);
+            long total = imageCacheSize.addAndGet(-freed);
             if (VerboseLogging.DETAILED_IMAGE_CACHE) {
 
-                log.logDebug("Unloaded " + handle + " with size: " + bi.getWidth() + "x" +  bi.getHeight() + " (" + Utils.toMB(bi.getWidth() *bi.getHeight()*4) + "mb); Cache " + Utils.toMB(imageCacheSize) + "mb/" + Utils.toMB(imageCacheLimit)+ "mb)");
+                log.logDebug("Unloaded " + handle + " with size: " + bi.getWidth() + "x" +  bi.getHeight() + " (" + Utils.toMB(freed) + "mb); Cache " + Utils.toMB(total) + "mb/" + Utils.toMB(imageCacheLimit)+ "mb)");
             }
             bi.dispose();
         } else {
+            // Holder already gone but we may still be charged for it — reconcile.
+            if (acct != null) imageCacheSize.addAndGet(-acct);
             if (VerboseLogging.DETAILED_IMAGE_CACHE) {
                 log.logDebug("Unloaded: " + handle + ", but was not in the cache" );
             }

@@ -97,6 +97,9 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     MediaSessionCompat mediaSession;
 
     private SubtitleView subView;
+    // External-display caption view (Path B): when non-null, cues render on the
+    // TV overlay instead of the phone's subView so CC follows the video.
+    private volatile SubtitleView externalSubView;
 
     // EQ audio-session tracking (fed to EqManager for on-device vs server EQ)
     private int eqSessionId = 0;
@@ -456,6 +459,76 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 catch (Throwable t)
                 {
                     log.logError("reattachVideoSurface (Exo) failed", t);
+                }
+            }
+        });
+    }
+
+    @Override
+    public void setPreferredAudioOutput(final android.media.AudioDeviceInfo device)
+    {
+        if (android.os.Build.VERSION.SDK_INT < 23) return;
+        final ExoPlayer p = player;
+        if (p == null) return;
+        context.runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                try
+                {
+                    // ExoPlayer routes decoded audio to this sink; null restores
+                    // the system default. Lets audio follow the video to the TV.
+                    p.setPreferredAudioDevice(device);
+                    log.logInfo("ExoPlayer preferred audio device -> "
+                            + (device == null ? "default" : ("type=" + device.getType())));
+                }
+                catch (Throwable t)
+                {
+                    log.logError("setPreferredAudioOutput (Exo) failed", t);
+                }
+            }
+        });
+    }
+
+    @Override
+    public void attachExternalSubtitleContainer(final android.widget.FrameLayout container)
+    {
+        context.runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                try
+                {
+                    // Detach any previous external caption view first.
+                    if (externalSubView != null)
+                    {
+                        android.view.ViewParent parent = externalSubView.getParent();
+                        if (parent instanceof android.view.ViewGroup)
+                        {
+                            ((android.view.ViewGroup) parent).removeView(externalSubView);
+                        }
+                        externalSubView = null;
+                    }
+                    if (container != null)
+                    {
+                        SubtitleView tv = new SubtitleView(container.getContext());
+                        tv.setLayoutParams(new FrameLayout.LayoutParams(
+                                FrameLayout.LayoutParams.MATCH_PARENT,
+                                FrameLayout.LayoutParams.MATCH_PARENT));
+                        container.addView(tv);
+                        externalSubView = tv;
+                        log.logInfo("Captions routed to external display overlay");
+                    }
+                    else
+                    {
+                        log.logInfo("Captions routed back to phone overlay");
+                    }
+                }
+                catch (Throwable t)
+                {
+                    log.logError("attachExternalSubtitleContainer failed", t);
                 }
             }
         });
@@ -1311,9 +1384,11 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             @Override
             public void onCues(List<Cue> cues)
             {
-                if (showCaptions && subView != null)
-
-                    subView.setCues(cues);
+                if (!showCaptions) return;
+                // Route captions to the TV overlay while casting, else the phone.
+                SubtitleView target = (externalSubView != null) ? externalSubView : subView;
+                if (target != null)
+                    target.setCues(cues);
             }
         });
 

@@ -388,3 +388,78 @@ resolution" should mean for the NG enhancement contract.
   (partially done via `ExternalDisplayController.logModes`).
 - Re-validate `DISPLAY_SINK_RESOLUTION` / `DISPLAY_REFRESH_RATES` /
   `DISPLAY_HDR_TYPES` against the chosen policy on a real 4K TV + HDMI 2.0 path.
+
+### Phase 2 (in progress): surface-move (Path B), no session teardown
+
+Shipped on the mobile flavor (opt-in `auto_move_to_tv`, default OFF): when an
+extended display appears mid-playback, only the *video output surface* is
+re-targeted onto an `ExternalVideoPresentation` on the TV -- the activity,
+`MiniClientConnection`, and native player all stay alive, so playback position
+and seek state are preserved (no `closeConnection()`, no reconnect, none of the
+Phase 1 activity-relaunch race). Audio follows via ExoPlayer
+`setPreferredAudioDevice` (HDMI/ARC/eARC/DeX/USB), the phone auto-raises the
+on-phone control OSD (`NAV_OSD` -> `NavigationFragment`: play/pause/stop/ff/rew/
+skip/ch), and the phone is force-locked to landscape while casting. Fold/unfold
+is absorbed in-process (`screenLayout|smallestScreenSize|density` added to the
+video activities' `configChanges`) so the session survives flips. Core logic
+lives in `ExternalVideoSurfaceController` +
+`BaseMediaPlayerImpl.reattachVideoSurface/setPreferredAudioOutput`.
+
+**Known limitation — live-TV / IJK audio + captions stay on the phone.**
+Audio-follow and caption-follow are **ExoPlayer-only**. Live TV is delivered as
+an MPEG-PS `PUSH:` stream, which `PlayerSelectionUtil.isDeliveryProgramStream`
+deliberately routes to **IJK** (Exo's PsExtractor can't demux it). IJK exposes
+no public API to re-target its audio to an HDMI sink, and its `setSubtitleTrack`
+is a documented no-op — so on the live-TV path neither audio nor CC follow the
+video onto the TV. Worse, live-TV captions aren't player-rendered at all: SageTV
+draws them on the **server** as ordinary GFX commands (`GFXCMD2` DRAWTEXT /
+textures) into the single GL OSD surface that is `setZOrderOnTop(true)` over the
+video. Path B moves only the video surface, so that entire server OSD layer
+(menus, trickplay bar, *and* live-TV CC) stays on the phone by design. There is
+no separable "CC channel" to peel off. Getting the OSD/CC onto the TV for the
+live-TV path would require a distinct **OSD-mirror mode** (render the GL OSD to a
+second surface on the presentation), tracked separately below. Validate the Exo
+audio/CC follow with a **recording** (not live TV), which uses Exo.
+
+### TODO: OSD-mirror mode (bring the server GL OSD / live-TV CC onto the TV)
+
+**Why:** Path B is "clean video on the TV, controls on the phone" — it moves only
+the decoded video surface. The SageTV UI (menus, trickplay bar) and live-TV
+closed captions are all server-drawn GFX composited into one phone GL surface
+(`setZOrderOnTop(true)`), so they never reach the TV. Users who want on-screen
+info/CC on the TV during live TV need the OSD there too.
+
+**Scope / approach (future):**
+- Mirror the libGDX/GL OSD render target to a second surface hosted by
+  `ExternalVideoPresentation` (shared GL context / second eglSurface, or blit the
+  framebuffer each frame), keeping the phone copy for touch control.
+- Make it opt-in and independent of the video surface move so B1 ("clean video +
+  phone controls") remains the default.
+- No new server protocol is needed — the OSD is already a GFX stream; this is
+  purely a client-side second-surface render. Keep legacy `GFXCMD2` byte
+  compatibility intact.
+
+### TODO: bring surface-move (Path B) to the mobile offline / downloaded player
+
+**Why:** Path B currently only covers *server-connected* playback (the
+`MiniClientConnection` media path). The mobile offline player
+(`android-offline` / `OfflinePlaybackActivity`) plays locally-downloaded
+recordings without a server session, so attaching a TV mid-playback does not
+move the video, audio, or controls onto the TV.
+
+**Scope / approach:**
+- Either (a) wire `OfflinePlaybackActivity` into the existing
+  `ExternalVideoSurfaceController` by giving it a hot-swappable surface holder +
+  a player handle the controller can reach (it currently resolves the player via
+  `MiniClientConnection.getMediaCmd().getPlaya()`, which offline lacks), or
+  (b) factor the surface-move/audio-route/OSD/orientation logic into a small
+  reusable helper both the connected and offline activities call.
+- Offline has no server to nudge (`DISPLAY_SINK_RESOLUTION`), so the
+  sink-resolution override + `onSinkCapabilitiesChanged()` nudge are no-ops
+  there; just move the surface + audio and present at the TV's native size.
+- Reuse the same opt-in pref (`auto_move_to_tv`) and the mobile-only
+  `feature_external_display` gate.
+- Offline already has its own orientation toggle
+  (`OfflinePlaybackActivity` -> `OrientationController.cycleAndApply`), so the
+  same "lock landscape while casting / restore on detach" applies.
+

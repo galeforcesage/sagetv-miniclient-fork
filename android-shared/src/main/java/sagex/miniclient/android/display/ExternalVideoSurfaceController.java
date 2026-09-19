@@ -4,6 +4,8 @@ import android.app.Activity;
 import android.app.Application;
 import android.content.Context;
 import android.hardware.display.DisplayManager;
+import android.media.AudioDeviceInfo;
+import android.media.AudioManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -17,10 +19,14 @@ import org.slf4j.LoggerFactory;
 
 import sagex.miniclient.MiniClient;
 import sagex.miniclient.MiniPlayerPlugin;
+import sagex.miniclient.SageCommand;
 import sagex.miniclient.android.MiniclientApplication;
 import sagex.miniclient.android.R;
+import sagex.miniclient.android.events.HideNavigationEvent;
 import sagex.miniclient.android.video.BaseMediaPlayerImpl;
+import sagex.miniclient.android.video.OrientationController;
 import sagex.miniclient.prefs.PrefStore;
+import sagex.miniclient.uibridge.EventRouter;
 
 /**
  * Path B (surface move) — mid-session external-display output <b>without any
@@ -253,6 +259,16 @@ public final class ExternalVideoSurfaceController implements DisplayManager.Disp
             // Advertise the TV's resolution and prompt the server to upscale.
             ExternalDisplayController.setSinkResolutionOverrideDisplayId(extId);
             nudgeServer();
+            // Audio follows the video onto the TV (best-effort; Exo only).
+            routeAudioToExternal();
+            // Closed captions follow the video onto the TV overlay (Exo only).
+            routeCaptionsToExternal();
+            // While casting, keep the phone locked to landscape regardless of the
+            // user's orientation mode or a fold — the TV presentation is separate.
+            lockPhoneLandscape();
+            // Phone would otherwise be black during playback — raise the on-phone
+            // control OSD (Play/Pause/Stop/FF/REW/Skip/Ch±) so controls are visible.
+            showPhoneOsd();
             log.info("Video now presenting on external display id={}", extId);
         }
         catch (Throwable t)
@@ -272,6 +288,10 @@ public final class ExternalVideoSurfaceController implements DisplayManager.Disp
             reattachPlayer(getPhoneHolder());
             ExternalDisplayController.setSinkResolutionOverrideDisplayId(-1);
             nudgeServer();
+            routeAudioToPhone();
+            routeCaptionsToPhone();
+            hidePhoneOsd();
+            restorePhoneOrientation();
         }
         catch (Throwable t)
         {
@@ -295,6 +315,10 @@ public final class ExternalVideoSurfaceController implements DisplayManager.Disp
             reattachPlayer(getPhoneHolder());
             ExternalDisplayController.setSinkResolutionOverrideDisplayId(-1);
             nudgeServer();
+            routeAudioToPhone();
+            routeCaptionsToPhone();
+            hidePhoneOsd();
+            restorePhoneOrientation();
             dismissPresentation();
         }
         catch (Throwable t)
@@ -314,18 +338,221 @@ public final class ExternalVideoSurfaceController implements DisplayManager.Disp
         if (holder == null) return;
         try
         {
-            MiniClient client = MiniclientApplication.get().getClient();
-            if (client == null || client.getCurrentConnection() == null
-                    || client.getCurrentConnection().getMediaCmd() == null) return;
-            MiniPlayerPlugin playa = client.getCurrentConnection().getMediaCmd().getPlaya();
-            if (playa instanceof BaseMediaPlayerImpl)
+            BaseMediaPlayerImpl playa = getActivePlayer();
+            if (playa != null)
             {
-                ((BaseMediaPlayerImpl) playa).reattachVideoSurface(holder);
+                playa.reattachVideoSurface(holder);
             }
         }
         catch (Throwable t)
         {
             log.warn("reattachPlayer failed", t);
+        }
+    }
+
+    private BaseMediaPlayerImpl getActivePlayer()
+    {
+        try
+        {
+            MiniClient client = MiniclientApplication.get().getClient();
+            if (client == null || client.getCurrentConnection() == null
+                    || client.getCurrentConnection().getMediaCmd() == null) return null;
+            MiniPlayerPlugin playa = client.getCurrentConnection().getMediaCmd().getPlaya();
+            return (playa instanceof BaseMediaPlayerImpl) ? (BaseMediaPlayerImpl) playa : null;
+        }
+        catch (Throwable t)
+        {
+            return null;
+        }
+    }
+
+    // ── audio follow ──────────────────────────────────────────────────────
+    private void routeAudioToExternal()
+    {
+        BaseMediaPlayerImpl playa = getActivePlayer();
+        if (playa == null) return;
+        AudioDeviceInfo dev = findExternalAudioDevice();
+        if (dev != null)
+        {
+            log.info("Routing audio to external sink type={}", dev.getType());
+            playa.setPreferredAudioOutput(dev);
+        }
+        else
+        {
+            log.info("No external audio sink found — audio left on the default route");
+        }
+    }
+
+    private void routeAudioToPhone()
+    {
+        BaseMediaPlayerImpl playa = getActivePlayer();
+        if (playa != null) playa.setPreferredAudioOutput(null);
+    }
+
+    // ── caption follow ────────────────────────────────────────────────────
+    /**
+     * Move <em>player-rendered</em> captions onto the TV overlay. This only
+     * applies to the ExoPlayer path (file / recording playback), where CC is a
+     * decoded subtitle track drawn into a client-side {@code SubtitleView};
+     * {@link BaseMediaPlayerImpl#attachExternalSubtitleContainer} redirects that
+     * view into the presentation's overlay.
+     *
+     * <p><b>Live-TV / IJK caveat:</b> for the live-TV MPEG-PS push path (which
+     * runs on IJK, not Exo — see {@code PlayerSelectionUtil.isDeliveryProgramStream})
+     * this is a no-op, because those captions are <em>not</em> player-rendered.
+     * SageTV draws live-TV CC on the <em>server</em> as ordinary GFX commands
+     * ({@code GFXCMD2} DRAWTEXT / textures) into the single GL OSD surface that
+     * is {@code setZOrderOnTop(true)} over the video. Path B moves only the video
+     * surface, so that whole server OSD layer — menus, trickplay bar, and
+     * live-TV CC alike — intentionally stays on the phone. There is no separable
+     * "CC channel" to peel off onto the TV; bringing it across would require
+     * mirroring the entire GL OSD to the external display (a future OSD-mirror
+     * mode), not this per-player subtitle hook.</p>
+     */
+    private void routeCaptionsToExternal()
+    {
+        BaseMediaPlayerImpl playa = getActivePlayer();
+        if (playa == null || presentation == null) return;
+        android.widget.FrameLayout container = presentation.getSubtitleContainer();
+        if (container != null) playa.attachExternalSubtitleContainer(container);
+    }
+
+    private void routeCaptionsToPhone()
+    {
+        BaseMediaPlayerImpl playa = getActivePlayer();
+        if (playa != null) playa.attachExternalSubtitleContainer(null);
+    }
+
+    /**
+     * Pick the most TV-like output sink: HDMI / HDMI-ARC / HDMI-eARC first, then
+     * a DeX dock, then USB. Returns {@code null} when nothing external is
+     * present so audio stays on the phone.
+     */
+    private AudioDeviceInfo findExternalAudioDevice()
+    {
+        try
+        {
+            if (Build.VERSION.SDK_INT < 23) return null;
+            AudioManager am = (AudioManager) app.getSystemService(Context.AUDIO_SERVICE);
+            if (am == null) return null;
+            AudioDeviceInfo[] outs = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
+            if (outs == null) return null;
+            AudioDeviceInfo best = null;
+            int bestScore = 0;
+            for (AudioDeviceInfo d : outs)
+            {
+                if (d == null || !d.isSink()) continue;
+                int score = audioSinkScore(d.getType());
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    best = d;
+                }
+            }
+            return best;
+        }
+        catch (Throwable t)
+        {
+            log.warn("findExternalAudioDevice failed", t);
+            return null;
+        }
+    }
+
+    private int audioSinkScore(int type)
+    {
+        if (Build.VERSION.SDK_INT >= 31 && type == AudioDeviceInfo.TYPE_HDMI_EARC) return 96;
+        switch (type)
+        {
+            case AudioDeviceInfo.TYPE_HDMI:       return 100;
+            case AudioDeviceInfo.TYPE_HDMI_ARC:   return 95;
+            case AudioDeviceInfo.TYPE_DOCK:       return 60; // DeX / desktop dock
+            case AudioDeviceInfo.TYPE_USB_DEVICE: return 55;
+            case AudioDeviceInfo.TYPE_USB_HEADSET:return 50;
+            default:                              return 0;
+        }
+    }
+
+    // ── on-phone control OSD ──────────────────────────────────────────────
+    private void showPhoneOsd()
+    {
+        try
+        {
+            MiniClient client = MiniclientApplication.get().getClient();
+            if (client == null || client.getCurrentConnection() == null) return;
+            // NAV_OSD -> ShowNavigationEvent -> the on-phone control panel
+            // (Play/Pause/Stop/FF/REW/Skip/Ch±), same overlay a swipe raises.
+            EventRouter.postCommand(client, SageCommand.NAV_OSD);
+        }
+        catch (Throwable t)
+        {
+            log.warn("showPhoneOsd failed", t);
+        }
+    }
+
+    private void hidePhoneOsd()
+    {
+        try
+        {
+            MiniClient client = MiniclientApplication.get().getClient();
+            if (client != null && client.eventbus() != null)
+            {
+                client.eventbus().post(HideNavigationEvent.INSTANCE);
+            }
+        }
+        catch (Throwable ignore)
+        {
+        }
+    }
+
+    // ── phone orientation while casting ───────────────────────────────────
+    private void lockPhoneLandscape()
+    {
+        try
+        {
+            final Activity host = MiniclientApplication.get().getCurrentActivity();
+            if (host == null) return;
+            host.runOnUiThread(new Runnable()
+            {
+                @Override
+                public void run()
+                {
+                    try
+                    {
+                        host.setRequestedOrientation(
+                                android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+                    }
+                    catch (Throwable t)
+                    {
+                        log.warn("lockPhoneLandscape failed", t);
+                    }
+                }
+            });
+        }
+        catch (Throwable t)
+        {
+            log.warn("lockPhoneLandscape failed", t);
+        }
+    }
+
+    private void restorePhoneOrientation()
+    {
+        try
+        {
+            final Activity host = MiniclientApplication.get().getCurrentActivity();
+            if (host == null) return;
+            host.runOnUiThread(new Runnable()
+            {
+                @Override
+                public void run()
+                {
+                    // Re-apply the user's chosen orientation mode (default landscape).
+                    OrientationController.apply(host);
+                }
+            });
+        }
+        catch (Throwable t)
+        {
+            log.warn("restorePhoneOrientation failed", t);
         }
     }
 

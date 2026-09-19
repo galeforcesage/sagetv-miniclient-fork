@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        Half-size navigation OSD icons for touch phones in landscape. When the
+        video is moved to a TV the phone is force-locked to landscape and becomes
+        the control surface, and on small/short screens the full-size (55dp)
+        d-pad grid does not fit vertically (the downloads row overlaps nav_down).
+        Scoped to land + finger so tablets (values-w820dp, higher precedence) and
+        Android TV (values-notouch) keep the full size, and portrait keeps 36dp.
+    -->
+    <dimen name="nav_icon_size">28dp</dimen>
+    <dimen name="nav_icon_padding">3dp</dimen>
+</resources>

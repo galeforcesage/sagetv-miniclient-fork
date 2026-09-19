@@ -869,6 +869,13 @@ public class GFXCMD2 {
                                     if (img != null) {
                                         img.setHandle(asyncHandle);
                                         img.setDecodePending(false);
+                                        // Enforce the cache budget before charging
+                                        // the decoded bitmap. The other load paths
+                                        // (LOADIMAGETARGETED / targeted PREPIMAGE)
+                                        // call makeRoom(); this async path historically
+                                        // did not, so decoded images accumulated past
+                                        // the limit and permanently wedged the cache.
+                                        client.getImageCache().makeRoom(img.getWidth(), img.getHeight());
                                         client.getImageCache().put(asyncHandle, img, img.getWidth(), img.getHeight());
                                         windowManager.registerTexture(img);
                                     } else {

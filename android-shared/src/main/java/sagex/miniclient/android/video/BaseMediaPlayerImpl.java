@@ -1001,6 +1001,30 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     }
 
     /**
+     * Route this player's AUDIO output to a specific device (e.g. the HDMI/DeX
+     * sink when the video has been moved to an external display), or
+     * {@code null} to restore the system default route. Default no-op;
+     * ExoPlayer overrides it (IjkPlayer has no public per-track routing API).
+     * Used by {@code ExternalVideoSurfaceController} so audio follows the video
+     * onto the TV.
+     */
+    public void setPreferredAudioOutput(final android.media.AudioDeviceInfo device)
+    {
+        // default: players without per-track device routing keep the system route.
+    }
+
+    /**
+     * Attach a caption/subtitle overlay container living on the external display
+     * so closed captions follow the video onto the TV, or {@code null} to render
+     * captions back on the phone. Default no-op; ExoPlayer overrides it (Ijk CC
+     * routing is not wired). Called by {@code ExternalVideoSurfaceController}.
+     */
+    public void attachExternalSubtitleContainer(final android.widget.FrameLayout container)
+    {
+        // default: no external caption routing.
+    }
+
+    /**
      * The {@link SurfaceHolder} a freshly-created player should bind its output
      * to. Normally the phone's {@code R.id.video_surface}; but when a Path B
      * external-display presentation is already up (see

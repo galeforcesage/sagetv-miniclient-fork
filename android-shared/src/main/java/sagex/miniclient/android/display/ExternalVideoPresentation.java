@@ -43,6 +43,7 @@ public final class ExternalVideoPresentation extends Presentation
 
     private final Callback callback;
     private SurfaceView surfaceView;
+    private FrameLayout subtitleContainer;
 
     public ExternalVideoPresentation(Context outerContext, Display display, Callback callback)
     {
@@ -54,6 +55,16 @@ public final class ExternalVideoPresentation extends Presentation
     public SurfaceHolder getSurfaceHolder()
     {
         return (surfaceView != null) ? surfaceView.getHolder() : null;
+    }
+
+    /**
+     * @return a full-bleed overlay container above the video surface into which
+     * the player can attach a caption/subtitle view so CC follows the video onto
+     * the TV. {@code null} before onCreate.
+     */
+    public FrameLayout getSubtitleContainer()
+    {
+        return subtitleContainer;
     }
 
     @Override
@@ -71,6 +82,13 @@ public final class ExternalVideoPresentation extends Presentation
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     Gravity.CENTER);
             root.addView(surfaceView, lp);
+
+            // Caption overlay above the video so CC can be rendered on the TV.
+            subtitleContainer = new FrameLayout(getContext());
+            root.addView(subtitleContainer, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT));
+
             setContentView(root);
 
             surfaceView.getHolder().addCallback(new SurfaceHolder.Callback()
