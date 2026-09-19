@@ -121,6 +121,39 @@ public final class ExternalVideoSurfaceController implements DisplayManager.Disp
         }
     }
 
+    /**
+     * Re-apply audio + caption routing to the <em>currently active</em> player
+     * if a Path B external presentation is up.
+     *
+     * <p>Needed because {@link #onExternalReady} routes audio/captions once, when
+     * the TV surface first becomes ready. A playback <em>started later</em> while
+     * already presenting binds straight to the TV surface via
+     * {@link #getActiveExternalHolderIfReady()} but is a brand-new player that
+     * missed that routing pass — so without this its audio would stay on the
+     * phone. Players call this once they are fully constructed and ready (Exo
+     * {@code STATE_READY}).</p>
+     */
+    public static void reapplyExternalRoutingIfPresenting()
+    {
+        try
+        {
+            final ExternalVideoSurfaceController c = INSTANCE;
+            if (c == null || !c.presenting) return;
+            c.main.post(new Runnable()
+            {
+                @Override public void run()
+                {
+                    if (!c.presenting) return;
+                    c.routeAudioToExternal();
+                    c.routeCaptionsToExternal();
+                }
+            });
+        }
+        catch (Throwable ignore)
+        {
+        }
+    }
+
     // ── DisplayListener ───────────────────────────────────────────────────
     @Override public void onDisplayAdded(int displayId)   { schedule(); }
     @Override public void onDisplayRemoved(int displayId) { schedule(); }

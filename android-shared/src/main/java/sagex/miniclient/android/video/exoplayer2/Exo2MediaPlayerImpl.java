@@ -1292,6 +1292,14 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                     log.logDebug("Player.STATE_READY - Debugging available tracks in file");
                     debugAvailableTracks();
 
+                    // If a Path B external presentation is up and this playback
+                    // started while already presenting, it bound straight to the
+                    // TV surface but missed onExternalReady's audio/caption pass.
+                    // Re-apply now that the player is ready so audio (and Exo CC)
+                    // follow the video onto the TV instead of staying on the phone.
+                    sagex.miniclient.android.display.ExternalVideoSurfaceController
+                            .reapplyExternalRoutingIfPresenting();
+
                     long duration = 0;
 
                     if(player.getDuration() < 0)
