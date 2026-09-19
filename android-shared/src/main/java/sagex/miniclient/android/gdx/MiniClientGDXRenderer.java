@@ -820,6 +820,12 @@ public class MiniClientGDXRenderer implements ApplicationListener, UIRenderer<Gd
      */
     private Display getActiveDisplay() {
         try {
+            // Path B (surface move): when video is presented on an external
+            // display while the activity stays on the phone, the honest NG 4K
+            // sink is that external panel, so report from the override display.
+            Display override = sagex.miniclient.android.display.ExternalDisplayController
+                    .getSinkResolutionOverrideDisplay(activity.getContext());
+            if (override != null) return override;
             WindowManager wm = (WindowManager) activity.getSystemService(Context.WINDOW_SERVICE);
             return (wm != null) ? wm.getDefaultDisplay() : null;
         } catch (Throwable t) {

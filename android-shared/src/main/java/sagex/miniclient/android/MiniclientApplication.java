@@ -125,6 +125,14 @@ public class MiniclientApplication extends Application
         // session so playback can follow it onto the TV and back. All gates are
         // internal (mobile flavour, prefs, API, active connection), so this is a
         // no-op on TV builds and mirror-only phones.
+        //
+        // Path B (surface move, race-free, position-preserving): presents the
+        // video on the external display and re-targets the running player's
+        // surface without any activity relaunch or session teardown. Gated by
+        // the "Automatically move to TV" checkbox (default OFF).
+        sagex.miniclient.android.display.ExternalVideoSurfaceController.install(this);
+        // Legacy Path A (activity relaunch) relocator: retained but inert unless
+        // its own opt-in pref (auto_switch_display_on_hdmi, default OFF) is set.
         sagex.miniclient.android.display.ExternalDisplayAutoRelocator.install(this);
 
         try

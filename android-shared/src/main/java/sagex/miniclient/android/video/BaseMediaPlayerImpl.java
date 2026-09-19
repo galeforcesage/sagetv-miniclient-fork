@@ -1,6 +1,7 @@
 package sagex.miniclient.android.video;
 
 import android.os.Looper;
+import android.view.SurfaceHolder;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 
@@ -978,6 +979,50 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
             log.debug("updatePlayerView: Video Size {}, Screen Size {}, Calculated: {}", videoInfo, videoInfo.destRect, rect);
 
         updatePlayerView(rect);
+    }
+
+    /**
+     * Runtime re-target of the decoder's output {@link SurfaceHolder} to a
+     * different surface (e.g. a {@link android.app.Presentation} on an external
+     * display) <b>without tearing down the player, the connection, or the
+     * stream</b>. Default no-op; IJK and ExoPlayer override it. Passing the
+     * phone's own {@code R.id.video_surface} holder moves output back to the
+     * phone. Because the demux / decode / network session is left completely
+     * untouched, playback position and all seek state are preserved &mdash;
+     * this is the surface-move primitive that lets us follow an HDMI/DeX
+     * attach without a session reset (see
+     * {@code sagex.miniclient.android.display.ExternalVideoSurfaceController}).
+     *
+     * @param holder the surface to render into; must be a live (created) holder.
+     */
+    public void reattachVideoSurface(final SurfaceHolder holder)
+    {
+        // default: players that cannot hot-swap their output surface do nothing.
+    }
+
+    /**
+     * The {@link SurfaceHolder} a freshly-created player should bind its output
+     * to. Normally the phone's {@code R.id.video_surface}; but when a Path B
+     * external-display presentation is already up (see
+     * {@code ExternalVideoSurfaceController}), a playback <em>started</em> while
+     * presenting must bind directly to the TV surface instead of the phone.
+     */
+    protected SurfaceHolder resolveInitialVideoHolder()
+    {
+        try
+        {
+            SurfaceHolder ext = sagex.miniclient.android.display.ExternalVideoSurfaceController
+                    .getActiveExternalHolderIfReady();
+            if (ext != null)
+            {
+                log.debug("Binding new playback to external presentation surface");
+                return ext;
+            }
+        }
+        catch (Throwable ignore)
+        {
+        }
+        return ((android.view.SurfaceView) context.getVideoView()).getHolder();
     }
 
     public void updatePlayerView(final Rectangle rect)

@@ -30,6 +30,50 @@ public final class ExternalDisplayController
     private ExternalDisplayController() { }
 
     /**
+     * Display id whose resolution should be advertised as
+     * {@code DISPLAY_SINK_RESOLUTION} regardless of where the UI activity lives.
+     * Set by {@link ExternalVideoSurfaceController} while video is being
+     * presented on an external display (Path B: the activity stays on the phone,
+     * so the honest sink is the external panel, not the phone). {@code -1} means
+     * "no override — read the activity's active display".
+     */
+    private static volatile int sinkResolutionOverrideDisplayId = -1;
+
+    /** Overrides the display used for the NG 4K sink report; {@code -1} clears it. */
+    public static void setSinkResolutionOverrideDisplayId(int displayId)
+    {
+        sinkResolutionOverrideDisplayId = displayId;
+    }
+
+    /** @return the sink-resolution override display id, or {@code -1} when none. */
+    public static int getSinkResolutionOverrideDisplayId()
+    {
+        return sinkResolutionOverrideDisplayId;
+    }
+
+    /**
+     * @return the {@link Display} to report the NG 4K sink from when an override
+     *   is active (video presented on an external panel), or {@code null} when
+     *   there is no override / it cannot be resolved (caller falls back to the
+     *   activity's active display).
+     */
+    public static Display getSinkResolutionOverrideDisplay(Context ctx)
+    {
+        int id = sinkResolutionOverrideDisplayId;
+        if (id < 0 || ctx == null) return null;
+        try
+        {
+            DisplayManager dm = (DisplayManager) ctx.getSystemService(Context.DISPLAY_SERVICE);
+            return (dm != null) ? dm.getDisplay(id) : null;
+        }
+        catch (Throwable t)
+        {
+            log.warn("getSinkResolutionOverrideDisplay failed for id={}", id, t);
+            return null;
+        }
+    }
+
+    /**
      * @return the display id of a usable external/extended presentation display,
      *         or {@code -1} when none is present (including mirror-only setups).
      */

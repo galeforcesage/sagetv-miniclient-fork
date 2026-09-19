@@ -103,6 +103,8 @@
 
     <string name="use_opengl_ui_title">Use OpenGL UI</string>
     <string name="use_opengl_ui_summary">OpenGL UI is a new version of the UI that should perform better</string>
+    <string name="auto_move_to_tv_title">Automatically move to TV</string>
+    <string name="auto_move_to_tv_summary">When an HDMI/DeX monitor is attached during playback, show the video full-screen on the TV (controls stay on the phone). Video and playback position are preserved — no reconnect.</string>
 
     <string name="key_repeat_ms_title">Key Repeat Speed (ms)</string>
     <string name="key_repeat_ms_summary">How long, in Milliseconds, each key will repeat when held</string>

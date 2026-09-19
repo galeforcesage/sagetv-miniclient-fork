@@ -196,6 +196,32 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     }
 
     @Override
+    public void reattachVideoSurface(final android.view.SurfaceHolder holder)
+    {
+        final IMediaPlayer p = player;
+        if (p == null || holder == null) return;
+        context.runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                try
+                {
+                    // Hot-swaps the decoder's output surface. IJK keeps the
+                    // demux/decode/network session running, so position and all
+                    // seek state survive the move (no restream, no reconnect).
+                    p.setDisplay(holder);
+                    log.info("IJK video surface re-targeted (surface move)");
+                }
+                catch (Throwable t)
+                {
+                    log.error("reattachVideoSurface (IJK) failed", t);
+                }
+            }
+        });
+    }
+
+    @Override
     public void pause()
     {
 
@@ -309,7 +335,7 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
             }
             IjkMediaPlayer.native_setLogLevel(IjkMediaPlayer.IJK_LOG_ERROR);
 
-            player.setDisplay(((SurfaceView) context.getVideoView()).getHolder());
+            player.setDisplay(resolveInitialVideoHolder());
 
             ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-avc", 1); // enable hardware acceleration
             ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-hevc", 1); // enable hardware acceleration

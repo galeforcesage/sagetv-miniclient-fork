@@ -430,6 +430,22 @@ public interface PrefStore
         String pause_during_display_move = "pause_during_display_move";
 
         /**
+         * Mobile only. User-facing master switch (General settings, checkbox
+         * "Automatically move to TV") for Path B mid-session external-display
+         * output: when a genuine extended external display (HDMI / DeX /
+         * DisplayPort) appears while a session is running, present the decoded
+         * <em>video</em> full-screen on it and re-target the running player's
+         * surface there &mdash; <b>without</b> tearing down the activity,
+         * connection or player (position/seek preserved), leaving the SageTV OSD
+         * and controls on the phone. The external panel's resolution is then
+         * advertised as {@code DISPLAY_SINK_RESOLUTION} so the server upscales.
+         * Default {@code false} (opt-in). Gated additionally by the mobile-flavor
+         * {@code feature_external_display} resource; mirror-only phones never
+         * expose an extended display so it simply never triggers there.
+         */
+        String auto_move_to_tv = "auto_move_to_tv";
+
+        /**
          * NG 4K contract: local-enhancement policy advertised via
          * {@code LOCAL_ENHANCEMENT}. DEPRECATED as a user pref: the single
          * Never/Auto/Always control ({@link #quality_hint_mode}) now drives the

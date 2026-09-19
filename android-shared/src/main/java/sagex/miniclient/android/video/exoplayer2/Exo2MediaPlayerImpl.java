@@ -437,6 +437,31 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     }
 
     @Override
+    public void reattachVideoSurface(final android.view.SurfaceHolder holder)
+    {
+        final ExoPlayer p = player;
+        if (p == null || holder == null) return;
+        context.runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                try
+                {
+                    // Hot-swaps ExoPlayer's output surface with the running
+                    // pipeline intact — position and seek state are preserved.
+                    p.setVideoSurface(holder.getSurface());
+                    log.logInfo("ExoPlayer video surface re-targeted (surface move)");
+                }
+                catch (Throwable t)
+                {
+                    log.logError("reattachVideoSurface (Exo) failed", t);
+                }
+            }
+        });
+    }
+
+    @Override
     public void pause()
     {
         log.logDebug("Pause called");
@@ -1429,7 +1454,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
         //player.setSeekParameters(SeekParameters.CLOSEST_SYNC);
 
         // start playing
-        player.setVideoSurface(((SurfaceView) context.getVideoView()).getHolder().getSurface());
+        player.setVideoSurface(resolveInitialVideoHolder().getSurface());
         player.setPlayWhenReady(true);
 
         //Create Media Session

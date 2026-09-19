@@ -169,6 +169,16 @@ public class UIActivityLifeCycleHandler<UIRenderType extends UIRenderer> impleme
             if (r != null) r.onUiResumed(activity);
         }
         catch (Throwable ignore) { }
+
+        // Path B surface-move controller: re-evaluate on resume (an external
+        // display may have appeared/disappeared while backgrounded).
+        try
+        {
+            sagex.miniclient.android.display.ExternalVideoSurfaceController c =
+                    sagex.miniclient.android.display.ExternalVideoSurfaceController.get();
+            if (c != null) c.onUiResumed(activity);
+        }
+        catch (Throwable ignore) { }
     }
 
     /**
@@ -244,6 +254,15 @@ public class UIActivityLifeCycleHandler<UIRenderType extends UIRenderer> impleme
         {
             if (client.properties().getBoolean(Keys.app_destroy_on_pause, true))
             {
+                try
+                {
+                    sagex.miniclient.android.display.ExternalVideoSurfaceController c =
+                            sagex.miniclient.android.display.ExternalVideoSurfaceController.get();
+                    if (c != null) c.onSessionClosing();
+                }
+                catch (Throwable ignore)
+                {
+                }
                 try
                 {
                     client.closeConnection();
@@ -432,6 +451,15 @@ public class UIActivityLifeCycleHandler<UIRenderType extends UIRenderer> impleme
         try
         {
 
+            try
+            {
+                sagex.miniclient.android.display.ExternalVideoSurfaceController c =
+                        sagex.miniclient.android.display.ExternalVideoSurfaceController.get();
+                if (c != null) c.onSessionClosing();
+            }
+            catch (Throwable ignore)
+            {
+            }
             client.closeConnection();
         }
         catch (Throwable t)
