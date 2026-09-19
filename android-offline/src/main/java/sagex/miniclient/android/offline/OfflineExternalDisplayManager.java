@@ -191,15 +191,18 @@ public final class OfflineExternalDisplayManager implements DisplayManager.Displ
 
     private void moveToPhone(String why) {
         log.info("Offline: returning video to phone — {}", why);
+        // Restore the phone audio route BEFORE the host recreates the IJK player,
+        // so its new AudioTrack is born on the phone speaker (the manager's
+        // counterpart to born-on-HDMI when moving out).
+        Activity a = host.getActivity();
+        if (a != null) restoreDefaultAudioRoute(a);
         // Re-target BEFORE dismissing so the decoder never renders into a dead
         // surface during the move.
-        Activity a = host.getActivity();
         try {
             host.onExternalDisplayLost();
         } catch (Throwable t) {
             log.warn("Offline: onExternalDisplayLost failed", t);
         }
-        if (a != null) restoreDefaultAudioRoute(a);
         dismissPresentation();
         presenting = false;
     }

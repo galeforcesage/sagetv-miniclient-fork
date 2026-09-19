@@ -1344,6 +1344,37 @@ public class OfflinePlaybackActivity extends Activity
         closeIjkPfdQuietly();
     }
 
+    /**
+     * Rebuild the IJK player on {@code holder}, resuming at the current
+     * position. Used when moving playback between the phone and the TV: IJK
+     * exposes no way to retarget its internal AudioTrack, but a freshly created
+     * player picks up whichever audio route is currently active, so recreating
+     * while the desired (HDMI or phone) route is selected lands audio on the
+     * right sink. This is the app-side stand-in for a native
+     * {@code AudioTrack.setPreferredDevice()} patch.
+     */
+    private void recreateIjkOnSurface(SurfaceHolder holder) {
+        if (!usingIjkPlayer || mediaUri == null) return;
+        long pos = 0L;
+        try {
+            if (ijkPlayer != null) pos = Math.max(0L, ijkPlayer.getCurrentPosition());
+        } catch (Throwable ignored) { }
+        requestedStartPositionMs = pos;
+        releaseIjkPlayer();
+        final Uri uri = mediaUri;
+        if (holder != null && holder.getSurface() != null && holder.getSurface().isValid()) {
+            startIjkPlayer(uri, holder);
+        } else if (holder != null) {
+            holder.addCallback(new SurfaceHolder.Callback() {
+                @Override public void surfaceCreated(SurfaceHolder h) { startIjkPlayer(uri, h); }
+                @Override public void surfaceChanged(SurfaceHolder h, int f, int w, int hh) { }
+                @Override public void surfaceDestroyed(SurfaceHolder h) { }
+            });
+        } else {
+            log.warn("offline_ijk_recreate_no_surface pos={}", pos);
+        }
+    }
+
     private String formatTime(long millis) {
         if (millis < 0) {
             return "--:--";
@@ -1400,9 +1431,14 @@ public class OfflinePlaybackActivity extends Activity
             public void run() {
                 try {
                     if (usingIjkPlayer) {
-                        // IJK has no preferred-audio-device API, so audio stays
-                        // on the phone for the IJK fallback path (rare offline).
-                        if (ijkPlayer != null) ijkPlayer.setDisplay(holder);
+                        // IJK exposes no per-player audio-device API and will not
+                        // migrate an already-playing AudioTrack. So we recreate
+                        // the player here: the manager has just selected the HDMI
+                        // live-audio route, so the new AudioTrack is *born* on the
+                        // TV (exactly how it already works on the Shield, where
+                        // HDMI is the default route). This moves both video and
+                        // audio to the TV.
+                        recreateIjkOnSurface(holder);
                     } else if (player != null) {
                         player.setVideoSurfaceHolder(holder);
                         if (Build.VERSION.SDK_INT >= 23 && audioSink != null) {
@@ -1429,9 +1465,13 @@ public class OfflinePlaybackActivity extends Activity
             public void run() {
                 try {
                     if (usingIjkPlayer) {
-                        if (ijkPlayer != null && ijkSurfaceView != null) {
-                            ijkPlayer.setDisplay(ijkSurfaceView.getHolder());
-                        }
+                        // The manager has already restored the phone audio route,
+                        // so recreating the player now makes its new AudioTrack be
+                        // born on the phone speaker again (and re-targets video to
+                        // the phone surface).
+                        SurfaceHolder phoneHolder =
+                                (ijkSurfaceView != null) ? ijkSurfaceView.getHolder() : null;
+                        recreateIjkOnSurface(phoneHolder);
                     } else if (player != null) {
                         View sv = (playerView != null) ? playerView.getVideoSurfaceView() : null;
                         if (sv instanceof SurfaceView) {
