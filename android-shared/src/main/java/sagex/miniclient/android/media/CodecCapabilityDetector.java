@@ -525,12 +525,15 @@ public final class CodecCapabilityDetector
      * stereo-only sink). It is a property of the output sink, not the decoder,
      * so it is the same for every surface/player.
      *
-     * <p>Primary signal is ExoPlayer's {@link AudioCapabilities}, which already
-     * folds together the HDMI EDID max-channel report, the Android TV
-     * "external surround sound" system setting, and passthrough encodings
-     * (the same source used by the passthrough codec probe above). It is
-     * corroborated by the per-device channel masks from
-     * {@link AudioDeviceInfo#getChannelCounts()} on the connected media outputs.</p>
+     * <p>Primary signal is the <b>currently active output route</b>'s own
+     * {@link AudioDeviceInfo#getChannelCounts()} — the sink audio is actually
+     * flowing to right now (built-in speaker, wired/USB headset, Bluetooth, or
+     * HDMI). For an HDMI/eARC route with no explicit counts, or on a television,
+     * ExoPlayer's {@link AudioCapabilities} (HDMI EDID + Android TV "external
+     * surround sound" setting + passthrough encodings) supplies/floors the value.
+     * This deliberately does <em>not</em> take the max across every attached
+     * device, so a phone on its stereo speaker (or a stereo USB-C&rarr;HDMI
+     * adapter) advertises 2, not a phantom 8.</p>
      *
      * <p>The result is clamped to the [2, 8] range EAC3/7.1 can express.
      * Returns {@code 0} only when the capability genuinely cannot be read
@@ -540,46 +543,168 @@ public final class CodecCapabilityDetector
     public static int getMaxOutputAudioChannels(Context ctx)
     {
         if (ctx == null) return 0;
-        int best = 0;
 
-        // 1. ExoPlayer AudioCapabilities (authoritative, purpose-built).
+        // Prefer the channel count of the *currently active* output route, not
+        // the max across every attached device. On a phone this means the sink
+        // that audio is actually flowing to right now — the built-in stereo
+        // speaker, or a stereo-only USB-C->HDMI adapter — so we never claim 5.1
+        // to a stereo route. When the sink changes (HDMI hotplug, TV/AVR toggle)
+        // the SinkCapabilityMonitor re-invokes this and the advertised value
+        // tracks the new active route.
+        int active = getActiveRouteChannels(ctx);
+        if (active > 0) return clampChannels(active);
+
+        // Fallback when the active route can't be resolved (API < 23, or an
+        // empty device list): ExoPlayer's AudioCapabilities folds together the
+        // HDMI EDID max-channel report, the Android TV "external surround sound"
+        // system setting, and passthrough encodings.
+        int exo = exoPlayerMaxChannels(ctx);
+        return (exo > 0) ? clampChannels(exo) : 0;   // 0 -> caller omits
+    }
+
+    /**
+     * @return the channel count of the currently-active media OUTPUT route, or
+     *   {@code 0} when it cannot be resolved. The active route is chosen from the
+     *   connected output devices by routing priority (a plugged headset/HDMI wins
+     *   over the built-in speaker), and its own {@link AudioDeviceInfo#getChannelCounts()}
+     *   is used. For an HDMI/eARC route that reports no explicit counts we fall
+     *   back to the EDID/global surround value (ExoPlayer); on a television that
+     *   value is also used as a floor so an AVR that under-reports channels via
+     *   {@code AudioDeviceInfo} is not clamped down to stereo.
+     */
+    private static int getActiveRouteChannels(Context ctx)
+    {
+        if (Build.VERSION.SDK_INT < 23) return 0;
+        try
+        {
+            AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
+            if (am == null) return 0;
+
+            AudioDeviceInfo chosen = null;
+            int chosenPriority = Integer.MIN_VALUE;
+            int chosenCh = 0;
+            for (AudioDeviceInfo dev : am.getDevices(AudioManager.GET_DEVICES_OUTPUTS))
+            {
+                int type = dev.getType();
+                if (!isMediaOutputDevice(type)) continue;
+                int priority = routePriority(type);
+                int ch = maxOf(dev.getChannelCounts());
+                if (priority > chosenPriority
+                        || (priority == chosenPriority && ch > chosenCh))
+                {
+                    chosen = dev;
+                    chosenPriority = priority;
+                    chosenCh = ch;
+                }
+            }
+            if (chosen == null) return 0;
+
+            int type = chosen.getType();
+            if (isHdmiFamily(type))
+            {
+                int exo = exoPlayerMaxChannels(ctx);
+                if (isTelevision(ctx))
+                {
+                    // TV/AVR: EDID is authoritative; take the higher of the two
+                    // so an under-reporting AudioDeviceInfo never caps surround.
+                    return Math.max(chosenCh, exo);
+                }
+                // Phone/tablet HDMI: trust the concrete route (a stereo adapter
+                // must not be inflated to 5.1 by the global ExoPlayer value).
+                return (chosenCh > 0) ? chosenCh : exo;
+            }
+            // Wired/USB/BT/line/speaker: the device's own count, else stereo.
+            return (chosenCh > 0) ? chosenCh : 2;
+        }
+        catch (Throwable ignored)
+        {
+            return 0;
+        }
+    }
+
+    /** ExoPlayer's aggregate max channel count for the current output, or 0. */
+    private static int exoPlayerMaxChannels(Context ctx)
+    {
         try
         {
             AudioCapabilities caps = AudioCapabilities.getCapabilities(ctx);
-            if (caps != null)
-            {
-                best = Math.max(best, caps.getMaxChannelCount());
-            }
+            return (caps != null) ? Math.max(0, caps.getMaxChannelCount()) : 0;
         }
-        catch (Throwable ignored) { }
-
-        // 2. Corroborate with OS per-output-device channel masks. An empty
-        //    getChannelCounts() means "not limited/unknown" and is skipped.
-        if (Build.VERSION.SDK_INT >= 23)
+        catch (Throwable ignored)
         {
-            try
-            {
-                AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
-                if (am != null)
-                {
-                    for (AudioDeviceInfo dev : am.getDevices(AudioManager.GET_DEVICES_OUTPUTS))
-                    {
-                        if (!isMediaOutputDevice(dev.getType())) continue;
-                        int[] counts = dev.getChannelCounts();
-                        if (counts != null)
-                        {
-                            for (int c : counts) best = Math.max(best, c);
-                        }
-                    }
-                }
-            }
-            catch (Throwable ignored) { }
+            return 0;
         }
+    }
 
-        if (best <= 0) return 0;              // unknown -> caller omits
-        if (best < 2) best = 2;               // never advertise below stereo
-        if (best > 8) best = 8;               // EAC3/7.1 ceiling
+    private static int maxOf(int[] counts)
+    {
+        int best = 0;
+        if (counts != null) for (int c : counts) best = Math.max(best, c);
         return best;
+    }
+
+    private static int clampChannels(int ch)
+    {
+        if (ch < 2) return 2;    // never advertise below stereo
+        if (ch > 8) return 8;    // EAC3/7.1 ceiling
+        return ch;
+    }
+
+    /**
+     * Rough Android media-routing precedence used to pick the active sink when
+     * several are connected. Higher wins. Only relative ordering matters.
+     */
+    private static int routePriority(int type)
+    {
+        switch (type)
+        {
+            case AudioDeviceInfo.TYPE_WIRED_HEADSET:
+            case AudioDeviceInfo.TYPE_WIRED_HEADPHONES:
+                return 100;
+            case AudioDeviceInfo.TYPE_USB_HEADSET:
+                return 95;
+            case AudioDeviceInfo.TYPE_BLUETOOTH_A2DP:
+                return 90;
+            case AudioDeviceInfo.TYPE_HDMI:
+            case AudioDeviceInfo.TYPE_HDMI_ARC:
+                return 80;
+            case AudioDeviceInfo.TYPE_USB_DEVICE:
+                return 70;
+            case AudioDeviceInfo.TYPE_AUX_LINE:
+            case AudioDeviceInfo.TYPE_LINE_ANALOG:
+            case AudioDeviceInfo.TYPE_LINE_DIGITAL:
+                return 60;
+            case AudioDeviceInfo.TYPE_BUILTIN_SPEAKER:
+                return 10;
+            default:
+                // API 31 HDMI-eARC (no hard compile dep).
+                if (Build.VERSION.SDK_INT >= 31 && type == 29 /* TYPE_HDMI_EARC */) return 80;
+                return 0;
+        }
+    }
+
+    private static boolean isHdmiFamily(int type)
+    {
+        if (type == AudioDeviceInfo.TYPE_HDMI || type == AudioDeviceInfo.TYPE_HDMI_ARC) return true;
+        return Build.VERSION.SDK_INT >= 31 && type == 29 /* TYPE_HDMI_EARC */;
+    }
+
+    /** True on Android TV / leanback / television UI-mode devices (Shield, etc.). */
+    private static boolean isTelevision(Context ctx)
+    {
+        try
+        {
+            if (ctx.getPackageManager()
+                    .hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK))
+                return true;
+            int mode = ctx.getResources().getConfiguration().uiMode
+                    & android.content.res.Configuration.UI_MODE_TYPE_MASK;
+            return mode == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION;
+        }
+        catch (Throwable ignored)
+        {
+            return false;
+        }
     }
 
     /** True for real media playback sinks (excludes earpiece/telephony/SCO). */

@@ -121,6 +121,12 @@ public class MiniclientApplication extends Application
         // In the online-only flavour this is a no-op.
         OfflineModuleBridge.init(this, client);
 
+        // Watch for an extended external display appearing/disappearing mid
+        // session so playback can follow it onto the TV and back. All gates are
+        // internal (mobile flavour, prefs, API, active connection), so this is a
+        // no-op on TV builds and mirror-only phones.
+        sagex.miniclient.android.display.ExternalDisplayAutoRelocator.install(this);
+
         try
         {
             Intent i = new Intent(getBaseContext(), MiniclientService.class);

@@ -406,6 +406,26 @@ public interface PrefStore
         String force_reconnect_on_sink_change = "force_reconnect_on_sink_change";
 
         /**
+         * Mobile only. When a genuine extended external display appears while a
+         * session is running (e.g. an HDMI/DeX monitor plugged into the phone
+         * mid-playback), automatically relocate the SageTV UI onto it (phone
+         * becomes the remote) and, on unplug, bring it back to the phone — the
+         * same relocation the connect-time path performs, just triggered live.
+         * Gated additionally by {@link #play_on_external_display} and the
+         * mobile-flavor {@code feature_external_display} resource. Default
+         * {@code true}; set false to require the manual "Play on TV" path.
+         */
+        String auto_switch_display_on_hdmi = "auto_switch_display_on_hdmi";
+
+        /**
+         * When relocating the UI between displays mid-playback, first send the
+         * server a PAUSE and, once the new surface is up, a PLAY — so the decoder
+         * never runs into a torn-down surface (important for live TV). Default
+         * {@code true}; set false if the server round-trip is undesirable.
+         */
+        String pause_during_display_move = "pause_during_display_move";
+
+        /**
          * NG 4K contract: local-enhancement policy advertised via
          * {@code LOCAL_ENHANCEMENT}. DEPRECATED as a user pref: the single
          * Never/Auto/Always control ({@link #quality_hint_mode}) now drives the

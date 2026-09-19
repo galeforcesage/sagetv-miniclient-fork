@@ -1051,7 +1051,16 @@ public class MiniClientConnection implements SageTVInputCallback
     {
         if (client == null || !alive) return;
         boolean changed = refreshClientCapabilities();
-        if (!changed || client == null) return;
+        if (client == null) return;
+
+        // Note: a sink/display topology change can leave the derived numeric
+        // caps (AUDIO_MAX_CHANNELS, codec dims) byte-identical while the LIVE
+        // properties served on demand — most importantly DISPLAY_SINK_RESOLUTION
+        // (the external monitor's size) — have changed. So we prompt the server
+        // to re-query on ANY sink change, not only when refreshClientCapabilities
+        // reports a diff.
+        log.logInfo("Sink topology changed (caps " + (changed ? "changed" : "unchanged")
+                + ", surfaceCapsRevision=" + surfaceCapsRevision.get() + ")");
 
         if (!client.properties().getBoolean(PrefStore.Keys.renegotiate_on_sink_change, true))
             return;

@@ -159,6 +159,16 @@ public class UIActivityLifeCycleHandler<UIRenderType extends UIRenderer> impleme
 
         hideSystemUI(activity);
         applyExternalDisplayPreferences(activity);
+
+        // Tell the mid-session relocator where the video UI actually landed
+        // (which display), and let it resume playback if a move just completed.
+        try
+        {
+            sagex.miniclient.android.display.ExternalDisplayAutoRelocator r =
+                    sagex.miniclient.android.display.ExternalDisplayAutoRelocator.get();
+            if (r != null) r.onUiResumed(activity);
+        }
+        catch (Throwable ignore) { }
     }
 
     /**
