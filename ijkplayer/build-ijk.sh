@@ -25,6 +25,24 @@ if [ ! -d ijkplayer/.git ] ; then
     git clone https://github.com/Bilibili/ijkplayer.git ijkplayer
 fi
 
+# Apply SageTV-NG native patches on top of the pristine upstream ijkplayer tree.
+# Currently: IjkMediaPlayer.setPreferredAudioDevice -> AudioTrack.setPreferredDevice
+# so IJK audio can follow video to an external (HDMI/DeX) display without a full
+# stream restart. Idempotent: skips patches that are already applied.
+PATCH_DIR="$(cd "$(dirname "$0")" && pwd)/patches"
+if [ -d "$PATCH_DIR" ]; then
+    for p in "$PATCH_DIR"/*.patch; do
+        [ -f "$p" ] || continue
+        if git -C ijkplayer apply --reverse --check "$p" >/dev/null 2>&1; then
+            echo "Patch already applied: $(basename "$p")"
+        elif git -C ijkplayer apply --check "$p" >/dev/null 2>&1; then
+            git -C ijkplayer apply "$p" && echo "Applied patch: $(basename "$p")"
+        else
+            echo "WARNING: could not apply patch (skipping): $(basename "$p")"
+        fi
+    done
+fi
+
 export COMMON_FF_CFG_FLAGS="$COMMON_FF_CFG_FLAGS --disable-linux-perf"
 export COMMON_FF_CFG_FLAGS="$COMMON_FF_CFG_FLAGS --extra-ldflags=-Wl,-z,max-page-size=16384"
 

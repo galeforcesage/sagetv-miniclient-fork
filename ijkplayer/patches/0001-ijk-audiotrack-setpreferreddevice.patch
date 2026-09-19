@@ -1,0 +1,140 @@
+diff --git a/android/ijkplayer/ijkplayer-java/src/main/java/tv/danmaku/ijk/media/player/IjkMediaPlayer.java b/android/ijkplayer/ijkplayer-java/src/main/java/tv/danmaku/ijk/media/player/IjkMediaPlayer.java
+index beb73f76..39d98d68 100755
+--- a/android/ijkplayer/ijkplayer-java/src/main/java/tv/danmaku/ijk/media/player/IjkMediaPlayer.java
++++ b/android/ijkplayer/ijkplayer-java/src/main/java/tv/danmaku/ijk/media/player/IjkMediaPlayer.java
+@@ -25,6 +25,8 @@ import android.content.Context;
+ import android.content.res.AssetFileDescriptor;
+ import android.graphics.SurfaceTexture;
+ import android.graphics.Rect;
++import android.media.AudioDeviceInfo;
++import android.media.AudioTrack;
+ import android.media.MediaCodecInfo;
+ import android.media.MediaCodecList;
+ import android.media.RingtoneManager;
+@@ -1063,6 +1065,35 @@ public final class IjkMediaPlayer extends AbstractMediaPlayer {
+      * that the native code is safe from the object disappearing from underneath
+      * it. (This is the cookie passed to native_setup().)
+      */
++    // ── SageTV-NG: route IJK audio to a specific output device (HDMI/DeX) ──
++    // Static because the internal AudioTrack is created deep in the SDL audio
++    // output, disconnected from any player instance; this app plays one stream
++    // at a time so a process-wide preference is sufficient. The IJK counterpart
++    // to ExoPlayer's setPreferredAudioDevice.
++    private static volatile AudioDeviceInfo sPreferredAudioDevice;
++
++    /**
++     * Pin this player's audio to a specific output device (e.g. an HDMI sink).
++     * Applied to the internal AudioTrack each time it is (re)created. Pass
++     * {@code null} to clear the preference (return to default system routing).
++     */
++    public void setPreferredAudioDevice(AudioDeviceInfo device) {
++        sPreferredAudioDevice = device;
++    }
++
++    /** Called from native right after the internal AudioTrack is (re)created. */
++    @CalledByNative
++    private static void applyPreferredAudioDevice(AudioTrack track) {
++        try {
++            if (track != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
++                // A null device resets the track to default system routing.
++                track.setPreferredDevice(sPreferredAudioDevice);
++            }
++        } catch (Throwable t) {
++            DebugLog.printStackTrace(t);
++        }
++    }
++
+     @CalledByNative
+     private static void postEventFromNative(Object weakThiz, int what,
+             int arg1, int arg2, Object obj) {
+diff --git a/ijkmedia/ijkj4a/j4a/class/tv/danmaku/ijk/media/player/IjkMediaPlayer.c b/ijkmedia/ijkj4a/j4a/class/tv/danmaku/ijk/media/player/IjkMediaPlayer.c
+index cfeebf39..70bb51a9 100644
+--- a/ijkmedia/ijkj4a/j4a/class/tv/danmaku/ijk/media/player/IjkMediaPlayer.c
++++ b/ijkmedia/ijkj4a/j4a/class/tv/danmaku/ijk/media/player/IjkMediaPlayer.c
+@@ -30,6 +30,7 @@ typedef struct J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer {
+     jmethodID method_postEventFromNative;
+     jmethodID method_onSelectCodec;
+     jmethodID method_onNativeInvoke;
++    jmethodID method_applyPreferredAudioDevice;
+ } J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer;
+ static J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer class_J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer;
+ 
+@@ -122,6 +123,17 @@ void J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer__postEventFromNative__catch
+     J4A_ExceptionCheck__catchAll(env);
+ }
+ 
++void J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer__applyPreferredAudioDevice(JNIEnv *env, jobject audioTrack)
++{
++    (*env)->CallStaticVoidMethod(env, class_J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer.id, class_J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer.method_applyPreferredAudioDevice, audioTrack);
++}
++
++void J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer__applyPreferredAudioDevice__catchAll(JNIEnv *env, jobject audioTrack)
++{
++    J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer__applyPreferredAudioDevice(env, audioTrack);
++    J4A_ExceptionCheck__catchAll(env);
++}
++
+ jstring J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer__onSelectCodec(JNIEnv *env, jobject weakThiz, jstring mimeType, jint profile, jint level)
+ {
+     return (*env)->CallStaticObjectMethod(env, class_J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer.id, class_J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer.method_onSelectCodec, weakThiz, mimeType, profile, level);
+@@ -382,6 +394,13 @@ int J4A_loadClass__J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer(JNIEnv *env)
+     if (class_J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer.method_onNativeInvoke == NULL)
+         goto fail;
+ 
++    class_id = class_J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer.id;
++    name     = "applyPreferredAudioDevice";
++    sign     = "(Landroid/media/AudioTrack;)V";
++    class_J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer.method_applyPreferredAudioDevice = J4A_GetStaticMethodID__catchAll(env, class_id, name, sign);
++    if (class_J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer.method_applyPreferredAudioDevice == NULL)
++        goto fail;
++
+     J4A_ALOGD("J4ALoader: OK: '%s' loaded\n", "tv.danmaku.ijk.media.player.IjkMediaPlayer");
+     ret = 0;
+ fail:
+diff --git a/ijkmedia/ijkj4a/j4a/class/tv/danmaku/ijk/media/player/IjkMediaPlayer.h b/ijkmedia/ijkj4a/j4a/class/tv/danmaku/ijk/media/player/IjkMediaPlayer.h
+index e89eb263..8e595d9f 100644
+--- a/ijkmedia/ijkj4a/j4a/class/tv/danmaku/ijk/media/player/IjkMediaPlayer.h
++++ b/ijkmedia/ijkj4a/j4a/class/tv/danmaku/ijk/media/player/IjkMediaPlayer.h
+@@ -38,6 +38,8 @@ void J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer__mNativeAndroidIO__set(JNIE
+ void J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer__mNativeAndroidIO__set__catchAll(JNIEnv *env, jobject thiz, jlong value);
+ void J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer__postEventFromNative(JNIEnv *env, jobject weakThiz, jint what, jint arg1, jint arg2, jobject obj);
+ void J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer__postEventFromNative__catchAll(JNIEnv *env, jobject weakThiz, jint what, jint arg1, jint arg2, jobject obj);
++void J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer__applyPreferredAudioDevice(JNIEnv *env, jobject audioTrack);
++void J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer__applyPreferredAudioDevice__catchAll(JNIEnv *env, jobject audioTrack);
+ jstring J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer__onSelectCodec(JNIEnv *env, jobject weakThiz, jstring mimeType, jint profile, jint level);
+ jstring J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer__onSelectCodec__catchAll(JNIEnv *env, jobject weakThiz, jstring mimeType, jint profile, jint level);
+ jstring J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer__onSelectCodec__asGlobalRef__catchAll(JNIEnv *env, jobject weakThiz, jstring mimeType, jint profile, jint level);
+@@ -68,6 +70,8 @@ int J4A_loadClass__J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer(JNIEnv *env);
+ #define J4AC_IjkMediaPlayer__mNativeAndroidIO__set__catchAll J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer__mNativeAndroidIO__set__catchAll
+ #define J4AC_IjkMediaPlayer__postEventFromNative J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer__postEventFromNative
+ #define J4AC_IjkMediaPlayer__postEventFromNative__catchAll J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer__postEventFromNative__catchAll
++#define J4AC_IjkMediaPlayer__applyPreferredAudioDevice J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer__applyPreferredAudioDevice
++#define J4AC_IjkMediaPlayer__applyPreferredAudioDevice__catchAll J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer__applyPreferredAudioDevice__catchAll
+ #define J4AC_IjkMediaPlayer__onSelectCodec J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer__onSelectCodec
+ #define J4AC_IjkMediaPlayer__onSelectCodec__asCBuffer J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer__onSelectCodec__asCBuffer
+ #define J4AC_IjkMediaPlayer__onSelectCodec__asCBuffer__catchAll J4AC_tv_danmaku_ijk_media_player_IjkMediaPlayer__onSelectCodec__asCBuffer__catchAll
+diff --git a/ijkmedia/ijksdl/android/android_audiotrack.c b/ijkmedia/ijksdl/android/android_audiotrack.c
+index c3c22cdc..cb1914b7 100644
+--- a/ijkmedia/ijksdl/android/android_audiotrack.c
++++ b/ijkmedia/ijksdl/android/android_audiotrack.c
+@@ -26,6 +26,7 @@
+ 
+ #include <assert.h>
+ #include "j4au/class/android/media/AudioTrack.util.h"
++#include "j4a/class/tv/danmaku/ijk/media/player/IjkMediaPlayer.h"
+ #include "ijksdl_android_jni.h"
+ #include "../ijksdl_inc_internal.h"
+ #include "../ijksdl_audio.h"
+@@ -239,6 +240,12 @@ SDL_Android_AudioTrack *SDL_Android_AudioTrack_new_from_spec(JNIEnv *env, SDL_An
+     ALOGI("%s: init volume as %f/(%f,%f)", __func__, init_volume, atrack->min_volume, atrack->max_volume);
+     J4AC_AudioTrack__setStereoVolume__catchAll(env, atrack->thiz, init_volume, init_volume);
+ 
++    // SageTV-NG: pin the preferred output device (HDMI/DeX) on the freshly
++    // created AudioTrack. No-op unless the app called
++    // IjkMediaPlayer.setPreferredAudioDevice(...); lets IJK audio follow video
++    // to an external display without a full stream restart.
++    J4AC_IjkMediaPlayer__applyPreferredAudioDevice__catchAll(env, atrack->thiz);
++
+     return atrack;
+ }
+ 

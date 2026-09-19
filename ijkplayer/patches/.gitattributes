@@ -1,0 +1,2 @@
+# Keep unified diffs byte-for-byte LF so `git apply` works on Linux build hosts.
+*.patch text eol=lf

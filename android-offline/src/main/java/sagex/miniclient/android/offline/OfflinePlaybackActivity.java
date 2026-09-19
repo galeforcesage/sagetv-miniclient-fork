@@ -1375,6 +1375,29 @@ public class OfflinePlaybackActivity extends Activity
         }
     }
 
+    /**
+     * Pin IJK's audio output to a specific device through the patched
+     * IjkMediaPlayer.setPreferredAudioDevice (which forwards to the internal
+     * AudioTrack.setPreferredDevice at track creation). Invoked reflectively so
+     * the app still runs against an unpatched ijkplayer AAR, where it is simply
+     * a no-op and the born-on-HDMI recreate remains the fallback. Passing null
+     * clears the preference (restores default system routing). This sets a
+     * process-wide preference, so call it *before* recreating the player so the
+     * fresh AudioTrack is born already pinned to the target device.
+     */
+    private void trySetIjkPreferredAudioDevice(AudioDeviceInfo device) {
+        if (ijkPlayer == null || Build.VERSION.SDK_INT < 23) return;
+        try {
+            java.lang.reflect.Method m = ijkPlayer.getClass()
+                    .getMethod("setPreferredAudioDevice", AudioDeviceInfo.class);
+            m.invoke(ijkPlayer, device);
+        } catch (NoSuchMethodException e) {
+            // Unpatched ijkplayer build; rely on the app-side recreate fallback.
+        } catch (Throwable t) {
+            log.warn("offline_ijk_set_preferred_audio_failed", t);
+        }
+    }
+
     private String formatTime(long millis) {
         if (millis < 0) {
             return "--:--";
@@ -1437,7 +1460,9 @@ public class OfflinePlaybackActivity extends Activity
                         // live-audio route, so the new AudioTrack is *born* on the
                         // TV (exactly how it already works on the Shield, where
                         // HDMI is the default route). This moves both video and
-                        // audio to the TV.
+                        // audio to the TV. On a patched ijkplayer build we also
+                        // pin the new AudioTrack to the HDMI sink deterministically.
+                        trySetIjkPreferredAudioDevice(audioSink);
                         recreateIjkOnSurface(holder);
                     } else if (player != null) {
                         player.setVideoSurfaceHolder(holder);
@@ -1469,6 +1494,7 @@ public class OfflinePlaybackActivity extends Activity
                         // so recreating the player now makes its new AudioTrack be
                         // born on the phone speaker again (and re-targets video to
                         // the phone surface).
+                        trySetIjkPreferredAudioDevice(null);
                         SurfaceHolder phoneHolder =
                                 (ijkSurfaceView != null) ? ijkSurfaceView.getHolder() : null;
                         recreateIjkOnSurface(phoneHolder);
