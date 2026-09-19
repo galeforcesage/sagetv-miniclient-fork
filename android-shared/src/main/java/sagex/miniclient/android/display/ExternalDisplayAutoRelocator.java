@@ -145,7 +145,12 @@ public final class ExternalDisplayAutoRelocator implements DisplayManager.Displa
             MiniClient client = MiniclientApplication.get().getClient();
             if (client == null || client.properties() == null) return;
             if (!client.properties().getBoolean(PrefStore.Keys.play_on_external_display, true)) return;
-            if (!client.properties().getBoolean(PrefStore.Keys.auto_switch_display_on_hdmi, true)) return;
+            // Default OFF: mid-session activity relaunch onto a freshly-appeared
+            // external display can wedge the app when the display is not actually
+            // ready to host an activity (e.g. a Samsung DeX-hosting display that
+            // reports present() but whose desktop mode is "ineligible"). Opt-in
+            // only until a non-relaunch move mechanism lands.
+            if (!client.properties().getBoolean(PrefStore.Keys.auto_switch_display_on_hdmi, false)) return;
 
             // Only while a session is actually up.
             if (client.getCurrentConnection() == null) return;

@@ -413,7 +413,11 @@ public interface PrefStore
          * same relocation the connect-time path performs, just triggered live.
          * Gated additionally by {@link #play_on_external_display} and the
          * mobile-flavor {@code feature_external_display} resource. Default
-         * {@code true}; set false to require the manual "Play on TV" path.
+         * {@code false} (opt-in): mid-session activity relaunch onto a
+         * just-appeared external display can wedge the app when that display is
+         * not actually ready to host an activity (e.g. a DeX-hosting display
+         * whose desktop mode is still "ineligible"). Enable only for testing
+         * until a non-relaunch move mechanism lands.
          */
         String auto_switch_display_on_hdmi = "auto_switch_display_on_hdmi";
 
