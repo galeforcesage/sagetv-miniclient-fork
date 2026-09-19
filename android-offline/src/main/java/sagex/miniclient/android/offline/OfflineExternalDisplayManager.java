@@ -5,6 +5,7 @@ import android.content.Context;
 import android.hardware.display.DisplayManager;
 import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
+import android.media.MediaRouter;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -108,6 +109,8 @@ public final class OfflineExternalDisplayManager implements DisplayManager.Displ
         }
         // The activity's players are being released by the caller; just drop the
         // presentation without asking the host to re-target a dead player.
+        Activity a = host.getActivity();
+        if (a != null) restoreDefaultAudioRoute(a);
         dismissPresentation();
         presenting = false;
     }
@@ -173,6 +176,12 @@ public final class OfflineExternalDisplayManager implements DisplayManager.Displ
                     });
             presentation = p;
             p.show();
+            // Best-effort: also move the app's *live audio* to the HDMI route via
+            // MediaRouter. This is the only public lever that can shift audio for
+            // the IJK software path (MPEG-2 recordings), whose internal AudioTrack
+            // has no per-player device API. Harmless for the Exo path, which also
+            // sets a preferred audio device directly.
+            selectExternalAudioRoute(a, extId);
             log.info("Offline: presenting video on external display id={}", extId);
         } catch (Throwable t) {
             log.warn("Offline: moveToExternal failed", t);
@@ -184,11 +193,13 @@ public final class OfflineExternalDisplayManager implements DisplayManager.Displ
         log.info("Offline: returning video to phone — {}", why);
         // Re-target BEFORE dismissing so the decoder never renders into a dead
         // surface during the move.
+        Activity a = host.getActivity();
         try {
             host.onExternalDisplayLost();
         } catch (Throwable t) {
             log.warn("Offline: onExternalDisplayLost failed", t);
         }
+        if (a != null) restoreDefaultAudioRoute(a);
         dismissPresentation();
         presenting = false;
     }
@@ -202,6 +213,46 @@ public final class OfflineExternalDisplayManager implements DisplayManager.Displ
         }
         presentation = null;
         dismissing = false;
+    }
+
+    // ── live-audio route (best-effort, drives the IJK/MPEG-2 path) ─────────
+    /**
+     * Ask the platform to send this app's live audio to the HDMI display's
+     * route. This is the only public mechanism that can move audio for the IJK
+     * software path, whose internal {@code AudioTrack} is not reachable for a
+     * per-player {@code setPreferredDevice}. We select only {@code LIVE_AUDIO}
+     * so the system does not try to mirror video over our own Presentation.
+     */
+    private void selectExternalAudioRoute(Activity a, int extId) {
+        try {
+            MediaRouter mr = (MediaRouter) a.getSystemService(Context.MEDIA_ROUTER_SERVICE);
+            if (mr == null) return;
+            int count = mr.getRouteCount();
+            for (int i = 0; i < count; i++) {
+                MediaRouter.RouteInfo r = mr.getRouteAt(i);
+                if (r == null) continue;
+                Display pd = r.getPresentationDisplay();
+                if (pd != null && pd.getDisplayId() == extId) {
+                    mr.selectRoute(MediaRouter.ROUTE_TYPE_LIVE_AUDIO, r);
+                    log.info("Offline: selected external live-audio route '{}'", r.getName());
+                    return;
+                }
+            }
+            log.info("Offline: no MediaRouter route matched display id={} for audio", extId);
+        } catch (Throwable t) {
+            log.warn("Offline: selectExternalAudioRoute failed", t);
+        }
+    }
+
+    private void restoreDefaultAudioRoute(Activity a) {
+        try {
+            MediaRouter mr = (MediaRouter) a.getSystemService(Context.MEDIA_ROUTER_SERVICE);
+            if (mr == null) return;
+            mr.selectRoute(MediaRouter.ROUTE_TYPE_LIVE_AUDIO, mr.getDefaultRoute());
+            log.info("Offline: restored default live-audio route");
+        } catch (Throwable t) {
+            log.warn("Offline: restoreDefaultAudioRoute failed", t);
+        }
     }
 
     // ── audio sink selection (mirrors ExternalVideoSurfaceController) ──────

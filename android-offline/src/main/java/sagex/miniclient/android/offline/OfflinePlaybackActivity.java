@@ -116,7 +116,6 @@ public class OfflinePlaybackActivity extends Activity
     private StyledPlayerView playerView;
     private SurfaceView ijkSurfaceView;
     private OfflineExternalDisplayManager externalDisplayManager;
-    private TextView playingOnTvHint;
     private View titleBar;
     private final Handler hideHandler = new Handler(Looper.getMainLooper());
     private final Handler autoSkipHandler = new Handler(Looper.getMainLooper());
@@ -1414,7 +1413,7 @@ public class OfflinePlaybackActivity extends Activity
                             }
                         }
                     }
-                    setPlayingOnTvHintVisible(true);
+                    setPlayingOnTvControls(true);
                     log.info("offline_ext_video_moved_to_tv ijk={}", usingIjkPlayer);
                 } catch (Throwable t) {
                     log.warn("offline_ext_ready_failed", t);
@@ -1446,7 +1445,7 @@ public class OfflinePlaybackActivity extends Activity
                             }
                         }
                     }
-                    setPlayingOnTvHintVisible(false);
+                    setPlayingOnTvControls(false);
                     log.info("offline_ext_video_returned_to_phone ijk={}", usingIjkPlayer);
                 } catch (Throwable t) {
                     log.warn("offline_ext_lost_failed", t);
@@ -1456,31 +1455,21 @@ public class OfflinePlaybackActivity extends Activity
     }
 
     /**
-     * Show/hide a lightweight centered hint while video is on the TV, so the
-     * user knows the (now blank) phone surface is intentional and the on-screen
-     * controls act as a remote.
+     * When video moves to the TV, immediately surface the on-phone controls so
+     * the phone is a usable remote without the user having to discover the
+     * swipe gesture. On the Exo path that is the StyledPlayerView controller; on
+     * the IJK path (and in general) it is the soft-remote navigation overlay.
      */
-    private void setPlayingOnTvHintVisible(boolean visible) {
+    private void setPlayingOnTvControls(boolean onTv) {
         try {
-            if (visible) {
-                if (playingOnTvHint == null) {
-                    playingOnTvHint = new TextView(this);
-                    playingOnTvHint.setText("\u25B6 Playing on TV\nUse the controls here as a remote");
-                    playingOnTvHint.setTextColor(0xFFFFFFFF);
-                    playingOnTvHint.setTextSize(18f);
-                    playingOnTvHint.setGravity(Gravity.CENTER);
-                    FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                            FrameLayout.LayoutParams.WRAP_CONTENT,
-                            FrameLayout.LayoutParams.WRAP_CONTENT,
-                            Gravity.CENTER);
-                    getWindow().addContentView(playingOnTvHint, lp);
-                }
-                playingOnTvHint.setVisibility(View.VISIBLE);
-            } else if (playingOnTvHint != null) {
-                playingOnTvHint.setVisibility(View.GONE);
+            if (onTv) {
+                if (overlay != null) overlay.activate();
+                if (!usingIjkPlayer && playerView != null) playerView.showController();
+                Toast.makeText(this, "Playing on TV — controls are here on the phone",
+                        Toast.LENGTH_LONG).show();
             }
         } catch (Throwable t) {
-            log.warn("offline_ext_hint_failed", t);
+            log.warn("offline_ext_controls_failed", t);
         }
     }
 
