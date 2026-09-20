@@ -16,7 +16,10 @@
 package sagex.miniclient.android.offline;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Context;
+import android.content.DialogInterface;
+import android.media.AudioManager;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.RectF;
@@ -111,6 +114,8 @@ public class OfflinePlaybackActivity extends Activity
 
     private ExoPlayer player;
     private IjkMediaPlayer ijkPlayer;
+    /** Stable, effect-capable audio session id pinned for on-device EQ. */
+    private int eqSessionId = 0;
     private ParcelFileDescriptor ijkPfd;
     private Uri mediaUri;
     private StyledPlayerView playerView;
@@ -250,6 +255,11 @@ public class OfflinePlaybackActivity extends Activity
 
         bindControls();
 
+        // On-device audio EQ is core to offline playback (same engine the
+        // online client uses; offline is always client-side since there is no
+        // server to fall back to). Initialise the process-wide manager here.
+        sagex.miniclient.android.audio.eq.EqManager.get().init(getApplicationContext());
+
         String title = getIntent().getStringExtra(EXTRA_MEDIA_TITLE);
         if (title != null) {
             ((TextView) findViewById(R.id.offline_playback_title)).setText(title);
@@ -318,6 +328,21 @@ public class OfflinePlaybackActivity extends Activity
                         new DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory))
                 .build();
 
+        // Pin a stable, effect-capable audio session id so the on-device EQ can
+        // attach to a session that survives AudioTrack recreation (format
+        // changes, HDMI route switches). Mirrors the online ExoPlayer path.
+        try {
+            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            int sid = (am != null) ? am.generateAudioSessionId() : AudioManager.ERROR;
+            if (sid != AudioManager.ERROR && sid > 0) {
+                player.setAudioSessionId(sid);
+                eqSessionId = sid;
+                log.info("offline_eq pinned_session={}", sid);
+            }
+        } catch (Throwable t) {
+            log.warn("offline_eq pin_session_failed err={}", t.toString());
+        }
+
         playerView.setPlayer(seekInterceptingPlayer(player));
 
         MediaItem mediaItem = MediaItem.fromUri(mediaUri);
@@ -338,6 +363,7 @@ public class OfflinePlaybackActivity extends Activity
                     log.info("offline_player_ready dur={} seekable={}",
                             player.getDuration(),
                             player.isCurrentMediaItemSeekable());
+                    reportExoAudioSessionToEq();
                     startAutoSkipIfEnabled();
                     scheduleTitleHide();
                     showOfflineTimeBarBriefly();
@@ -443,6 +469,19 @@ public class OfflinePlaybackActivity extends Activity
                 if (what == IMediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
                     log.info("offline_ijk_video_rendering_start pos={}", mp.getCurrentPosition());
                     showOfflineTimeBarBriefly();
+                } else if (what == IMediaPlayer.MEDIA_INFO_AUDIO_RENDERING_START) {
+                    // Only now has IJK created its internal AudioTrack, so
+                    // getAudioSessionId() returns a real (>0) effect-capable
+                    // session the on-device EQ can attach to.
+                    int sid = 0;
+                    try { sid = mp.getAudioSessionId(); } catch (Throwable ignored) { }
+                    log.info("offline_ijk_audio_rendering_start session={}", sid);
+                    if (sid > 0) {
+                        try {
+                            sagex.miniclient.android.audio.eq.EqManager.get()
+                                    .onAudioSessionChanged(sid, 2, true);
+                        } catch (Throwable ignored) { }
+                    }
                 }
                 return false;
             });
@@ -1090,7 +1129,13 @@ public class OfflinePlaybackActivity extends Activity
                 showOfflineTimeBarBriefly();
                 return true;
             case KeyEvent.KEYCODE_MENU:
-                if (overlay != null) overlay.activate();
+                showOfflineOptionsMenu();
+                return true;
+            case KeyEvent.KEYCODE_INFO:
+                handleLocalAction(LocalAction.SHOW_INFO);
+                return true;
+            case KeyEvent.KEYCODE_HELP:
+                showOfflineHelp();
                 return true;
             case KeyEvent.KEYCODE_MEDIA_PLAY:
                 setPlaybackPlayWhenReady(true);
@@ -1216,6 +1261,86 @@ public class OfflinePlaybackActivity extends Activity
         if (!hasPlaybackEngine()) return;
         long pos = getPlaybackPositionMs();
         seekRelative(targetMs - pos);
+    }
+
+    /**
+     * Report the pinned ExoPlayer audio session (and its channel count) to the
+     * shared EQ manager so the on-device equalizer can attach. Offline audio is
+     * decoded to PCM locally, so client processing always applies.
+     */
+    private void reportExoAudioSessionToEq() {
+        if (eqSessionId <= 0 || player == null) return;
+        int ch = 2;
+        try {
+            com.google.android.exoplayer2.Format fmt = player.getAudioFormat();
+            if (fmt != null && fmt.channelCount != com.google.android.exoplayer2.Format.NO_VALUE
+                    && fmt.channelCount > 0) {
+                ch = fmt.channelCount;
+            }
+        } catch (Throwable ignored) { }
+        try {
+            sagex.miniclient.android.audio.eq.EqManager.get()
+                    .onAudioSessionChanged(eqSessionId, ch, true);
+        } catch (Throwable t) {
+            log.warn("offline_eq report_failed err={}", t.toString());
+        }
+    }
+
+    /** Show the on-device equalizer panel (shared with the online client). */
+    private void showEqualizer() {
+        try {
+            android.app.FragmentManager fm = getFragmentManager();
+            android.app.FragmentTransaction ft = fm.beginTransaction();
+            Fragment prev = fm.findFragmentByTag("equalizer");
+            if (prev != null) ft.remove(prev);
+            new sagex.miniclient.android.audio.eq.EqualizerFragment().show(ft, "equalizer");
+        } catch (Throwable t) {
+            log.error("offline_eq show_failed", t);
+        }
+    }
+
+    /**
+     * Local playback options menu — the offline equivalent of the online
+     * client's navigation panel. Everything here is client-side (no server).
+     */
+    private void showOfflineOptionsMenu() {
+        final String[] items = {
+                "Equalizer",
+                "Aspect ratio",
+                "Rotate screen",
+                "Playback info"
+        };
+        AlertDialog.Builder b = new AlertDialog.Builder(this);
+        b.setTitle("Options");
+        b.setItems(items, new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialog, int which) {
+                switch (which) {
+                    case 0: showEqualizer(); break;
+                    case 1: handleLocalAction(LocalAction.CYCLE_RESIZE); break;
+                    case 2: handleLocalAction(LocalAction.ROTATE); break;
+                    case 3: handleLocalAction(LocalAction.SHOW_INFO); break;
+                }
+            }
+        });
+        b.show();
+    }
+
+    /** Short guide describing what the soft-remote buttons do. */
+    private void showOfflineHelp() {
+        String msg =
+                "Menu — options (equalizer, aspect, rotate, info)\n"
+                + "Info — show position / duration\n"
+                + "Back — return to the previous screen\n"
+                + "Home — offline library home\n"
+                + "Close — restart the app\n\n"
+                + "Transport: skip/rewind/stop/pause/play/fast-forward/skip.\n"
+                + "Long-press OK or swipe in from the left edge to show these controls.";
+        new AlertDialog.Builder(this)
+                .setTitle("Playback controls")
+                .setMessage(msg)
+                .setPositiveButton("OK", null)
+                .show();
     }
 
     private void showTitleBriefly() {
@@ -1439,6 +1564,9 @@ public class OfflinePlaybackActivity extends Activity
             player = null;
         }
         releaseIjkPlayer();
+        try {
+            sagex.miniclient.android.audio.eq.EqManager.get().onPlayerReleased();
+        } catch (Throwable ignored) { }
     }
 
     // ── OfflineExternalDisplayManager.Host ────────────────────────────────
