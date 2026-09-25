@@ -378,12 +378,37 @@ public final class OfflineNavigationOverlay {
         content.addView(v);
         overlayView = v;
         attachTimebarChildToHost();
+        // Z-order fix: the timebar host is a full-width, tap-to-seek band that
+        // sits ABOVE the top button rows in the FrameLayout child order, so
+        // where it overlaps them it swallows their touches and the playhead
+        // jumps to the tapped x instead of the button firing. The bottom
+        // transport dock already works precisely because it is the last child
+        // (topmost). Raise the interactive button rows above the timebar so
+        // they win the touch wherever they overlap, while the timebar keeps
+        // handling taps in the empty regions between them.
+        raiseButtonRowsAboveTimebar(v);
         if (showPlayerRow) {
             View row = v.findViewById(R.id.offline_remote_player_row);
             if (row != null) row.setVisibility(View.VISIBLE);
         } else {
             View row = v.findViewById(R.id.offline_remote_player_row);
             if (row != null) row.setVisibility(View.GONE);
+        }
+    }
+
+    /**
+     * Raise the interactive button rows above the tap-to-seek timebar band so
+     * they win touch dispatch wherever they overlap it. See attachOverlay().
+     */
+    private void raiseButtonRowsAboveTimebar(View v) {
+        int[] ids = {
+                R.id.offline_remote_top_left,
+                R.id.offline_remote_top_right,
+                R.id.offline_remote_bottom_dock
+        };
+        for (int id : ids) {
+            View row = v.findViewById(id);
+            if (row != null) row.bringToFront();
         }
     }
 
