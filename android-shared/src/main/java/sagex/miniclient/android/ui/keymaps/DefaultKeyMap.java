@@ -67,6 +67,21 @@ public class DefaultKeyMap extends KeyMap {
         KEYMAP.put(KeyEvent.KEYCODE_NUMPAD_8, prefs.getNum8());
         KEYMAP.put(KeyEvent.KEYCODE_NUMPAD_9, prefs.getNum9());
 
+        // Soft-keyboard / standard number-row digits emit the bare KEYCODE_0-9
+        // (not the NUMPAD_* variants). Route them to the same SageTV NUM
+        // commands so the server performs canonical multitap text entry and
+        // numeric channel/menu handling, matching every other SageTV client.
+        KEYMAP.put(KeyEvent.KEYCODE_0, prefs.getNum0());
+        KEYMAP.put(KeyEvent.KEYCODE_1, prefs.getNum1());
+        KEYMAP.put(KeyEvent.KEYCODE_2, prefs.getNum2());
+        KEYMAP.put(KeyEvent.KEYCODE_3, prefs.getNum3());
+        KEYMAP.put(KeyEvent.KEYCODE_4, prefs.getNum4());
+        KEYMAP.put(KeyEvent.KEYCODE_5, prefs.getNum5());
+        KEYMAP.put(KeyEvent.KEYCODE_6, prefs.getNum6());
+        KEYMAP.put(KeyEvent.KEYCODE_7, prefs.getNum7());
+        KEYMAP.put(KeyEvent.KEYCODE_8, prefs.getNum8());
+        KEYMAP.put(KeyEvent.KEYCODE_9, prefs.getNum9());
+
         KEYMAP.put(KeyEvent.KEYCODE_MEDIA_PLAY, prefs.getPlay());
         KEYMAP.put(KeyEvent.KEYCODE_MEDIA_PAUSE, prefs.getPause());
         KEYMAP.put(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, prefs.getPlayPause());
