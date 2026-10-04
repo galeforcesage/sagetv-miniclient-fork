@@ -130,10 +130,19 @@ public class MiniclientApplication extends Application
         // video on the external display and re-targets the running player's
         // surface without any activity relaunch or session teardown. Gated by
         // the "Automatically move to TV" checkbox (default OFF).
-        sagex.miniclient.android.display.ExternalVideoSurfaceController.install(this);
-        // Legacy Path A (activity relaunch) relocator: retained but inert unless
-        // its own opt-in pref (auto_switch_display_on_hdmi, default OFF) is set.
-        sagex.miniclient.android.display.ExternalDisplayAutoRelocator.install(this);
+        //
+        // External-display output ("Play on TV, phone as remote") is mobile-only:
+        // an Android TV / online client already drives its HDMI panel and has no
+        // local screen to relocate from. Skip installing the controllers entirely
+        // on non-mobile flavours so they never register display listeners or set a
+        // sink-resolution override on a TV build.
+        if (getResources().getBoolean(R.bool.feature_external_display))
+        {
+            sagex.miniclient.android.display.ExternalVideoSurfaceController.install(this);
+            // Legacy Path A (activity relaunch) relocator: retained but inert unless
+            // its own opt-in pref (auto_switch_display_on_hdmi, default OFF) is set.
+            sagex.miniclient.android.display.ExternalDisplayAutoRelocator.install(this);
+        }
 
         try
         {

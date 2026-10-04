@@ -1170,6 +1170,35 @@ public class MiniClientConnection implements SageTVInputCallback
         return "auto";
     }
 
+    /**
+     * The effective 4K-enhancement hint to put ON THE WIRE for the current
+     * session, computed at send time only. This NEVER mutates the user's stored
+     * {@code quality_hint_mode} checkbox (Auto/Never/Always) &mdash; it just
+     * derives what we advertise right now.
+     *
+     * <p>Policy: on a mobile/phone-flavor client whose sole output is its small
+     * built-in panel (no external HDMI/cast display attached &mdash; see
+     * {@link UIRenderer#isLocalOnlyMobilePanel()}), the user's <b>Auto</b> is
+     * collapsed to the hard opt-out <b>savings</b> ("Never"), because sub-panel
+     * upscaling costs bandwidth/thermal with no perceptual benefit on a phone
+     * screen. <b>Never</b> and <b>Always</b> are passed through untouched, and the
+     * user can still force enhancement with Always. When an external display is
+     * attached the honest sink is that big panel, so true Auto is restored. Online
+     * TV/box clients and legacy/non-Android renderers are unaffected (the bridge
+     * returns {@code false}). Re-evaluated on every server query, so an HDMI
+     * hot-plug flips the policy within one renegotiation.</p>
+     */
+    private String effectiveQualityHint()
+    {
+        String raw = normalizeQualityHint(client.properties()
+                .getString(PrefStore.Keys.quality_hint_mode, "auto"));
+        if ("auto".equals(raw) && uiRenderer != null && uiRenderer.isLocalOnlyMobilePanel())
+        {
+            return "savings";
+        }
+        return raw;
+    }
+
     private String buildVideoConstraintCsv(List<String> codecs, String deviceClass, boolean exoPath)
     {
         if (codecs == null || codecs.isEmpty()) return "";
@@ -2237,8 +2266,7 @@ public class MiniClientConnection implements SageTVInputCallback
                             // the server's panel clamp targets 2160p instead of the
                             // built-in phone panel. Auto/Never always report the
                             // honest measured panel (a pure measurement).
-                            String sinkHint = normalizeQualityHint(client.properties()
-                                    .getString(PrefStore.Keys.quality_hint_mode, "auto"));
+                            String sinkHint = effectiveQualityHint();
                             String honestSink = uiRenderer.getDisplaySinkResolution();
                             if (honestSink == null) honestSink = "";
                             if ("quality".equals(sinkHint))
@@ -2314,8 +2342,7 @@ public class MiniClientConnection implements SageTVInputCallback
                         //    to the server's override-local flag).
                         //  * Auto -> pref=auto, let the server decide from the sink
                         //    and per-codec ceilings.
-                        String hint = normalizeQualityHint(client.properties()
-                                .getString(PrefStore.Keys.quality_hint_mode, "auto"));
+                        String hint = effectiveQualityHint();
                         String pref = "quality".equals(hint) ? "server"
                                 : "savings".equals(hint) ? "local"
                                 : "auto";
@@ -2335,8 +2362,7 @@ public class MiniClientConnection implements SageTVInputCallback
                         // (above), which is the lever the advisor actually honors.
                         // We still send the hint so a future server that consults it
                         // gets the user's intent.
-                        String hint = normalizeQualityHint(client.properties()
-                                .getString(PrefStore.Keys.quality_hint_mode, "auto"));
+                        String hint = effectiveQualityHint();
                         propVal = hint;
                         log.logInfo("QUALITY_HINT -> '" + propVal + "'");
                     }

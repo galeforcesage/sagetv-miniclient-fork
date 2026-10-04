@@ -110,7 +110,13 @@ public class SinkCapabilityMonitor
                 displayListener = new DisplayManager.DisplayListener()
                 {
                     @Override public void onDisplayAdded(int displayId) { schedule(); }
-                    @Override public void onDisplayRemoved(int displayId) { schedule(); }
+                    @Override public void onDisplayRemoved(int displayId) {
+                        // An external panel was unplugged: drop the cached panel
+                        // size so the re-read reports the now-current sink instead
+                        // of a stale (e.g. external 4K) value.
+                        sagex.miniclient.android.display.SinkResolutionResolver.invalidateLastKnownGood();
+                        schedule();
+                    }
                     @Override public void onDisplayChanged(int displayId) { schedule(); }
                 };
                 displayManager.registerDisplayListener(displayListener, handler);

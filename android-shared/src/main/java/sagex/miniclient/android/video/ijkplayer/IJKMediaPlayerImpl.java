@@ -313,6 +313,25 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
         return null;
     }
 
+    /**
+     * True when the SageTV push descriptor URL describes an MPEG2-TS container
+     * carrying an AC3 or E-AC3 (Dolby Digital / Digital Plus) audio track.
+     *
+     * <p>The TS push descriptor frequently omits the {@code sr=}/{@code ch=}
+     * audio fields (unlike the MPEG2-PS variant), so ffmpeg must probe a Dolby
+     * sync frame to learn the sample rate / channel count. That needs a larger
+     * probe window than the default low-latency push tuning provides; see
+     * {@link #setupPlayer(String)} for the failure mode this guards against.</p>
+     */
+    private static boolean isMpeg2TsDolbyAudio(String url)
+    {
+        if (url == null) return false;
+        if (!url.contains("f=MPEG2-TS")) return false;
+        // Audio tokens look like "[bf=aud;f=AC3;...]" / "f=EAC3" / "f=E-AC3".
+        // "f=AC3" does not substring-match "f=EAC3"/"f=E-AC3", so test each.
+        return url.contains("f=AC3") || url.contains("f=EAC3") || url.contains("f=E-AC3");
+    }
+
     protected void setupPlayer(String sageTVurl)
     {
         log.debug("Creating Player");
@@ -351,10 +370,26 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                 // latency and limit stale data after seek. Values must be
                 // conservative enough for MPEG2-TS (needs >32KB for PID/PMT
                 // detection) while still faster than defaults (5MB/5s).
-                ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 131072);          // 128 KB (vs 5 MB default; 32KB too small for TS)
-                ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", 1500000);   // 1.5s (vs 5s default)
+                //
+                // Exception: AC3 / E-AC3 audio inside MPEG2-TS needs a larger
+                // probe window than mere PID/PMT detection. ffmpeg must read a
+                // Dolby sync frame to resolve sample_rate/channels, and the TS
+                // push descriptor often omits sr=/ch= (unlike the MPEG2-PS
+                // variant, which carries them). With the small 128KB/1.5s window
+                // those params can come back 0, after which IJK aborts the audio
+                // output with "Invalid sample rate or channel count!" — video
+                // plays but there is no sound. AC3-in-MPEG2-PS resolves within
+                // the small window, so only TS + (E-)AC3 is widened here; the
+                // common AAC / PS paths keep the low-latency defaults.
+                boolean widenAudioProbe = isMpeg2TsDolbyAudio(sageTVurl);
+                int probeSize = widenAudioProbe ? 1024 * 1024 : 131072;        // 1 MB vs 128 KB
+                int analyzeDuration = widenAudioProbe ? 4000000 : 1500000;     // 4s vs 1.5s
+                ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", probeSize);
+                ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", analyzeDuration);
                 ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "packet-buffering", 1);
                 ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-buffer-size", 2 * 1024 * 1024); // 2 MB (vs 15 MB) — limits stale data after seek
+                if (widenAudioProbe)
+                    log.debug("Push MPEG2-TS with AC3/E-AC3 audio: widening probe window to {} bytes / {} us so audio params resolve", probeSize, analyzeDuration);
             }
             else
             {

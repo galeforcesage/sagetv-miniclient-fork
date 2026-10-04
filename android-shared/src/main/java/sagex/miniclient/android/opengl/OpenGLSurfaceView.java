@@ -10,7 +10,9 @@ import android.view.inputmethod.InputConnection;
 
 import sagex.miniclient.MiniClient;
 import sagex.miniclient.MiniClientConnection;
+import sagex.miniclient.SageCommand;
 import sagex.miniclient.android.MiniclientApplication;
+import sagex.miniclient.uibridge.EventRouter;
 
 public class OpenGLSurfaceView extends GLSurfaceView {
     public OpenGLSurfaceView(Context context, OpenGLRenderer renderer) {
@@ -55,8 +57,7 @@ public class OpenGLSurfaceView extends GLSurfaceView {
             MiniClientConnection conn = client.getCurrentConnection();
             // Only send characters we haven't sent yet
             for (int i = composingSentCount; i < text.length(); i++) {
-                char c = text.charAt(i);
-                conn.postKeyEvent(c, 0, c);
+                sendChar(client, conn, text.charAt(i));
             }
             // If composing text got shorter, send backspaces for removed chars
             for (int i = 0; i < composingSentCount - text.length(); i++) {
@@ -83,11 +84,24 @@ public class OpenGLSurfaceView extends GLSurfaceView {
             MiniClientConnection conn = client.getCurrentConnection();
             // Send only chars not already sent via composing
             for (int i = composingSentCount; i < text.length(); i++) {
-                char c = text.charAt(i);
-                conn.postKeyEvent(c, 0, c);
+                sendChar(client, conn, text.charAt(i));
             }
             composingSentCount = 0;
             return true;
+        }
+
+        // Route digit characters as Num SageCommands (Command_Num_0..9) instead
+        // of literal key chars. The server performs T9 multi-tap letter cycling
+        // (e.g. "2" twice -> "B") only when it receives Num events; a literal
+        // digit just inserts the number. This matches the hardware/remote key
+        // path (DefaultKeyMap maps KEYCODE_0..9 -> Num) and legacy google/SageTV
+        // behavior, so the soft-keyboard (OpenGL IME) path multi-taps too.
+        private void sendChar(MiniClient client, MiniClientConnection conn, char c) {
+            if (c >= '0' && c <= '9') {
+                EventRouter.postCommand(client, SageCommand.valueOf("NUM" + c));
+            } else {
+                conn.postKeyEvent(c, 0, c);
+            }
         }
 
         @Override

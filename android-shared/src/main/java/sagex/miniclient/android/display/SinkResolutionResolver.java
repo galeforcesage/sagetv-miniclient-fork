@@ -38,6 +38,24 @@ public final class SinkResolutionResolver
     private SinkResolutionResolver() { }
 
     /**
+     * Last physical panel size we successfully measured, in landscape pixels.
+     * Process-wide and {@code volatile} so a later read that hits a defunct
+     * {@link Display} (e.g. after an Activity teardown) can still report the real
+     * panel instead of regressing to {@code ""} / {@code 0x0}, which the NG server
+     * will eventually treat as ineligible for enhancement. This is NOT a
+     * fabrication: it is the true panel as last read on this device. It is
+     * overwritten by every successful live read, and {@link #invalidateLastKnownGood()}
+     * clears it when an external display is unplugged (mobile Path B).
+     */
+    private static volatile int[] lastKnownGoodPhysical = null;
+
+    /** Clear the cached panel size (call on external-display removed). */
+    public static void invalidateLastKnownGood()
+    {
+        lastKnownGoodPhysical = null;
+    }
+
+    /**
      * @param display the display the app is actually rendering on (the activity's
      *                {@code WindowManager.getDefaultDisplay()}, which follows the
      *                activity onto an external/extended display when relocated)
@@ -46,7 +64,33 @@ public final class SinkResolutionResolver
      */
     public static String resolveSink(Display display)
     {
+        // 1. Live active mode (the true current panel geometry).
         int[] physical = physicalSize(display);
+        // 2. Live fallback: largest supported mode on the same display (survives a
+        //    display whose *active* mode is momentarily unset).
+        if (physical == null) physical = physicalSizeFromSupportedModes(display);
+
+        if (physical != null)
+        {
+            lastKnownGoodPhysical = physical; // cache every good live read
+        }
+        else
+        {
+            // 3. Last-known-good: never regress to 0x0 after we have measured the
+            //    panel once (survives a defunct Activity-scoped Display).
+            int[] cached = lastKnownGoodPhysical;
+            if (cached != null)
+            {
+                physical = cached;
+            }
+            else
+            {
+                // 4. Cold-start backstop: the platform's physical panel size from a
+                //    lifecycle-independent system property (e.g. Android TV HDMI).
+                physical = physicalSizeFromSystemProperty();
+                if (physical != null) lastKnownGoodPhysical = physical;
+            }
+        }
         return (physical == null) ? "" : formatLandscape(physical[0], physical[1]);
     }
 
@@ -133,5 +177,82 @@ public final class SinkResolutionResolver
         {
             return null;
         }
+    }
+
+    /**
+     * Largest physical geometry across all supported modes of the display. Used
+     * when the active {@link Display.Mode} is momentarily unset but the display
+     * still enumerates its modes, so we can still report the true panel size.
+     */
+    static int[] physicalSizeFromSupportedModes(Display display)
+    {
+        if (display == null || Build.VERSION.SDK_INT < 23) return null;
+        try
+        {
+            int bestW = 0, bestH = 0;
+            for (Display.Mode m : display.getSupportedModes())
+            {
+                if (m == null) continue;
+                int w = m.getPhysicalWidth();
+                int h = m.getPhysicalHeight();
+                if ((long) w * h > (long) bestW * bestH) { bestW = w; bestH = h; }
+            }
+            if (bestW > 0 && bestH > 0) return new int[] { bestW, bestH };
+            return null;
+        }
+        catch (Throwable ignored)
+        {
+            return null;
+        }
+    }
+
+    /**
+     * Lifecycle-independent backstop: the platform's physical panel size exposed
+     * via a read-only system property (e.g. {@code sys.display-size} on AOSP,
+     * {@code vendor.display-size} on Android TV / NVIDIA Shield). Read via
+     * reflection on {@code android.os.SystemProperties}. Returns null when no such
+     * property is present or parseable.
+     */
+    static int[] physicalSizeFromSystemProperty()
+    {
+        final String[] keys = {
+                "sys.display-size",
+                "vendor.display-size",
+                "vendor.tegra.display-size",
+                "persist.sys.display-size"
+        };
+        try
+        {
+            Class<?> sp = Class.forName("android.os.SystemProperties");
+            java.lang.reflect.Method get = sp.getMethod("get", String.class);
+            for (String k : keys)
+            {
+                Object v = get.invoke(null, k);
+                if (v instanceof String)
+                {
+                    int[] wh = parseWxH((String) v);
+                    if (wh != null) return wh;
+                }
+            }
+        }
+        catch (Throwable ignored) { }
+        return null;
+    }
+
+    /** Parse "WIDTHxHEIGHT" (case-insensitive), or null. */
+    static int[] parseWxH(String s)
+    {
+        if (s == null) return null;
+        String t = s.trim().toLowerCase(Locale.US);
+        int x = t.indexOf('x');
+        if (x <= 0 || x >= t.length() - 1) return null;
+        try
+        {
+            int w = Integer.parseInt(t.substring(0, x).trim());
+            int h = Integer.parseInt(t.substring(x + 1).trim());
+            if (w > 0 && h > 0) return new int[] { w, h };
+        }
+        catch (Throwable ignored) { }
+        return null;
     }
 }

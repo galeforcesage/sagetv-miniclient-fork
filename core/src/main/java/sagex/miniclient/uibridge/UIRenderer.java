@@ -136,6 +136,24 @@ public interface UIRenderer<Image extends Texture> {
      */
     default String getDisplayHdrTypes() { return ""; }
 
+    /**
+     * NG 4K contract, Phase 1 perceptual policy: {@code true} only when this is a
+     * mobile/phone-flavor client (the {@code feature_external_display} build) AND
+     * no external HDMI/cast/presentation display is currently attached, i.e. the
+     * sole output is the device's small built-in panel. In that state the server
+     * {@code QUALITY_HINT=auto} is collapsed to the hard opt-out ("Never"),
+     * because sub-panel upscaling costs bandwidth/thermal with no perceptual
+     * benefit on a phone screen; the user can still force it with "Always".
+     *
+     * <p>Returns {@code false} for online TV/box clients (always a large HDMI
+     * sink) and for phones while an external display is attached (the honest sink
+     * is then that big panel, so true Auto is restored). Re-evaluated live on
+     * every server query, so an HDMI hot-plug flips the policy within one
+     * renegotiation. Default {@code false} keeps the wire byte-identical for
+     * non-Android renderers and legacy servers.</p>
+     */
+    default boolean isLocalOnlyMobilePanel() { return false; }
+
     void setFullScreen(boolean b);
 
     void setSize(int w, int h);

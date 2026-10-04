@@ -89,25 +89,25 @@
             android:dialogTitle="Left (Long Press)"
             android:key="default_left_long_press"
             android:summary="%s"
-            android:title="Left (Long Press)"/>
+            android:title="Left (Long Press) - Recommend Skip Bkwd/Page Left"/>
 
         <ListPreference
             android:dialogTitle="Right (Long Press)"
             android:key="default_right_long_press"
             android:summary="%s"
-            android:title="Right (Long Press)"/>
+            android:title="Right (Long Press) - Recommend Skip Fwd/Page Right"/>
 
         <ListPreference
             android:dialogTitle="Up (Long Press)"
             android:key="default_up_long_press"
             android:summary="%s"
-            android:title="Up (Long Press)"/>
+            android:title="Up (Long Press) - Recommend Channel Up/Page Up"/>
 
         <ListPreference
             android:dialogTitle="Down (Long Press)"
             android:key="default_down_long_press"
             android:summary="%s"
-            android:title="Down (Long Press)"/>
+            android:title="Down (Long Press) - Recommend Channel Down/Page Down"/>
 
         <ListPreference
             android:dialogTitle="Play"

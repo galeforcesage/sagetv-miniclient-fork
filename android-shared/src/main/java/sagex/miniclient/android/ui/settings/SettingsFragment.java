@@ -77,6 +77,28 @@ public class SettingsFragment extends PreferenceFragment
             {
                 p.setDefaultValue(true);
             }
+
+            // "Automatically move to TV" (Play-on-TV / external-display output) is a
+            // mobile-only feature: an Android TV / online client already renders on
+            // its HDMI panel and has no local screen to move away from. Hide the
+            // preference entirely unless this is the mobile flavour.
+            if (!getResources().getBoolean(R.bool.feature_external_display))
+            {
+                Preference autoMoveToTv = this.findPreference(Keys.auto_move_to_tv);
+                android.preference.PreferenceCategory appCategory =
+                        (android.preference.PreferenceCategory) this.findPreference("application_settings_category");
+                if (autoMoveToTv != null)
+                {
+                    if (appCategory != null)
+                    {
+                        appCategory.removePreference(autoMoveToTv);
+                    }
+                    else
+                    {
+                        getPreferenceScreen().removePreference(autoMoveToTv);
+                    }
+                }
+            }
             
             p = this.findPreference("reset_to_defaults");
             if (p != null)

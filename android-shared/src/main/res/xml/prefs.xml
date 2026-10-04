@@ -98,7 +98,9 @@
 
     </PreferenceCategory>
 
-    <PreferenceCategory android:title="@string/application_settings">
+    <PreferenceCategory
+        android:key="application_settings_category"
+        android:title="@string/application_settings">
 
         <CheckBoxPreference
             android:defaultValue="false"
