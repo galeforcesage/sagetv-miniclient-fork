@@ -980,6 +980,18 @@ public class MiniClientGDXRenderer implements ApplicationListener, UIRenderer<Gd
                 return false;
             }
 
+            // Safety net for a mismatched install: if the mobile/phone APK was
+            // sideloaded onto an actual TV/box (leanback / UI_MODE TELEVISION),
+            // the device always drives a real HDMI sink and has no separate
+            // "presentation" display, so the external-display probe below would
+            // wrongly report local-only and collapse Auto -> Never on a 4K TV.
+            // Treat such a device like the online flavor (never local-only).
+            // Only strong positive TV signals are used so this can never
+            // misfire on a genuine phone/tablet.
+            if (isTelevisionDevice(appCtx)) {
+                return false;
+            }
+
             // Is an external HDMI/cast/presentation display currently attached?
             android.hardware.display.DisplayManager dm =
                     (android.hardware.display.DisplayManager) appCtx.getSystemService(Context.DISPLAY_SERVICE);
@@ -1006,6 +1018,34 @@ public class MiniClientGDXRenderer implements ApplicationListener, UIRenderer<Gd
         } catch (Throwable t) {
             return false;
         }
+    }
+
+    /**
+     * Conservative "is this an Android TV / set-top box?" heuristic used only as
+     * a safety net for the 4K upscale gate. Returns true only on strong,
+     * TV-exclusive signals that never appear on a genuine phone/tablet:
+     * {@code UiModeManager} reporting {@code UI_MODE_TYPE_TELEVISION}, or the
+     * {@code android.software.leanback} / {@code android.hardware.type.television}
+     * system features. Weak signals (e.g. absence of a touchscreen) are
+     * intentionally not used, so a real phone is never misclassified as a TV.
+     */
+    private static boolean isTelevisionDevice(Context ctx) {
+        try {
+            android.app.UiModeManager uiMode =
+                    (android.app.UiModeManager) ctx.getSystemService(Context.UI_MODE_SERVICE);
+            if (uiMode != null
+                    && uiMode.getCurrentModeType()
+                        == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION) {
+                return true;
+            }
+            android.content.pm.PackageManager pm = ctx.getPackageManager();
+            if (pm != null) {
+                if (pm.hasSystemFeature("android.software.leanback")) return true;
+                if (pm.hasSystemFeature("android.hardware.type.television")) return true;
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
     }
 
     @Override
