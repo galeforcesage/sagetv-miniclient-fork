@@ -46,6 +46,10 @@ Use:
 
 - [tools/ffmpeg/build-android-ffmpeg.sh](tools/ffmpeg/build-android-ffmpeg.sh)
 
+The checked-in offline binaries are built from the upstream FFmpeg `n7.1`
+tag with Android NDK r28c (`28.2.13676358`). Set `FFMPEG_BUILD_ROOT` to keep
+large generated outputs outside the repository when needed.
+
 Supported profiles:
 
 1. offline-remux
@@ -86,3 +90,18 @@ After building, copy binaries into Android assets expected by runtime fallback:
 2. Exo playback: seek + audio track selection still works on generated MP4.
 3. IJK playback: live TV, AC3 streams, HEVC recordings, subtitle scenarios.
 4. APK size and startup impact remain acceptable.
+
+## Verify 16 KB ELF compatibility
+
+Run the verifier against rebuilt AARs, APKs, AABs, native-library directories,
+or individual `.so` files:
+
+```text
+python tools/verify-native-alignment.py \
+  --readelf "$ANDROID_NDK/toolchains/llvm/prebuilt/<host>/bin/llvm-readelf" \
+  libs/extension-ffmpeg-2.19.1.aar \
+  android-offline/src/main/jniLibs
+```
+
+The verifier checks every `LOAD` segment and applies Android's `GNU_RELRO`
+end-alignment rule, including the dedicated-RELRO-`LOAD` exception.

@@ -12,8 +12,8 @@ fi
 FFmpegExtVersion="${FFMPEG_EXT_VERSION:-2.19.1}"
 ExoPlayerVersion="${EXOPLAYER_VERSION:-r${FFmpegExtVersion}}"
 FFmpegVersion="${FFMPEG_VERSION:-release/4.2}"
-NDKTag="${NDK_TAG:-r25c}"
-NDKVersion="${NDK_VERSION:-25.2.9519653}"
+NDKTag="${NDK_TAG:-r28c}"
+NDKVersion="${NDK_VERSION:-28.2.13676358}"
 AndroidApiLevel="${ANDROID_API_LEVEL:-21}"
 
 #I think we should check these and maybe
@@ -35,7 +35,7 @@ NDK_BIN_PATH="${NDK_PATH}/toolchains/llvm/prebuilt/${HOST_PLATFORM}/bin"
 FFMPEG_CMAKE_FILE="${FFMPEG_EXT_PATH}/jni/CMakeLists.txt"
 
 # 16KB page-size compatible linker settings for Android 15+ devices.
-export LDFLAGS="-Wl,-z,max-page-size=16384 ${LDFLAGS:-}"
+export LDFLAGS="-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 ${LDFLAGS:-}"
 
 echo "ROOT_PATH: $ROOT_PATH" 
 echo "BUILD_PATH: $BUILD_PATH"  
@@ -212,9 +212,8 @@ if [ $1 = "buildexoplayer" ] || [ $1 = "all" ]; then
 	
 	echo "Building Exoplayer..."
 	if [ -f "$FFMPEG_CMAKE_FILE" ]; then
-		if ! grep -q "max-page-size=16384" "$FFMPEG_CMAKE_FILE"; then
-			sed -i '/project(libffmpegJNI C CXX)/a add_link_options("-Wl,-z,max-page-size=16384")' "$FFMPEG_CMAKE_FILE"
-		fi
+		sed -i '/add_link_options(.*max-page-size=16384/d' "$FFMPEG_CMAKE_FILE"
+		sed -i '/project(libffmpegJNI C CXX)/a add_link_options("-Wl,-z,max-page-size=16384" "-Wl,-z,common-page-size=16384")' "$FFMPEG_CMAKE_FILE"
 	fi
 	cd "$EXOPLAYER_ROOT"
 	SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
@@ -244,5 +243,4 @@ if [ $1 = "deploy" ] || [ $1 = "all" ]; then
 fi
 
 #--------------------------------------------------------------------------------------------------------------------------#
-
 

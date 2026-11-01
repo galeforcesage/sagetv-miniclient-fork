@@ -29,13 +29,16 @@ while [[ $# -gt 0 ]]; do
 done
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-BUILD_ROOT="$ROOT_DIR/build/ffmpeg-android/$PROFILE"
+BUILD_ROOT="${FFMPEG_BUILD_ROOT:-$ROOT_DIR/build/ffmpeg-android}/$PROFILE"
 ASSET_ROOT="$ROOT_DIR/android-offline/src/main/assets/ffmpeg"
+JNI_ROOT="$ROOT_DIR/android-offline/src/main/jniLibs"
 
 for abi in $ABIS; do
   src="$BUILD_ROOT/$abi/prefix/bin/ffmpeg"
   dst_dir="$ASSET_ROOT/$abi"
   dst="$dst_dir/ffmpeg"
+  jni_dir="$JNI_ROOT/$abi"
+  jni_dst="$jni_dir/libffmpegexec.so"
 
   if [[ ! -f "$src" ]]; then
     echo "Missing built binary for $abi: $src" >&2
@@ -44,9 +47,12 @@ for abi in $ABIS; do
   fi
 
   mkdir -p "$dst_dir"
+  mkdir -p "$jni_dir"
   cp "$src" "$dst"
+  cp "$src" "$jni_dst"
   chmod +x "$dst"
-  echo "Installed $abi -> $dst"
+  chmod +x "$jni_dst"
+  echo "Installed $abi -> $dst and $jni_dst"
 done
 
-echo "Bundled FFmpeg assets installed under: $ASSET_ROOT"
+echo "Bundled FFmpeg installed under: $ASSET_ROOT and $JNI_ROOT"

@@ -27,8 +27,8 @@ Use this for Play compliance with minimum playback behavior change.
 export FFMPEG_EXT_VERSION=2.19.1
 export EXOPLAYER_VERSION=r2.19.1
 export FFMPEG_VERSION=release/4.2
-export NDK_TAG=r25c
-export NDK_VERSION=25.2.9519653
+export NDK_TAG=r28c
+export NDK_VERSION=28.2.13676358
 bash ./buildffmpegext.sh all
 ```
 
@@ -46,8 +46,8 @@ Do this only after Phase 1 passes smoke tests. Example:
 export FFMPEG_EXT_VERSION=2.19.1
 export EXOPLAYER_VERSION=r2.19.1
 export FFMPEG_VERSION=release/7.1
-export NDK_TAG=r25c
-export NDK_VERSION=25.2.9519653
+export NDK_TAG=r28c
+export NDK_VERSION=28.2.13676358
 bash ./buildffmpegext.sh all
 ```
 

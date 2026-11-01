@@ -49,7 +49,7 @@ if [[ -z "$FFMPEG_SRC" || ! -d "$FFMPEG_SRC" ]]; then
 fi
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-OUT_ROOT="$ROOT_DIR/build/ffmpeg-android/$PROFILE"
+OUT_ROOT="${FFMPEG_BUILD_ROOT:-$ROOT_DIR/build/ffmpeg-android}/$PROFILE"
 mkdir -p "$OUT_ROOT"
 
 HOST_TAG=""
@@ -224,7 +224,7 @@ for abi in $ABIS; do
     --nm="$NM" \
     --strip="$STRIP" \
     --extra-cflags="-fPIC" \
-    --extra-ldflags="-Wl,-z,max-page-size=16384" \
+    --extra-ldflags="-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384" \
     "${common_flags[@]}" \
     "${profile_flags[@]}"
 
