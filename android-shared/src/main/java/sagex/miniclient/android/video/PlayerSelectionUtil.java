@@ -148,12 +148,10 @@ public final class PlayerSelectionUtil
         if (vidIdx < 0) return false;
         int end = Math.min(u.length(), vidIdx + 96);
         String window = u.substring(vidIdx, end);
-        boolean hevc = window.contains("F=HEVC;")
+        return window.contains("F=HEVC;")
                 || window.contains("F=HEVC]")
                 || window.contains("F=H265;")
                 || window.contains("F=H265]");
-        return hevc && sagex.miniclient.android.video.ijkplayer.CodecSelector
-                .hasSelectableHardwareDecoder("video/hevc");
     }
 
     /**
@@ -374,9 +372,7 @@ public final class PlayerSelectionUtil
                 swapReason = "PS+MPEG-4 compat (STREAMINFO: MPEG-4 Part 2 in MPEG-PS crashes Exo PsExtractor)";
                 notifyLandmineSwap(toastCtx, "PS+MPEG-4 compat");
             }
-            else if (v != null && v.isHevc() && ps
-                    && sagex.miniclient.android.video.ijkplayer.CodecSelector
-                    .hasSelectableHardwareDecoder("video/hevc"))
+            else if (v != null && v.isHevc() && ps)
             {
                 useExo = false;
                 swapReason = "HEVC push compat (STREAMINFO: HEVC in MPEG-PS renders unreliably on Exo)";

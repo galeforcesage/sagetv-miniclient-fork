@@ -8,15 +8,13 @@ import java.io.IOException;
 import sagex.miniclient.net.HasClose;
 import sagex.miniclient.net.HasPushBuffer;
 import sagex.miniclient.net.PushBufferDataSource;
-import sagex.miniclient.net.CancellableDataSource;
 import sagex.miniclient.util.VerboseLogging;
 import tv.danmaku.ijk.media.player.misc.IMediaDataSource;
 
 /**
  * Created by seans on 20/12/15.
  */
-public class IJKPushMediaSource implements IMediaDataSource, HasPushBuffer, HasClose,
-        CancellableDataSource
+public class IJKPushMediaSource implements IMediaDataSource, HasPushBuffer, HasClose
 {
     private static final Logger log = LoggerFactory.getLogger(IJKPushMediaSource.class);
 
@@ -33,7 +31,7 @@ public class IJKPushMediaSource implements IMediaDataSource, HasPushBuffer, HasC
         this.url = url;
     }
 
-    private synchronized void _open() throws IOException
+    private void _open() throws IOException
     {
         if (dataSource != null)
         {
@@ -50,6 +48,12 @@ public class IJKPushMediaSource implements IMediaDataSource, HasPushBuffer, HasC
 
         if (VerboseLogging.DATASOURCE_LOGGING)
 
+        if(dataSource.isServerEOS())
+        {
+            log.debug("Datasource thinks server is EOS");
+            log.debug("readAt(): pos: {}, offset:{}, size: {}", position, offset, size);
+        }
+
         // ijkmediasource does a zero len read on a seek to see if it was successful
         // we'll return 0 (ok) so that the player buffers get cleaned up, and the the player
         // can start reading from the new location.
@@ -63,17 +67,12 @@ public class IJKPushMediaSource implements IMediaDataSource, HasPushBuffer, HasC
                 _open();
             }
 
-            if (dataSource.isServerEOS())
-            {
-                log.debug("Datasource thinks server is EOS; readAt pos={}, offset={}, size={}",
-                        position, offset, size);
-            }
             return dataSource.read(position, bytes, offset, size);
         }
-        catch (IOException error)
+        catch (Throwable t)
         {
-            log.warn("Push data source read failed", error);
-            throw error;
+            t.printStackTrace();
+            throw t;
         }
     }
 
@@ -99,9 +98,8 @@ public class IJKPushMediaSource implements IMediaDataSource, HasPushBuffer, HasC
     }
 
     @Override
-    public synchronized void release()
+    public void release()
     {
-        if (released) return;
         log.debug("Datasource release called");
 
         try
@@ -118,26 +116,14 @@ public class IJKPushMediaSource implements IMediaDataSource, HasPushBuffer, HasC
             {
                 dataSource.release();
             }
-            catch (RuntimeException error)
+            catch (Throwable t)
             {
-                log.warn("Push data source release failed", error);
+                t.printStackTrace();
             }
         }
 
         released = true;
         dataSource = null;
-    }
-
-    @Override
-    public void cancel()
-    {
-        release();
-    }
-
-    @Override
-    public boolean isCanceled()
-    {
-        return released;
     }
 
     @Override

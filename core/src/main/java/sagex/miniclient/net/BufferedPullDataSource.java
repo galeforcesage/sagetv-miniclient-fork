@@ -13,9 +13,7 @@ import sagex.miniclient.util.VerboseLogging;
  * byte reads would be sent directly to the sagetv server and is very inefficient.
  */
 public class BufferedPullDataSource extends SimplePullDataSource {
-    public static final int DEFAULT_BUFFER_SIZE = 256 * 1024;
-    static final int MAX_BUFFER = DEFAULT_BUFFER_SIZE;
-    private final int bufferSize;
+    static final int MAX_BUFFER = 262144;
     byte _buffer[];
 
     int bytesRead = 0; // how many bytes have we read into our buffer
@@ -24,17 +22,10 @@ public class BufferedPullDataSource extends SimplePullDataSource {
     int lastReadSize = 0;
 
     public BufferedPullDataSource() {
-        this(null, DEFAULT_BUFFER_SIZE);
     }
 
     public BufferedPullDataSource(String host) {
-        this(host, DEFAULT_BUFFER_SIZE);
-    }
-
-    public BufferedPullDataSource(String host, int bufferSize) {
         super(host);
-        if (bufferSize <= 0) throw new IllegalArgumentException("bufferSize must be positive");
-        this.bufferSize = bufferSize;
     }
 
     @Override
@@ -52,7 +43,7 @@ public class BufferedPullDataSource extends SimplePullDataSource {
         int read = 0;
         int sanity = 0;
         while (true) {
-            read = bufferedRead(position + total, buffer, offset + total, Math.min(len - total, bufferSize));
+            read = bufferedRead(position + total, buffer, offset + total, Math.min(len - total, MAX_BUFFER));
             if (read == -1 && total == 0) return -1;
             if (read == -1) break;
             if (read == 0) break;
@@ -70,8 +61,7 @@ public class BufferedPullDataSource extends SimplePullDataSource {
         // if the distance between these 2 positions is larger than a our buffer, then read new data
         // if the amount requested is not in our buffer, then load a new buffer
         // if buffer pos + len is greater than what is have in our buffer, then re-fill the buffer
-        if (bytesRead == 0 || Math.abs(position - lastBufferStartPos) > bufferSize
-                || bufPos + len > bufferSize || bufPos + len > bytesRead) {
+        if (bytesRead == 0 || Math.abs(position - lastBufferStartPos) > MAX_BUFFER || bufPos + len > MAX_BUFFER || bufPos + len > bytesRead) {
             if (VerboseLogging.DATASOURCE_LOGGING)
                 log.debug("Filling Buffer with {} bytes at postion {}", len, position);
             // if might be more efficient to use a Circular Buffer, but right now I don't have the
@@ -92,7 +82,7 @@ public class BufferedPullDataSource extends SimplePullDataSource {
     }
 
     int fillBuffer(long position) throws IOException {
-        return super.read(position, _buffer, 0, bufferSize);
+        return super.read(position, _buffer, 0, MAX_BUFFER);
     }
 
     @Override
@@ -100,7 +90,7 @@ public class BufferedPullDataSource extends SimplePullDataSource {
         if (_buffer != null) {
             throw new IOException("Attempting to OPEN an already OPENED Pull Data Source with URI: " + uri);
         }
-        _buffer = new byte[bufferSize];
+        _buffer = new byte[MAX_BUFFER];
         flush();
 
         return super.open(uri);

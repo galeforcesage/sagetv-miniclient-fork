@@ -1,38 +1,32 @@
 package sagex.miniclient.android.video.ijkplayer;
 
 import android.media.session.PlaybackState;
-import android.os.SystemClock;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.view.SurfaceView;
-
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 
 import sagex.miniclient.android.MiniclientApplication;
 import sagex.miniclient.android.ui.AndroidUIController;
 import sagex.miniclient.android.util.AudioUtil;
 import sagex.miniclient.android.video.BaseMediaPlayerImpl;
 import sagex.miniclient.android.video.MediaSessionCallbackHandler;
-import sagex.miniclient.android.video.PlaybackTelemetry;
 import sagex.miniclient.android.middleware.TrickplayController;
 import sagex.miniclient.android.middleware.TransportIjkMediaSource;
 import sagex.miniclient.media.SubtitleTrack;
 import sagex.miniclient.party.PartyPlaybackAdapter;
-import sagex.miniclient.media.SubtitleCodec;
 import sagex.miniclient.prefs.PrefStore;
 import sagex.miniclient.uibridge.Dimension;
 import sagex.miniclient.util.VerboseLogging;
 import tv.danmaku.ijk.media.player.IMediaPlayer;
 import tv.danmaku.ijk.media.player.IjkMediaPlayer;
-import tv.danmaku.ijk.media.player.IjkMediaMeta;
 import tv.danmaku.ijk.media.player.MediaInfo;
 import tv.danmaku.ijk.media.player.misc.IMediaDataSource;
 import tv.danmaku.ijk.media.player.misc.ITrackInfo;
 import tv.danmaku.ijk.media.player.misc.IjkTrackInfo;
 import android.support.v4.media.MediaMetadataCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
+
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static sagex.miniclient.util.Utils.toHHMMSS;
 
@@ -149,12 +143,6 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
      * attempt (decoder configures cleanly but never renders a frame).
      */
     private final Object releaseLock = new Object();
-    private int rebufferCount;
-    private long stalledDurationMs;
-    private long stallStartedAtMs = -1;
-    private long latestSeekTargetMs = -1;
-    private long latestSeekPositionMs = -1;
-    private volatile boolean networkDisconnected;
 
     public IJKMediaPlayerImpl(AndroidUIController activity)
     {
@@ -406,97 +394,6 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     }
 
     @Override
-    public PlaybackTelemetry getPlaybackTelemetry()
-    {
-        IjkMediaPlayer ijk = player instanceof IjkMediaPlayer ? (IjkMediaPlayer) player : null;
-        if (ijk == null) return PlaybackTelemetry.UNAVAILABLE;
-
-        long videoBuffered = ijk.getVideoCachedDuration();
-        long audioBuffered = ijk.getAudioCachedDuration();
-        long bufferedDuration = videoBuffered > 0 && audioBuffered > 0
-                ? Math.min(videoBuffered, audioBuffered)
-                : Math.max(videoBuffered, audioBuffered);
-        long totalStall = stalledDurationMs;
-        if (stallStartedAtMs >= 0)
-        {
-            totalStall += SystemClock.elapsedRealtime() - stallStartedAtMs;
-        }
-
-        MediaInfo mediaInfo = ijk.getMediaInfo();
-        String decoderName = "";
-        if (mediaInfo != null)
-        {
-            decoderName = mediaInfo.mVideoDecoderImpl != null
-                    ? mediaInfo.mVideoDecoderImpl : mediaInfo.mVideoDecoder;
-        }
-        boolean hardwareDecoder =
-                ijk.getVideoDecoder() == IjkMediaPlayer.FFP_PROPV_DECODER_MEDIACODEC;
-
-        return new PlaybackTelemetry.Builder()
-                .decoder(decoderName, hardwareDecoder)
-                .bufferedDurationMs(bufferedDuration)
-                .rebuffer(rebufferCount, totalStall)
-                .frameCounts(ijk.getVideoDecodedFrames(), ijk.getVideoDroppedFrames())
-                .decoderLatencyMs(ijk.getVideoDecoderLatencyMs())
-                .audioVideoClockDifferenceMs(ijk.getAvDiff() * 1000.0)
-                .latestSeek(latestSeekTargetMs, latestSeekPositionMs)
-                .networkDisconnected(networkDisconnected)
-                .tracks(getPlaybackTracks(ijk, mediaInfo))
-                .build();
-    }
-
-    private List<PlaybackTelemetry.Track> getPlaybackTracks(
-            IjkMediaPlayer ijk, MediaInfo mediaInfo)
-    {
-        List<PlaybackTelemetry.Track> tracks = new ArrayList<>();
-        ITrackInfo[] trackInfo = ijk.getTrackInfo();
-        if (trackInfo == null) return tracks;
-
-        for (int i = 0; i < trackInfo.length; i++)
-        {
-            ITrackInfo track = trackInfo[i];
-            if (track == null) continue;
-            int trackType = track.getTrackType();
-            String type = getTrackTypeName(trackType);
-            boolean selected = ijk.getSelectedTrack(trackType) == i;
-            String codec = "";
-            long channelLayout = 0;
-            if (mediaInfo != null && mediaInfo.mMeta != null
-                    && mediaInfo.mMeta.mStreams != null
-                    && i < mediaInfo.mMeta.mStreams.size())
-            {
-                IjkMediaMeta.IjkStreamMeta stream = mediaInfo.mMeta.mStreams.get(i);
-                if (stream != null)
-                {
-                    codec = stream.mCodecName;
-                    channelLayout = stream.mChannelLayout;
-                }
-            }
-            tracks.add(new PlaybackTelemetry.Track(
-                    "ijk:" + type + ":" + i,
-                    type,
-                    track.getLanguage(),
-                    codec,
-                    channelLayout,
-                    selected));
-        }
-        return tracks;
-    }
-
-    private static String getTrackTypeName(int trackType)
-    {
-        switch (trackType)
-        {
-            case ITrackInfo.MEDIA_TRACK_TYPE_VIDEO: return "video";
-            case ITrackInfo.MEDIA_TRACK_TYPE_AUDIO: return "audio";
-            case ITrackInfo.MEDIA_TRACK_TYPE_SUBTITLE:
-            case ITrackInfo.MEDIA_TRACK_TYPE_TIMEDTEXT: return "text";
-            case ITrackInfo.MEDIA_TRACK_TYPE_METADATA: return "metadata";
-            default: return "unknown";
-        }
-    }
-
-    @Override
     public boolean bindPartyAdmission(String handle)
     {
         return !pushMode && dataSource instanceof IJKPullMediaSource
@@ -696,12 +593,6 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
         initialAudioStreamPos = -1;
         initialTextStreamPos = -1;
         logTime = -1;
-        rebufferCount = 0;
-        stalledDurationMs = 0;
-        stallStartedAtMs = -1;
-        latestSeekTargetMs = -1;
-        latestSeekPositionMs = -1;
-        networkDisconnected = false;
 
         releasePlayer();
         try
@@ -722,10 +613,6 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
             ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 1); // let HW decoder handle rotation instead of software
             ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 1); // handle resolution changes in HW decoder without fallback to software
             ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 1);
-            ((IjkMediaPlayer) player).setOption(
-                    IjkMediaPlayer.OPT_CATEGORY_PLAYER,
-                    "enable-accurate-seek",
-                    pushMode ? 0 : 1);
 
             if (pushMode)
             {
@@ -834,17 +721,7 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                 else
                 {
                     log.info("Playing URL Using DataSource: isPush:{}, sageTVUrl: {}", pushMode, sageTVurl);
-                    dataSource = new IJKPullMediaSource(
-                            MiniclientApplication.get().getClient().getConnectedServerInfo().address,
-                            new IJKPullMediaSource.DisconnectListener()
-                            {
-                                @Override
-                                public void onNetworkDisconnected(java.io.IOException error)
-                                {
-                                    networkDisconnected = true;
-                                    log.error("IJK pull transport disconnected after retries", error);
-                                }
-                            });
+                    dataSource = new IJKPullMediaSource(MiniclientApplication.get().getClient().getConnectedServerInfo().address);
                     ((IJKPullMediaSource) dataSource).open(sageTVurl);
                     player.setDataSource(dataSource);
 
@@ -896,7 +773,6 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                 public void onSeekComplete(IMediaPlayer iMediaPlayer)
                 {
                     seekPending = false;
-                    latestSeekPositionMs = iMediaPlayer.getCurrentPosition();
                     if (trickplayController != null && trickplayController.isNativeAvailable())
                     {
                         trickplayController.notifySeekComplete();
@@ -923,11 +799,6 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                                 android.os.SystemClock.elapsedRealtime();
                         partyHandler.postDelayed(partyBufferingStart,
                                 PARTY_BUFFERING_CONFIRM_MS);
-                        if (stallStartedAtMs < 0)
-                        {
-                            rebufferCount++;
-                            stallStartedAtMs = SystemClock.elapsedRealtime();
-                        }
                     }
                     else if (what == IMediaPlayer.MEDIA_INFO_BUFFERING_END)
                     {
@@ -936,12 +807,6 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                         partyBufferingProbeGeneration = -1;
                         partyBufferingProbeStartedAtMs = -1;
                         setPartyBuffering(false);
-                        if (stallStartedAtMs >= 0)
-                        {
-                            stalledDurationMs +=
-                                    SystemClock.elapsedRealtime() - stallStartedAtMs;
-                            stallStartedAtMs = -1;
-                        }
                     }
                     if (what == IMediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START
                         || what == IMediaPlayer.MEDIA_INFO_AUDIO_RENDERING_START)
@@ -1143,8 +1008,6 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     protected void seekToImpl(long timeInMillis)
     {
         seekPending = true;
-        latestSeekTargetMs = timeInMillis;
-        latestSeekPositionMs = -1;
         player.seekTo(timeInMillis);
     }
 
@@ -1498,54 +1361,13 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     @Override
     public int getSubtitleTrackCount()
     {
-        return getSubtitleTracks().length;
+        return 0;
     }
 
     @Override
     public SubtitleTrack[] getSubtitleTracks()
     {
-        if (player == null) return new SubtitleTrack[0];
-        ITrackInfo[] trackInfo = player.getTrackInfo();
-        MediaInfo mediaInfo = player.getMediaInfo();
-        if (trackInfo == null) return new SubtitleTrack[0];
-
-        List<SubtitleTrack> subtitles = new ArrayList<>();
-        for (int i = 0; i < trackInfo.length; i++)
-        {
-            ITrackInfo track = trackInfo[i];
-            if (track == null) continue;
-            if (track.getTrackType() != ITrackInfo.MEDIA_TRACK_TYPE_SUBTITLE
-                    && track.getTrackType() != ITrackInfo.MEDIA_TRACK_TYPE_TIMEDTEXT)
-            {
-                continue;
-            }
-            String codecName = "";
-            if (mediaInfo != null && mediaInfo.mMeta != null
-                    && i < mediaInfo.mMeta.mStreams.size())
-            {
-                IjkMediaMeta.IjkStreamMeta stream = mediaInfo.mMeta.mStreams.get(i);
-                if (stream != null && stream.mCodecName != null) codecName = stream.mCodecName;
-            }
-            SubtitleCodec codec = getSubtitleCodec(codecName);
-            subtitles.add(new SubtitleTrack(
-                    i,
-                    codec,
-                    track.getLanguage(),
-                    codecName,
-                    false));
-        }
-        return subtitles.toArray(new SubtitleTrack[subtitles.size()]);
-    }
-
-    private static SubtitleCodec getSubtitleCodec(String codecName)
-    {
-        if (codecName == null) return null;
-        if ("subrip".equalsIgnoreCase(codecName) || "srt".equalsIgnoreCase(codecName))
-            return SubtitleCodec.SUBRIP;
-        if ("hdmv_pgs_subtitle".equalsIgnoreCase(codecName)
-                || "pgssub".equalsIgnoreCase(codecName))
-            return SubtitleCodec.PGS;
-        return null;
+        return new SubtitleTrack[0];
     }
 
     @Override
@@ -1575,15 +1397,7 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     @Override
     public int getSelectedSubtitleTrack()
     {
-        if (!(player instanceof IjkMediaPlayer)) return DISABLE_TRACK;
-        int selected = ((IjkMediaPlayer) player)
-                .getSelectedTrack(ITrackInfo.MEDIA_TRACK_TYPE_TIMEDTEXT);
-        if (selected < 0)
-        {
-            selected = ((IjkMediaPlayer) player)
-                    .getSelectedTrack(ITrackInfo.MEDIA_TRACK_TYPE_SUBTITLE);
-        }
-        return selected < 0 ? DISABLE_TRACK : selected;
+        return DISABLE_TRACK;
     }
 
     protected void releasePlayer()
@@ -1619,32 +1433,67 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
             mediaSessionToRelease.release();
         }
 
-        try
-        {
-            releaseDataSource();
-        }
-        catch (Throwable error)
-        {
-            log.warn("Unable to release IJK data source", error);
-        }
-
         if (playerToRelease == null)
-        {
-            super.releasePlayer();
             return;
-        }
         log.debug("Releasing Player");
 
         try
         {
-            playerToRelease.setDisplay(null);
+            try
+            {
+                if (playerToRelease.isPlaying())
+                {
+                    try
+                    {
+                        playerToRelease.pause();
+                    }
+                    catch (Throwable t)
+                    {
+                    }
+                    try
+                    {
+                        playerToRelease.stop();
+                    }
+                    catch (Throwable t)
+                    {
+                    }
+                }
+            }
+            catch (Throwable t)
+            {
+            }
+
+            // now release the datasource
+            // https://github.com/OpenSageTV/sagetv-miniclient/issues/54
+            try
+            {
+                releaseDataSource();
+            }
+            catch (Throwable t)
+            {
+            }
+
+            try
+            {
+                playerToRelease.reset();
+            }
+            catch (Throwable t)
+            {
+            }
+            log.debug("Player Is Stopped");
         }
-        catch (RuntimeException error)
+        catch (Throwable t)
         {
-            log.warn("Unable to detach IJK display before release", error);
         }
 
-        releaseIjkPlayerBounded(playerToRelease);
+
+        try
+        {
+            playerToRelease.release();
+        }
+        catch (Throwable t)
+        {
+        }
 
         try
         {
@@ -1658,70 +1507,8 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
             sagex.miniclient.android.audio.eq.EqManager.get().onPlayerReleased();
         }
         catch (Throwable ignored) { }
-        super.releasePlayer();
-    }
 
-    private void releaseIjkPlayerBounded(final IMediaPlayer playerToRelease)
-    {
-        final CountDownLatch released = new CountDownLatch(1);
-        Thread releaseThread = new Thread(new Runnable()
-        {
-            @Override
-            public void run()
-            {
-                try
-                {
-                    if (playerToRelease.isPlaying()) playerToRelease.pause();
-                }
-                catch (RuntimeException error)
-                {
-                    log.warn("IJK pause during release failed", error);
-                }
-                try
-                {
-                    playerToRelease.stop();
-                }
-                catch (RuntimeException error)
-                {
-                    log.warn("IJK stop during release failed", error);
-                }
-                try
-                {
-                    playerToRelease.reset();
-                }
-                catch (RuntimeException error)
-                {
-                    log.warn("IJK reset during release failed", error);
-                }
-                try
-                {
-                    playerToRelease.release();
-                }
-                catch (RuntimeException error)
-                {
-                    log.warn("IJK release failed", error);
-                }
-                finally
-                {
-                    released.countDown();
-                }
-            }
-        }, "ijk-release");
-        releaseThread.setDaemon(true);
-        releaseThread.start();
-        try
-        {
-            if (!released.await(2, TimeUnit.SECONDS))
-            {
-                log.error("IJK release exceeded 2 seconds after transport cancellation");
-                releaseThread.interrupt();
-            }
-        }
-        catch (InterruptedException error)
-        {
-            Thread.currentThread().interrupt();
-            log.warn("Interrupted while waiting for IJK release", error);
-        }
+        super.releasePlayer();
     }
 
     private void updateMediaSessionPlaybackState(long playbackPostion)

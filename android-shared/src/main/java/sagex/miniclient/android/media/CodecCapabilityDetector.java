@@ -222,20 +222,9 @@ public final class CodecCapabilityDetector
         return extras.toString();
     }
 
-    /**
-     * IJK's FFmpeg 6 build contains the HEVC parser/demuxer, but HEVC is only
-     * advertised when the same hardware MediaCodec selector used at playback
-     * can choose a decoder. This prevents server routing to unverified software
-     * HEVC and causes the normal server-transcoding fallback instead.
-     */
+    /** Phase 3: IJKPlayer libavcodec covers the project's video codec list. */
     public static boolean isVideoCodecSupportedByIjk(VideoCodec codec)
     {
-        if (codec == null) return false;
-        if (codec == VideoCodec.HEVC)
-        {
-            return sagex.miniclient.android.video.ijkplayer.CodecSelector
-                    .hasSelectableHardwareDecoder("video/hevc");
-        }
         return true;
     }
 
