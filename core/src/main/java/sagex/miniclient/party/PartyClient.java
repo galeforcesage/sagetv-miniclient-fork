@@ -1423,9 +1423,12 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         final long generation = synchronizationGeneration;
         final long playbackGeneration = adapter.playbackGeneration();
         final boolean[] pushStateApplied = new boolean[] { false };
+        final boolean[] pushTimelineAnchored = new boolean[] { false };
         final long[] observedCommandGeneration =
                 new long[] { playbackCommandGeneration };
         final long[] commandStableSinceMs = new long[] { -1 };
+        final long[] pushRenderedBaselineMs = new long[] { -1 };
+        final long[] pushLastRenderedMs = new long[] { -1 };
         executionObserver = executor.scheduleAtFixedRate(new Runnable() {
             @Override public void run() {
                 if (generation != synchronizationGeneration
@@ -1444,9 +1447,13 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
                     observedCommandGeneration[0] = currentCommandGeneration;
                     commandStableSinceMs[0] = adapter.elapsedRealtimeMs();
                     pushStateApplied[0] = false;
+                    pushTimelineAnchored[0] = false;
                     adapter.setCanonicalPosition(projectedTargetPosition(
                             message, adapter.elapsedRealtimeMs()));
                     observation = adapter.observe();
+                    pushRenderedBaselineMs[0] = observation == null
+                            ? -1 : observation.renderedPositionMs;
+                    pushLastRenderedMs[0] = pushRenderedBaselineMs[0];
                 }
                 boolean commandObserved = !requireServerCommand
                         || observedCommandGeneration[0] > playbackCommandGeneration;
@@ -1461,7 +1468,28 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
                     adapter.applyPlaybackState(targetState);
                     observation = adapter.observe();
                 }
+                if (requireServerCommand && commandObserved && observation != null) {
+                    long renderedPositionMs = observation.renderedPositionMs;
+                    if (pushRenderedBaselineMs[0] < 0
+                            || (pushLastRenderedMs[0] >= 0
+                                    && renderedPositionMs < pushLastRenderedMs[0])) {
+                        pushRenderedBaselineMs[0] = renderedPositionMs;
+                    }
+                    pushLastRenderedMs[0] = renderedPositionMs;
+                }
+                if (shouldAnchorPushTimeline(requireServerCommand, commandSettled,
+                        pushTimelineAnchored[0], pushRenderedBaselineMs[0],
+                        targetState, observation)) {
+                    adapter.setCanonicalPosition(projectedTargetPosition(
+                            message, observation.sampleMonoMs));
+                    observation = adapter.observe();
+                    pushTimelineAnchored[0] = true;
+                }
+                boolean pushTimelineReady = !requireServerCommand
+                        || targetState != PartyPlaybackAdapter.PlaybackState.PLAYING
+                        || pushTimelineAnchored[0];
                 boolean success = applied && commandObserved && commandSettled
+                        && pushTimelineReady
                         && landingMatches(message, observation);
                 long timeoutMs = correction
                         ? CORRECTION_EXECUTION_TIMEOUT_MS
@@ -1476,6 +1504,7 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
                             + " applied=" + applied
                             + " commandObserved=" + commandObserved
                             + " commandSettled=" + commandSettled
+                            + " pushTimelineAnchored=" + pushTimelineAnchored[0]
                             + " commandGeneration=" + adapter.playbackCommandGeneration()
                             + " baselineCommandGeneration=" + playbackCommandGeneration
                             + " playbackGeneration=" + playbackGeneration
@@ -1530,6 +1559,23 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
                                             long stableSinceMs, long nowMs) {
         return commandObserved && stableSinceMs >= 0
                 && nowMs - stableSinceMs >= PUSH_COMMAND_SETTLE_MS;
+    }
+
+    static boolean shouldAnchorPushTimeline(
+            boolean requireServerCommand,
+            boolean commandSettled,
+            boolean alreadyAnchored,
+            long renderedBaselineMs,
+            PartyPlaybackAdapter.PlaybackState targetState,
+            PartyPlaybackAdapter.Observation observation) {
+        return requireServerCommand
+                && commandSettled
+                && !alreadyAnchored
+                && renderedBaselineMs >= 0
+                && targetState == PartyPlaybackAdapter.PlaybackState.PLAYING
+                && observation != null
+                && observation.state == PartyPlaybackAdapter.PlaybackState.PLAYING
+                && observation.renderedPositionMs > renderedBaselineMs;
     }
 
     static boolean correctionSupersedesCommand(JSONObject command,

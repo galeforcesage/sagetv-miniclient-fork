@@ -470,6 +470,10 @@ a second Sage seek/action back to the server. On pull/pull-xcode/HLS, the adapte
 executes the player transition locally. Superseding commands, local Stop,
 leave/end and disconnect cancel pending server push transitions. A scheduled push
 transition is bound to the loaded MediaFile ID and cannot seek a newly opened item.
+After the server command burst settles, a playing push adapter anchors its
+player-relative timeline on the first actual PLAYING observation; decoder restart
+latency is not reported as persistent media skew, and landing cannot complete before
+rendered playback resumes.
 Optional local soft rate adjustment is only advertised on paths that actually
 support it; there is no server-side shared reverse-rate implementation.
 

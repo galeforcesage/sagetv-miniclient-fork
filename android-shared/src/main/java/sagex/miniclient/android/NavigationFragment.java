@@ -552,10 +552,18 @@ public class NavigationFragment extends DialogFragment
                             {
                                 String action = actions.get(which);
                                 if ("Join & Prepare".equals(action)) confirmPrepare(party);
-                                else if ("Rejoin".equals(action)) party.rejoin();
+                                else if ("Rejoin".equals(action))
+                                {
+                                    party.rejoin();
+                                    dismiss();
+                                }
                                 else if ("Show join code".equals(action)) showJoinCode(party);
                                 else if ("Invite connected client".equals(action)) showInviteMenu(party);
-                                else if ("Play Together".equals(action)) EventRouter.postCommand(client, SageCommand.PLAY);
+                                else if ("Play Together".equals(action))
+                                {
+                                    EventRouter.postCommand(client, SageCommand.PLAY);
+                                    dismiss();
+                                }
                                 else if ("End Party".equals(action)) confirmEnd(party);
                                 else if ("Leave Party".equals(action)) party.leave();
                             }
@@ -572,6 +580,7 @@ public class NavigationFragment extends DialogFragment
                     @Override public void onClick(DialogInterface dialog, int which)
                     {
                         party.prepare();
+                        dismiss();
                     }
                 })
                 .setNegativeButton(android.R.string.cancel, null)

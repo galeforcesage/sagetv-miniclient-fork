@@ -58,6 +58,40 @@ public class PartyClientTimingTest
     }
 
     @Test
+    public void pushTimelineAnchorsOnlyAfterRenderedPlaybackResumes()
+    {
+        PartyPlaybackAdapter.Observation buffering =
+                new PartyPlaybackAdapter.Observation(
+                        1_000, 0, 5_000, 10_000,
+                        PartyPlaybackAdapter.PlaybackState.BUFFERING,
+                        true, true, 125);
+        PartyPlaybackAdapter.Observation playing =
+                new PartyPlaybackAdapter.Observation(
+                        1_500, 250, 5_000, 10_000,
+                        PartyPlaybackAdapter.PlaybackState.PLAYING,
+                        true, true, 125);
+
+        assertFalse(PartyClient.shouldAnchorPushTimeline(
+                true, false, false, 0,
+                PartyPlaybackAdapter.PlaybackState.PLAYING, playing));
+        assertFalse(PartyClient.shouldAnchorPushTimeline(
+                true, true, false, 0,
+                PartyPlaybackAdapter.PlaybackState.PLAYING, buffering));
+        assertTrue(PartyClient.shouldAnchorPushTimeline(
+                true, true, false, 0,
+                PartyPlaybackAdapter.PlaybackState.PLAYING, playing));
+        assertFalse(PartyClient.shouldAnchorPushTimeline(
+                true, true, true, 0,
+                PartyPlaybackAdapter.PlaybackState.PLAYING, playing));
+        assertFalse(PartyClient.shouldAnchorPushTimeline(
+                false, true, false, 0,
+                PartyPlaybackAdapter.PlaybackState.PLAYING, playing));
+        assertFalse(PartyClient.shouldAnchorPushTimeline(
+                true, true, false, 250,
+                PartyPlaybackAdapter.PlaybackState.PLAYING, playing));
+    }
+
+    @Test
     public void matchingCorrectionSupersedesPendingCommand()
     {
         JSONObject command = new JSONObject()
