@@ -129,6 +129,14 @@ public class PartyClientTimingTest
     }
 
     @Test
+    public void removedMemberErrorsDiscardLocalMembership()
+    {
+        assertTrue(PartyClient.isMembershipTerminalError("NOT_MEMBER"));
+        assertTrue(PartyClient.isMembershipTerminalError("PREPARATION_EXPIRED"));
+        assertFalse(PartyClient.isMembershipTerminalError("PREPARATION_FAILED"));
+    }
+
+    @Test
     public void renderedOutputMustAdvanceAcrossTheStallWindow()
     {
         assertFalse(PartyClient.renderedOutputStalled(999, 0));

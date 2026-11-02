@@ -919,7 +919,8 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
             availability = Availability.UNAVAILABLE;
             status = "NOT_AVAILABLE";
         } else if ("SERVER_EPOCH_CHANGED".equals(errorCode)
-                || "PARTY_GONE".equals(errorCode)) {
+                || "PARTY_GONE".equals(errorCode)
+                || isMembershipTerminalError(errorCode)) {
             clearMembership(errorCode);
         } else if ("STALE_STATE".equals(errorCode)) {
             cancelScheduledPlayback();
@@ -1037,6 +1038,10 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         return "ACK".equals(reply.optString("type"))
                 && reply.has("clockConfident")
                 && !reply.optBoolean("clockConfident", true);
+    }
+
+    static boolean isMembershipTerminalError(String code) {
+        return "NOT_MEMBER".equals(code) || "PREPARATION_EXPIRED".equals(code);
     }
 
     private void applySnapshot(JSONObject newSnapshot) {

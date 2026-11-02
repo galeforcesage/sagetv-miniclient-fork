@@ -358,6 +358,8 @@ There is a 15000 ms unresolved join/preparation lease (including the parental
 dialog); expiration removes only that member with PREPARATION_EXPIRED. The
 ordinary Watch load completion directly resolves PREPARATION_RESULT and cancels
 the deadline; waiting for READY afterward does not retain the preparation timer.
+Clients receiving PREPARATION_EXPIRED or NOT_MEMBER must discard their local
+participant authority and show as no longer joined before attempting a fresh JOIN.
 Stop, leave/end,
 disconnect/replacement, rejoin or normal Watch revoke outstanding jobs/results.
 Already-running native media I/O may finish, but remains paused and cannot

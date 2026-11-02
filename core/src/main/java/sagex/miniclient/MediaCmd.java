@@ -156,11 +156,12 @@ public class MediaCmd
      * server produces 0 bytes and the client would sit forever with a blank
      * screen while the server's Seeker loops through halt-detect/restart cycles.
      *
-     * This watchdog fires PUSH_DATAFLOW_TIMEOUT_MS after OPENURL. If no push
-     * data has arrived by then, the player is closed (freeing the server-side
-     * tuner) and a warning is logged.
+     * Party preparation can legitimately spend most of its 15-second server
+     * lease starting the selected push route, so it uses a longer watchdog.
+     * Ordinary playback retains the shorter fail-fast timeout.
      */
-    private static final long PUSH_DATAFLOW_TIMEOUT_MS = 7000;
+    static final long PUSH_DATAFLOW_TIMEOUT_MS = 7000;
+    static final long PARTY_PUSH_DATAFLOW_TIMEOUT_MS = 20000;
     private volatile boolean pushDataReceived = false;
     private Timer pushDataflowTimer = null;
 
@@ -276,6 +277,9 @@ public class MediaCmd
     {
         cancelPushDataflowWatchdog();
         pushDataReceived = false;
+        final boolean partyHeld = myConn.getPartyClient() != null
+                && myConn.getPartyClient().isPlaybackHeld();
+        final long timeoutMs = pushDataflowTimeoutMs(partyHeld);
         pushDataflowTimer = new Timer("PushDataflowWatchdog", true);
         pushDataflowTimer.schedule(new TimerTask()
         {
@@ -288,11 +292,16 @@ public class MediaCmd
                             + "closing player to release server tuner. Likely cause: tuner cannot "
                             + "receive the requested channel (wrong modulation, bad signal, or "
                             + "stale channel assignment after server restart).",
-                            PUSH_DATAFLOW_TIMEOUT_MS);
+                            timeoutMs);
                     close();
                 }
             }
-        }, PUSH_DATAFLOW_TIMEOUT_MS);
+        }, timeoutMs);
+    }
+
+    static long pushDataflowTimeoutMs(boolean partyHeld)
+    {
+        return partyHeld ? PARTY_PUSH_DATAFLOW_TIMEOUT_MS : PUSH_DATAFLOW_TIMEOUT_MS;
     }
 
     /**
