@@ -87,6 +87,14 @@ public class TrickplayController
     private static final long CONVERGENCE_TIMEOUT_MS = 1500;
 
     /**
+     * A Party correction installs an authoritative mapping before the server
+     * flush arrives. Keep accepting a player-position reset for the lifetime
+     * of the correction observer, but do not let an unrelated later regression
+     * replace a mapping that already landed.
+     */
+    private static final long AUTHORITATIVE_RESET_WINDOW_MS = 8_000;
+
+    /**
      * Pause-resume scrubber monotonicity guard.
      *
      * <p>Symptom: pausing then resuming playback can cause the underlying
@@ -162,6 +170,7 @@ public class TrickplayController
     private long    baseOffsetMs = 0;
     private boolean authoritativeResetPending;
     private long authoritativePositionMs;
+    private long authoritativeResetDeadlineMs;
 
     // Paused indicator (used only by isStable / getState).
     private boolean paused = false;
@@ -297,6 +306,7 @@ public class TrickplayController
         baseOffsetMs = 0;
         authoritativeResetPending = false;
         authoritativePositionMs = 0;
+        authoritativeResetDeadlineMs = 0;
         paused = false;
         pendingPreReadySeek = false;
         burstStartedAtMs = 0;
@@ -383,13 +393,22 @@ public class TrickplayController
 
     public void flush()
     {
-        // A flush always invalidates the player-position → wallclock mapping.
-        // The mapping will be re-established on the next seek convergence
-        // (if a seek was in flight) or stay invalid until the player
-        // produces a meaningful position.
+        // Ordinary flushes invalidate the player-position → wallclock mapping.
+        // A Party correction is different: its authoritative mapping must span
+        // the server flush because some push players restart near zero while
+        // others retain their current position. onPlayerPosition() rebases the
+        // mapping if a reset is actually observed.
         synchronized (this)
         {
-            mappingValid = false;
+            if (invalidatesMappingOnFlush(authoritativeResetPending))
+            {
+                mappingValid = false;
+            }
+            else
+            {
+                authoritativeResetDeadlineMs =
+                        SystemClock.elapsedRealtime() + AUTHORITATIVE_RESET_WINDOW_MS;
+            }
             // A flush is a reposition boundary: start a new epoch so any
             // in-flight position sample tagged with the prior epoch is
             // discarded rather than applied to the new content.
@@ -518,12 +537,21 @@ public class TrickplayController
         boolean wakeup = false;
         synchronized (this)
         {
+            long now = SystemClock.elapsedRealtime();
+            if (authoritativeResetPending
+                    && authoritativeResetDeadlineMs > 0
+                    && now > authoritativeResetDeadlineMs)
+            {
+                authoritativeResetPending = false;
+                authoritativeResetDeadlineMs = 0;
+            }
             if (authoritativeResetPending && positionMs < lastPlayerPosMs)
             {
                 lastPlayerPosMs = positionMs;
                 baseOffsetMs = authoritativePositionMs - positionMs;
                 mappingValid = true;
                 authoritativeResetPending = false;
+                authoritativeResetDeadlineMs = 0;
                 log.debug("Authoritative Party reset accepted: target={}, pos={}, baseOffset={}",
                         authoritativePositionMs, positionMs, baseOffsetMs);
                 return;
@@ -583,10 +611,17 @@ public class TrickplayController
         pendingPreReadySeek = false;
         authoritativePositionMs = positionMs;
         authoritativeResetPending = true;
+        authoritativeResetDeadlineMs =
+                SystemClock.elapsedRealtime() + AUTHORITATIVE_RESET_WINDOW_MS;
         baseOffsetMs = positionMs - lastPlayerPosMs;
         mappingValid = true;
         log.debug("Authoritative Party position installed: target={}, playerPos={}, baseOffset={}",
                 positionMs, lastPlayerPosMs, baseOffsetMs);
+    }
+
+    static boolean invalidatesMappingOnFlush(boolean authoritativeResetPending)
+    {
+        return !authoritativeResetPending;
     }
 
     /**

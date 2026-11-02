@@ -126,13 +126,6 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
                             .isPlaybackHeld())
             {
                 partyHold = true;
-                context.runOnUiThread(new Runnable()
-                {
-                    @Override public void run()
-                    {
-                        context.getVideoView().setAlpha(0.0f);
-                    }
-                });
             }
         }
         catch (Throwable ignored)
@@ -753,19 +746,6 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     public void setPartyHold(boolean hold)
     {
         partyHold = hold;
-        context.runOnUiThread(new Runnable()
-        {
-            @Override public void run()
-            {
-                try
-                {
-                    context.getVideoView().setAlpha(partyHold ? 0.0f : 1.0f);
-                }
-                catch (Throwable ignored)
-                {
-                }
-            }
-        });
         applyPartyHold(hold);
     }
 

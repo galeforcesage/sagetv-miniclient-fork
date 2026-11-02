@@ -333,7 +333,9 @@ The adapter must install a local **hold/autoplay-suppression before sending
 PREPARE**, not wait for the accepted reply: ordinary NG media setup and
 PREPARATION_RESULT can race the reply. Match events by `preparationId` and
 canonical media, and ignore stale/cancelled IDs. PREPARE_ACCEPTED is not a
-successful media load or permission grant. The server runs the ordinary
+successful media load or permission grant. The hold pauses and suppresses audio;
+it must not hide or make the decoded video surface transparent, because the first
+prepared frame remains the visible staging frame. The server runs the ordinary
 UIManager/VideoFrame Watch path asynchronously, retaining its parental prompt,
 Seeker permission/resource checks, file verification and media-player selection.
 It tags WATCH/LOAD jobs with revocable operation authority, forces full switching
