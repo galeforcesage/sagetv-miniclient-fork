@@ -63,13 +63,13 @@ public class SettingsFragment extends PreferenceFragment
             p = this.findPreference(Keys.exit_on_standby);
             if (p != null)
             {
-                p.setDefaultValue(true);
+                p.setDefaultValue(false);
             }
             
             p = this.findPreference(Keys.app_destroy_on_pause);
             if (p != null)
             {
-                p.setDefaultValue(true);
+                p.setDefaultValue(false);
             }
 
             p = this.findPreference(Keys.disable_sleep);

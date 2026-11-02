@@ -2,6 +2,7 @@ package sagex.miniclient.android.middleware;
 
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,11 +18,17 @@ import java.io.IOException;
  *
  * <p>Time model (one source of truth):
  * <ul>
- *   <li><b>Pull mode</b>: ExoPlayer's {@code getCurrentPosition()} <em>is</em>
- *       the timeline time, so reported time = playerPos.</li>
+ *   <li><b>Pull mode (direct)</b>: ExoPlayer's {@code getCurrentPosition()}
+ *       <em>is</em> the timeline time, so reported time = playerPos.</li>
  *   <li><b>Push mode, no seek yet</b>: reported time = serverStartTimeMs +
  *       playerPos. {@code serverStartTimeMs} is set by
  *       {@link sagex.miniclient.MediaCmd} from the latest PushBuffer frame.</li>
+ *   <li><b>Pull mode, server-conditioned (pull-xcode), no seek yet</b>: same
+ *       formula as push -- reported time = serverStartTimeMs + playerPos.
+ *       A server-conditioned pull reopen (/msproxy/XCODE_SETUP) restarts its
+ *       local player timeline near zero, so {@code MediaCmd#classifyPullTimeline}
+ *       seeds serverStartTimeMs with the absolute seek-target origin, driven by
+ *       the server's CAP_EFFECTIVE_DELIVERY hint. A no-op (0) for direct pull.</li>
  *   <li><b>After any seek converges</b>: reported time = playerPos +
  *       baseOffsetMs, where baseOffsetMs = seekTargetMs - posAtConvergence.
  *       This applies to both push and pull. Independent of
@@ -153,6 +160,8 @@ public class TrickplayController
     // Two-clock mapping. Once set, reported = playerPos + baseOffsetMs.
     private boolean mappingValid = false;
     private long    baseOffsetMs = 0;
+    private boolean authoritativeResetPending;
+    private long authoritativePositionMs;
 
     // Paused indicator (used only by isStable / getState).
     private boolean paused = false;
@@ -172,11 +181,11 @@ public class TrickplayController
     // on notifyPlayerReady().
     private boolean pendingPreReadySeek = false;
 
-    // Wallclock of the first beginSeek() in the current burst, used to
+    // Monotonic time of the first beginSeek() in the current burst, used to
     // enforce SEEK_MAX_DEFER_MS. Reset to 0 when a commit fires.
     private long burstStartedAtMs = 0;
 
-    // Wallclock of the last commit, used to enforce CONVERGENCE_TIMEOUT_MS
+    // Monotonic time of the last commit, used to enforce CONVERGENCE_TIMEOUT_MS
     // when a new burst arrives while seekCommitted is still true.
     private long lastCommitAtMs = 0;
 
@@ -207,7 +216,7 @@ public class TrickplayController
 
                 // In-flight gate: a previous seek is still converging.
                 // Defer this commit unless the safety ceiling has fired.
-                long now = System.currentTimeMillis();
+                long now = SystemClock.elapsedRealtime();
                 if (seekCommitted && (now - lastCommitAtMs) < CONVERGENCE_TIMEOUT_MS)
                 {
                     long remaining = CONVERGENCE_TIMEOUT_MS - (now - lastCommitAtMs);
@@ -286,6 +295,8 @@ public class TrickplayController
         committedTargetMs = -1;
         mappingValid = false;
         baseOffsetMs = 0;
+        authoritativeResetPending = false;
+        authoritativePositionMs = 0;
         paused = false;
         pendingPreReadySeek = false;
         burstStartedAtMs = 0;
@@ -307,6 +318,20 @@ public class TrickplayController
         if (nativeHandle != 0)
         {
             NativeTransport.nClose(nativeHandle);
+        }
+    }
+
+    public void cancelPendingAction()
+    {
+        uiHandler.removeCallbacks(seekCommitRunnable);
+        synchronized (this)
+        {
+            seekTargetMs = -1;
+            seekArmed = false;
+            seekCommitted = false;
+            committedTargetMs = -1;
+            pendingPreReadySeek = false;
+            burstStartedAtMs = 0;
         }
     }
 
@@ -430,13 +455,11 @@ public class TrickplayController
             pendingPreReadySeek = !opened;
             isPush = pushMode;
 
-            long now = System.currentTimeMillis();
+            long now = SystemClock.elapsedRealtime();
             if (burstStartedAtMs == 0) burstStartedAtMs = now;
 
-            long sinceBurstStart = now - burstStartedAtMs;
-            long maxDeferRemaining = SEEK_MAX_DEFER_MS - sinceBurstStart;
             long window = isPush ? PUSH_SEEK_QUIET_WINDOW_MS : SEEK_QUIET_WINDOW_MS;
-            delay = Math.min(window, Math.max(0, maxDeferRemaining));
+            delay = SeekCoalescePolicy.computeCommitDelayMs(now, burstStartedAtMs, window, SEEK_MAX_DEFER_MS);
         }
 
         // Push-mode preflush: drop the stale ring contents NOW so IJK's
@@ -495,20 +518,29 @@ public class TrickplayController
         boolean wakeup = false;
         synchronized (this)
         {
+            if (authoritativeResetPending && positionMs < lastPlayerPosMs)
+            {
+                lastPlayerPosMs = positionMs;
+                baseOffsetMs = authoritativePositionMs - positionMs;
+                mappingValid = true;
+                authoritativeResetPending = false;
+                log.debug("Authoritative Party reset accepted: target={}, pos={}, baseOffset={}",
+                        authoritativePositionMs, positionMs, baseOffsetMs);
+                return;
+            }
+
             // Pause-resume monotonicity guard. See class-level constants.
             // Only applies when no seek is armed/committed — seeks are
             // expected to rewind the clock and are handled by the mapping
             // path below.
-            if (!seekArmed && !seekCommitted && lastPlayerPosMs > 0 && positionMs < lastPlayerPosMs)
+            if (SeekCoalescePolicy.shouldDropBackwardSample(lastPlayerPosMs, positionMs,
+                    seekArmed, seekCommitted,
+                    MONOTONIC_GUARD_MIN_REGRESSION_MS, MONOTONIC_GUARD_MAX_REGRESSION_MS))
             {
                 long regression = lastPlayerPosMs - positionMs;
-                if (regression > MONOTONIC_GUARD_MIN_REGRESSION_MS
-                        && regression < MONOTONIC_GUARD_MAX_REGRESSION_MS)
-                {
-                    log.debug("Monotonicity guard: dropping backward player pos {} (last {}, delta -{}ms, paused={})",
-                              positionMs, lastPlayerPosMs, regression, paused);
-                    return;
-                }
+                log.debug("Monotonicity guard: dropping backward player pos {} (last {}, delta -{}ms, paused={})",
+                          positionMs, lastPlayerPosMs, regression, paused);
+                return;
             }
 
             lastPlayerPosMs = positionMs;
@@ -541,11 +573,28 @@ public class TrickplayController
         }
     }
 
+    public synchronized void installAuthoritativePosition(long positionMs)
+    {
+        if (positionMs < 0) return;
+        seekTargetMs = -1;
+        seekArmed = false;
+        seekCommitted = false;
+        committedTargetMs = -1;
+        pendingPreReadySeek = false;
+        authoritativePositionMs = positionMs;
+        authoritativeResetPending = true;
+        baseOffsetMs = positionMs - lastPlayerPosMs;
+        mappingValid = true;
+        log.debug("Authoritative Party position installed: target={}, playerPos={}, baseOffset={}",
+                positionMs, lastPlayerPosMs, baseOffsetMs);
+    }
+
     /**
      * @return the time SageTV's GETMEDIATIME loop should see.
      *         Frozen during a seek; otherwise derived from player position
-     *         via the active mapping (or push-mode server start time, if
-     *         no mapping has been established yet).
+     *         via the active mapping (or the server-start-time baseline, for
+     *         push or server-conditioned pull-xcode, if no mapping has been
+     *         established yet).
      */
     public synchronized long getReportedTime()
     {
@@ -560,12 +609,13 @@ public class TrickplayController
             return lastPlayerPosMs + baseOffsetMs;
         }
 
-        if (pushMode && serverStartTimeMs >= 0)
+        if (serverStartTimeMs >= 0)
         {
             return serverStartTimeMs + lastPlayerPosMs;
         }
 
-        // Pull mode pre-mapping (initial load): playerPos IS timeline time.
+        // Pre-mapping, no baseline set: pull-direct's playerPos IS already
+        // timeline time.
         return lastPlayerPosMs;
     }
 
@@ -599,7 +649,7 @@ public class TrickplayController
         setPaused(false);
     }
 
-    /* ---- Server time (push mode startup baseline) ---- */
+    /* ---- Server time (pre-mapping startup baseline: push, or pull-xcode reopen origin) ---- */
 
     public synchronized void setServerStartTime(long timeMs)
     {

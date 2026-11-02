@@ -378,6 +378,12 @@ public final class PlayerSelectionUtil
                 swapReason = "HEVC push compat (STREAMINFO: HEVC in MPEG-PS renders unreliably on Exo)";
                 notifyLandmineSwap(toastCtx, "HEVC push compat");
             }
+            else if (v != null && v.isMpeg2Video() && v.interlaced && streamInfo.isMatroska())
+            {
+                useExo = false;
+                swapReason = "interlaced MPEG2-in-Matroska compat (MediaCodec clock/render stall; IJK fallback)";
+                notifyLandmineSwap(toastCtx, "1080i MPEG2/MKV compat");
+            }
             else if (v != null && v.isMpeg2Video() && !exoCanDecodeMpeg2)
             {
                 useExo = false;

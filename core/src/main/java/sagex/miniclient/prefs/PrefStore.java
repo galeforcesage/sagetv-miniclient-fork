@@ -329,12 +329,24 @@ public interface PrefStore
         /**
          * NG Trick-Play &amp; Position Reporting Contract capability toggles.
          * Each gates advertisement of one independent, opt-in capability during
-         * the NG handshake. All default true. A legacy server never queries
-         * these property names, so toggling them has zero effect on legacy
-         * sessions; they exist so the capability can be disabled for debugging.
+         * the NG handshake. A legacy server never queries these property names,
+         * so toggling them has zero effect on legacy sessions.
          *   TRICKPLAY_POSITION_V1 - reported position == on-screen frame media-time
-         *   SEEK_EPOCH_V1         - epoch tags so stale samples can't cross a reposition
+         *                           (default true)
+         *   SEEK_EPOCH_V1         - epoch tags so stale samples can't cross a
+         *                           reposition. Default FALSE / not advertised:
+         *                           the current GETMEDIATIME wire response is a
+         *                           fixed-size field and cannot carry an epoch
+         *                           tag alongside the position without breaking
+         *                           legacy parsers. The epoch bookkeeping stays
+         *                           active client-side (TrickplayController
+         *                           bumps it on every flush and uses it as an
+         *                           internal stale-sample guard); this toggle
+         *                           only controls whether it is negotiated with
+         *                           the server. Flip on only once a wire format
+         *                           that can carry it exists.
          *   DVR_WINDOW_V1         - seekable-window / live-edge clamping
+         *                           (default true)
          */
         String cap_trickplay_position_v1 = "cap_trickplay_position_v1";
         String cap_seek_epoch_v1 = "cap_seek_epoch_v1";

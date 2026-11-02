@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.Map;
 
 import sagex.miniclient.prefs.PrefStore;
+import sagex.miniclient.party.PartyPlaybackAdapter;
 
 /**
  * Created by seans on 08/11/15.
@@ -173,4 +174,9 @@ public interface MiniClientOptions {
      * <p>Default implementation returns {@code "UNKNOWN"}.</p>
      */
     default String getDeviceClass() { return "UNKNOWN"; }
+
+    default PartyPlaybackAdapter createPartyPlaybackAdapter(MiniClient client)
+    {
+        return PartyPlaybackAdapter.UNSUPPORTED;
+    }
 }

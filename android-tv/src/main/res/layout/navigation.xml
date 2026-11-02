@@ -44,6 +44,14 @@
                 </GridLayout>
             </LinearLayout>
 
+            <Button
+                android:id="@+id/nav_party"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_vertical"
+                android:text="@string/party_mode"
+                android:visibility="gone"/>
+
             <LinearLayout
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content">

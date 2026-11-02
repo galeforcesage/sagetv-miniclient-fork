@@ -107,6 +107,11 @@ public class Exo2PullDataSource implements DataSource, HasClose
         }
     }
 
+    public boolean bindPartyAdmission(String handle) {
+        BufferedPullDataSource ds = dataSource;
+        return ds != null && ds.bindPartyAdmission(handle);
+    }
+
     @Override
     public int read(byte[] buffer, int offset, int readLength) throws IOException
     {

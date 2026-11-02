@@ -1,9 +1,14 @@
 package sagex.miniclient.ngcontext;
 
+import com.sun.net.httpserver.HttpServer;
+
 import org.junit.Before;
 import org.junit.Test;
 
 import sagex.miniclient.IBus;
+
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.Assert.*;
 
@@ -137,6 +142,29 @@ public class NgPlaybackContextStoreTest {
         assertNotNull(nullBusStore.getCurrent());
         nullBusStore.onMediaClose();
         assertNull(nullBusStore.getCurrent());
+    }
+
+    @Test
+    public void testRefreshCurrentByClientNameUsesCanonicalEndpoint() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/ng/playback-context/current", exchange -> {
+            assertEquals("clientName=56:59:51:4c:4a:4e", exchange.getRequestURI().getRawQuery());
+            byte[] body = ("{\"type\":\"NG_PLAYBACK_CONTEXT\",\"sessionId\":\"sess-1\","
+                    + "\"context\":" + SAMPLE_JSON + "}").getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        try {
+            store.setServerBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+            assertTrue(store.refreshCurrentByClientName("56:59:51:4c:4a:4e"));
+            assertNotNull(store.getCurrent());
+            assertEquals(123L, store.getCurrent().mediaFileId());
+        } finally {
+            server.stop(0);
+        }
     }
 
     private static class TestBus implements IBus {

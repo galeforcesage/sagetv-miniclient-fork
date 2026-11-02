@@ -128,6 +128,17 @@ public class UIActivityLifeCycleHandler<UIRenderType extends UIRenderer> impleme
         this.activity = activity;
 
         log.debug("MiniClient UI onResume() called");
+        try
+        {
+            if (client.getCurrentConnection() != null)
+            {
+                client.getCurrentConnection().getPartyClient().onForegroundConfidenceLost();
+            }
+        }
+        catch (Throwable t)
+        {
+            log.debug("Unable to refresh Party clock after foreground transition", t);
+        }
 
         // setup to handle events
         client.eventbus().register(UIActivityLifeCycleHandler.this);
@@ -233,26 +244,16 @@ public class UIActivityLifeCycleHandler<UIRenderType extends UIRenderer> impleme
         }
 
         log.debug("MiniClient UI onPause() called");
+        // Android pauses an Activity for screen-off, DeX/HDMI changes, transient
+        // overlays, and task switches. None of those is an intentional SageTV
+        // playback command. Keep the local player and transport running; explicit
+        // Pause/Stop still arrives through the media session or SageTV protocol.
+        log.info("MiniClient UI paused; preserving playback and transport.");
         try
         {
-            // pause video if we are leaving the app
-            if (client.getCurrentConnection() != null && client.getCurrentConnection().getMediaCmd() != null)
-            {
-                if (client.getCurrentConnection().getMediaCmd().getPlaya() != null)
-                {
-                    log.info("We are leaving the App, Make sure Video is stopped.");
-                    client.getCurrentConnection().getMediaCmd().getPlaya().pause();
-                    EventRouter.postCommand(client, SageCommand.STOP);
-                }
-            }
-        }
-        catch (Throwable t)
-        {
-            log.debug("Failed why attempting to pause media player");
-        }
-        try
-        {
-            if (client.properties().getBoolean(Keys.app_destroy_on_pause, true))
+            if (client.properties().getBoolean(Keys.app_destroy_on_pause, false)
+                    && activity != null && activity.isFinishing()
+                    && !activity.isChangingConfigurations())
             {
                 try
                 {
@@ -434,6 +435,12 @@ public class UIActivityLifeCycleHandler<UIRenderType extends UIRenderer> impleme
     public void onDestroy()
     {
         log.debug("Closing MiniClient Connection");
+
+        if (activity != null && activity.isChangingConfigurations())
+        {
+            log.info("Preserving MiniClient connection across configuration/display change");
+            return;
+        }
 
         if (mediaSessionCompat != null)
         {

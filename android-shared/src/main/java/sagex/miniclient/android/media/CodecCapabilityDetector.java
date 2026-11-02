@@ -100,6 +100,11 @@ public final class CodecCapabilityDetector
      */
     public static boolean isInterlacedVideoSafeByExo(String deviceClass, VideoCodec codec)
     {
+        // MediaCodec may report MPEG-2 support while still stalling indefinitely
+        // on copied 1080i MPEG-2 in Matroska. Keep the Media3/Exo surface
+        // progressive-only for MPEG-2 on every device; IJK remains the
+        // interlaced-capable route.
+        if (codec == VideoCodec.MPEG2) return false;
         if (deviceClass != null && "SHIELD".equalsIgnoreCase(deviceClass)) return true;
 
         switch (codec)

@@ -18,15 +18,21 @@ public class EventRouter
     public static void postCommand(MiniClient client, int command)
     {
         log.debug("Post Command Called:  " + command);
+        SageCommand parsed = SageCommand.parseByID(command);
+        if (client.getCurrentConnection() != null
+                && client.getCurrentConnection().getPartyClient().intercept(parsed))
+        {
+            return;
+        }
 
         //If the player is already paused, bypass sending command to SageTV, and allow the player to handle
-        if (client.isVideoPaused() && SageCommand.parseByID(command) == SageCommand.PAUSE)
+        if (client.isVideoPaused() && parsed == SageCommand.PAUSE)
         {
             log.debug("Override pause to advance frame");
             client.getPlayer().pause();
             return;
         }
-        if ((client.isVideoPaused() || client.isVideoPlaying()) && SageCommand.parseByID(command) == SageCommand.STOP)
+        if ((client.isVideoPaused() || client.isVideoPlaying()) && parsed == SageCommand.STOP)
         {
             log.debug("Telling active player to stop playback");
             client.getPlayer().stop();
@@ -34,7 +40,7 @@ public class EventRouter
 
         if (client.properties().getBoolean(PrefStore.Keys.debug_sage_commands, false))
         {
-            client.eventbus().post(new DebugSageCommandEvent(SageCommand.parseByID(command)));
+            client.eventbus().post(new DebugSageCommandEvent(parsed));
         }
 
         client.getCurrentConnection().postSageCommandEvent(command);
@@ -43,6 +49,11 @@ public class EventRouter
     public static void postCommand(MiniClient client, SageCommand command)
     {
         log.debug("Post SageCommandCalled: " + command.getDisplayName() + " Key:" + command.getKey() + " EventCode:" + command.getEventCode());
+        if (client.getCurrentConnection() != null
+                && client.getCurrentConnection().getPartyClient().intercept(command))
+        {
+            return;
+        }
 
         //If the player is already paused, bypass sending command to SageTV, and allow the player to handle
         if (client.isVideoPaused() && command == SageCommand.PAUSE)

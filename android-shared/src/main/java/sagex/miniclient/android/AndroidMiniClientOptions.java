@@ -26,9 +26,11 @@ import java.util.Set;
 import java.util.TreeSet;
 
 import sagex.miniclient.IBus;
+import sagex.miniclient.MiniClient;
 import sagex.miniclient.MiniClientConnection;
 import sagex.miniclient.MiniClientOptions;
 import sagex.miniclient.android.media.CodecCapabilityDetector;
+import sagex.miniclient.android.party.AndroidPartyPlaybackAdapter;
 import sagex.miniclient.android.prefs.AndroidPrefStore;
 //import sagex.miniclient.prefs.ConnectionPrefStore;
 import sagex.miniclient.media.AudioCodec;
@@ -37,6 +39,7 @@ import sagex.miniclient.util.AspectModeManager;
 import sagex.miniclient.prefs.PrefStore;
 import sagex.miniclient.prefs.TriState;
 import sagex.miniclient.media.VideoCodec;
+import sagex.miniclient.party.PartyPlaybackAdapter;
 
 /**
  * Created by seans on 08/11/15.
@@ -84,6 +87,12 @@ public class AndroidMiniClientOptions implements MiniClientOptions {
     @Override
     public IBus getBus() {
         return bus;
+    }
+
+    @Override
+    public PartyPlaybackAdapter createPartyPlaybackAdapter(MiniClient client)
+    {
+        return new AndroidPartyPlaybackAdapter(client, context);
     }
 
     @Override

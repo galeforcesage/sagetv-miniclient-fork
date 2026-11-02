@@ -73,9 +73,14 @@ public final class NgLivePoller {
      */
     public void startByClientName(String serverBaseUrl, String clientName, long intervalMs) {
         stop();
-        this.pollUrl = serverBaseUrl + "/ng/playback-context/current?clientName=" + clientName;
+        this.pollUrl = currentContextUrl(serverBaseUrl, clientName);
         log.info("NgLivePoller: starting poll every {}ms → {}", intervalMs, pollUrl);
         pollTask = scheduler.scheduleAtFixedRate(this::poll, intervalMs, intervalMs, TimeUnit.MILLISECONDS);
+    }
+
+    public boolean refreshByClientName(String serverBaseUrl, String clientName) {
+        String url = currentContextUrl(serverBaseUrl, clientName);
+        return url != null && fetch(url);
     }
 
     /**
@@ -109,9 +114,13 @@ public final class NgLivePoller {
     private void poll() {
         var url = pollUrl;
         if (url == null) return;
+        fetch(url);
+    }
 
+    private boolean fetch(String url) {
+        HttpURLConnection conn = null;
         try {
-            var conn = (HttpURLConnection) URI.create(url).toURL().openConnection();
+            conn = (HttpURLConnection) URI.create(url).toURL().openConnection();
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(HTTP_TIMEOUT_MS);
             conn.setReadTimeout(HTTP_TIMEOUT_MS);
@@ -130,14 +139,25 @@ public final class NgLivePoller {
                     if (!body.isEmpty()) {
                         store.onPropertyReceived(body);
                         log.debug("NgLivePoller: context refreshed");
+                        return store.getCurrent() != null;
                     }
                 }
             } else {
                 log.debug("NgLivePoller: server returned HTTP {}", status);
             }
-            conn.disconnect();
         } catch (Exception e) {
             log.warn("NgLivePoller: poll failed — {}", e.getMessage());
+        } finally {
+            if (conn != null) conn.disconnect();
         }
+        return false;
+    }
+
+    private static String currentContextUrl(String serverBaseUrl, String clientName) {
+        if (serverBaseUrl == null || serverBaseUrl.isEmpty()
+                || clientName == null || !clientName.matches("[A-Za-z0-9_.:-]+")) {
+            return null;
+        }
+        return serverBaseUrl + "/ng/playback-context/current?clientName=" + clientName;
     }
 }

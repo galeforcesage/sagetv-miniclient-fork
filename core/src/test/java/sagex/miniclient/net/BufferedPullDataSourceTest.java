@@ -4,13 +4,11 @@ import org.junit.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.junit.Assert.assertEquals;
-import static org.mockito.Matchers.anyLong;
-import static org.mockito.Matchers.eq;
-import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 
 /**
  * Created by seans on 27/12/15.
@@ -18,14 +16,30 @@ import static org.mockito.Mockito.verify;
 public class BufferedPullDataSourceTest {
     static final byte data[] = SimplePullDataSourceTest.loadData(100).getBytes();
 
-    @Test
-    public void testRead() throws Exception {
-        BufferedPullDataSource pds = spy(new BufferedPullDataSource());
-        pds.remoteReader = new DataInputStream(new MockInputStream(BufferedPullDataSource.MAX_BUFFER * 5));
-        pds.remoteWriter = new ByteArrayOutputStream(); // dummy output stream
+    private static final class CountingBufferedPullDataSource extends BufferedPullDataSource {
+        private final List<Long> fillPositions = new ArrayList<Long>();
+
+        @Override
+        int fillBuffer(long position) throws IOException {
+            fillPositions.add(position);
+            return super.fillBuffer(position);
+        }
+    }
+
+    private CountingBufferedPullDataSource createDataSource(int size) {
+        CountingBufferedPullDataSource pds = new CountingBufferedPullDataSource();
+        pds.remoteReader = new DataInputStream(new MockInputStream(size));
+        pds.remoteWriter = new ByteArrayOutputStream();
         pds._buffer = new byte[BufferedPullDataSource.MAX_BUFFER];
         pds.opened = true;
-        pds.size = BufferedPullDataSource.MAX_BUFFER * 5;
+        pds.size = size;
+        return pds;
+    }
+
+    @Test
+    public void testRead() throws Exception {
+        CountingBufferedPullDataSource pds =
+                createDataSource(BufferedPullDataSource.MAX_BUFFER * 5);
 
         byte buffer[] = new byte[BufferedPullDataSource.MAX_BUFFER];
 
@@ -34,48 +48,43 @@ public class BufferedPullDataSourceTest {
         int read = pds.read(0, buffer, 0, 1);
         assertEquals(size, read);
         assertEquals(new String(data, 0, size), new String(buffer, 0, size));
-        verify(pds, times(1)).fillBuffer(eq(0l));
+        assertEquals(1, pds.fillPositions.size());
+        assertEquals(Long.valueOf(0), pds.fillPositions.get(0));
 
         // now read a bunch of other single byte reads, which should NOT force a buffer re-fill
         read = pds.read(0, buffer, 1, 1);
         assertEquals(size, read);
         assertEquals(new String(data, 1, size), new String(buffer, 1, size));
-        verify(pds, times(1)).fillBuffer(eq(0l));
+        assertEquals(1, pds.fillPositions.size());
 
         // now read some data that is outside the buffer range, and it should force a re-read
         read = pds.read(BufferedPullDataSource.MAX_BUFFER * 2, buffer, 0, 1);
         assertEquals(size, read);
         //assertEquals(((BufferedPullDataSource.MAX_BUFFER*2)%10)+'0', buffer[0]);
-        verify(pds, times(1)).fillBuffer(eq(BufferedPullDataSource.MAX_BUFFER * 2l));
+        assertEquals(2, pds.fillPositions.size());
+        assertEquals(Long.valueOf(BufferedPullDataSource.MAX_BUFFER * 2L), pds.fillPositions.get(1));
     }
 
     @Test
     public void testLargeBufferRead() throws Exception {
-        BufferedPullDataSource pds = spy(new BufferedPullDataSource());
-        pds.remoteReader = new DataInputStream(new MockInputStream(BufferedPullDataSource.MAX_BUFFER * 5));
-        pds.remoteWriter = new ByteArrayOutputStream(); // dummy output stream
-        pds._buffer = new byte[BufferedPullDataSource.MAX_BUFFER];
-        pds.opened = true;
-        pds.size = BufferedPullDataSource.MAX_BUFFER * 5;
+        CountingBufferedPullDataSource pds =
+                createDataSource(BufferedPullDataSource.MAX_BUFFER * 5);
 
         byte buffer[] = new byte[BufferedPullDataSource.MAX_BUFFER * 2];
 
         // read a large buffer, which should force the buffer to have to fill twice
         int read = pds.read(0, buffer, 0, buffer.length);
         assertEquals(buffer.length, read);
-        verify(pds, times(1)).fillBuffer(eq(0l));
-        verify(pds, times(1)).fillBuffer(eq((long) BufferedPullDataSource.MAX_BUFFER));
+        assertEquals(2, pds.fillPositions.size());
+        assertEquals(Long.valueOf(0), pds.fillPositions.get(0));
+        assertEquals(Long.valueOf(BufferedPullDataSource.MAX_BUFFER), pds.fillPositions.get(1));
     }
 
 
     @Test
     public void testLinearRead() throws Exception {
-        BufferedPullDataSource pds = spy(new BufferedPullDataSource());
-        pds.remoteReader = new DataInputStream(new MockInputStream(BufferedPullDataSource.MAX_BUFFER * 3));
-        pds.remoteWriter = new ByteArrayOutputStream(); // dummy output stream
-        pds._buffer = new byte[BufferedPullDataSource.MAX_BUFFER];
-        pds.opened = true;
-        pds.size = BufferedPullDataSource.MAX_BUFFER * 3;
+        CountingBufferedPullDataSource pds =
+                createDataSource(BufferedPullDataSource.MAX_BUFFER * 3);
 
         byte buffer[] = new byte[1];
 
@@ -85,9 +94,8 @@ public class BufferedPullDataSourceTest {
             if (val == -1) break;
         }
 
-
         // 3 fully buffer reads + another read that return a -1
-        verify(pds, times(4)).fillBuffer(anyLong());
+        assertEquals(4, pds.fillPositions.size());
 
         // our total reads should be 3 full buffers + 1 extra read for the -1 return
         assertEquals(BufferedPullDataSource.MAX_BUFFER * 3 + 1, reads);

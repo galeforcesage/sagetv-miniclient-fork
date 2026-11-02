@@ -77,8 +77,9 @@ public class MiniClientGDXActivity extends AndroidApplication implements UIActiv
             GLSurfaceView glView = (GLSurfaceView) graphics.getView();
             // This is needed or else we won't see OSD over video
             glView.setZOrderOnTop(true);
+            glView.setZOrderMediaOverlay(true);
             // This is needed or else we will not see the video playing behind the OSD
-            glView.getHolder().setFormat(PixelFormat.RGBA_8888);
+            glView.getHolder().setFormat(PixelFormat.TRANSLUCENT);
         }
         return miniClientView;
     }

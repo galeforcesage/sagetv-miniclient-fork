@@ -65,4 +65,10 @@ public class IJKPullMediaSource implements IMediaDataSource, HasClose {
         }
         dataSource = null;
     }
+
+    public boolean bindPartyAdmission(String handle) {
+        ISageTVDataSource ds = dataSource;
+        return ds instanceof BufferedPullDataSource
+                && ((BufferedPullDataSource) ds).bindPartyAdmission(handle);
+    }
 }

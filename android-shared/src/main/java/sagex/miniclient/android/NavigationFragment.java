@@ -10,6 +10,7 @@ import android.app.FragmentTransaction;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.os.Bundle;
+import android.text.InputType;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
@@ -19,12 +20,15 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.ImageView;
+import android.widget.Button;
+import android.widget.EditText;
 import android.widget.Toast;
 
 import androidx.annotation.Nullable;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.squareup.otto.Subscribe;
 
 import sagex.miniclient.MiniClient;
 import sagex.miniclient.MiniPlayerPlugin;
@@ -40,9 +44,12 @@ import sagex.miniclient.android.ui.DownloadMenuLauncher;
 import sagex.miniclient.android.video.NonLeanbackAspect;
 import sagex.miniclient.android.video.OrientationController;
 import sagex.miniclient.events.ShowKeyboardEvent;
+import sagex.miniclient.events.PartyStateChanged;
 import sagex.miniclient.events.VideoInfoShow;
 import sagex.miniclient.media.SubtitleTrack;
 import sagex.miniclient.prefs.PrefStore;
+import sagex.miniclient.party.PartyClient;
+import sagex.miniclient.party.PartyProtocolException;
 import sagex.miniclient.uibridge.EventRouter;
 
 /**
@@ -60,6 +67,9 @@ public class NavigationFragment extends DialogFragment
     View navPause = null;
 
     ImageView navSmartRemote;
+    Button navParty;
+    String lastPartyError;
+    String displayedPartyJoinCode;
     MediaMappingPreferences prefs;
 
     public NavigationFragment()
@@ -104,6 +114,7 @@ public class NavigationFragment extends DialogFragment
         navOptions = navView.findViewById(R.id.nav_options);
         navPause = navView.findViewById(R.id.nav_media_pause);
         navSmartRemote = (ImageView) navView.findViewById(R.id.nav_remote_mode);
+        navParty = (Button) navView.findViewById(R.id.nav_party);
 
         View.OnClickListener buttonClickListener = new View.OnClickListener()
         {
@@ -273,6 +284,18 @@ public class NavigationFragment extends DialogFragment
             }
         });
 
+        if (navParty != null)
+        {
+            navParty.setOnClickListener(new View.OnClickListener()
+            {
+                @Override
+                public void onClick(View v)
+                {
+                    showPartyMenu();
+                }
+            });
+        }
+
         for (int id : new int[]{R.id.nav_keyboard, R.id.nav_close, R.id.nav_hide})
         {
             navView.findViewById(id).setOnClickListener(new OnClickListener()
@@ -316,10 +339,316 @@ public class NavigationFragment extends DialogFragment
         }
 
         updateSmartRemoteToggle();
+        updatePartyButton();
 
         AppUtil.hideSystemUI(getActivity());
 
         return navView;
+    }
+
+    @Override
+    public void onStop()
+    {
+        try
+        {
+            client.eventbus().unregister(this);
+        }
+        catch (Throwable ignored)
+        {
+        }
+        super.onStop();
+    }
+
+    @Subscribe
+    public void onPartyStateChanged(PartyStateChanged event)
+    {
+        if (navView != null)
+        {
+            final PartyClient.State state = event.state;
+            navView.post(new Runnable()
+            {
+                @Override public void run()
+                {
+                    updatePartyButton();
+                    updatePartyMediaControls(state);
+                    if (state != null && "NO_CURRENT_MEDIA".equals(state.errorCode)
+                            && !state.errorCode.equals(lastPartyError))
+                    {
+                        lastPartyError = state.errorCode;
+                        Toast.makeText(getActivity(), R.string.party_no_media,
+                                Toast.LENGTH_LONG).show();
+                    }
+                    else if (state == null || state.errorCode == null)
+                    {
+                        lastPartyError = null;
+                    }
+                    if (state != null && state.host && state.joinCode != null)
+                    {
+                        if (!state.partyId.equals(displayedPartyJoinCode))
+                        {
+                            displayedPartyJoinCode = state.partyId;
+                            showCreatedJoinCode(state.joinCode);
+                        }
+                    }
+                    else if (state == null || !state.joined)
+                    {
+                        displayedPartyJoinCode = null;
+                    }
+                }
+            });
+        }
+    }
+
+    private PartyClient partyClient()
+    {
+        return client == null || client.getCurrentConnection() == null
+                ? null : client.getCurrentConnection().getPartyClient();
+    }
+
+    private void updatePartyButton()
+    {
+        if (navParty == null) return;
+        PartyClient party = partyClient();
+        PartyClient.State state = party == null ? null : party.getState();
+        if (state == null || (state.availability != PartyClient.Availability.AVAILABLE
+                && !state.joined))
+        {
+            navParty.setVisibility(View.GONE);
+            return;
+        }
+
+        navParty.setVisibility(View.VISIBLE);
+        if (state != null && state.joined)
+        {
+            navParty.setText(state.locallyStopped ? "Party: Rejoin" : "Party: " + state.status);
+        }
+        else if (state != null && "INVITED".equals(state.status))
+        {
+            navParty.setText("Party invite");
+        }
+        else
+        {
+            navParty.setText(R.string.party_mode);
+        }
+    }
+
+    private void updatePartyMediaControls(PartyClient.State state)
+    {
+        if (navView == null) return;
+        boolean enabled = state == null || !state.joined || state.controlsEnabled;
+        for (int id : new int[]{R.id.nav_media_pause, R.id.nav_media_play,
+                R.id.nav_media_skip_back, R.id.nav_media_skip_back_2,
+                R.id.nav_media_skip_forward, R.id.nav_media_skip_forward_2})
+        {
+            View control = navView.findViewById(id);
+            if (control != null)
+            {
+                control.setEnabled(enabled);
+                control.setAlpha(enabled ? 1.0f : 0.4f);
+            }
+        }
+    }
+
+    private void showPartyMenu()
+    {
+        final PartyClient party = partyClient();
+        if (party == null) return;
+        final PartyClient.State state = party.getState();
+        if (state.availability != PartyClient.Availability.AVAILABLE)
+        {
+            Toast.makeText(getActivity(), R.string.party_unavailable, Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (!state.joined)
+        {
+            showPartyEntryMenu(party, state);
+        }
+        else
+        {
+            showJoinedPartyMenu(party, state);
+        }
+    }
+
+    private void showPartyEntryMenu(final PartyClient party, final PartyClient.State state)
+    {
+        final java.util.ArrayList<String> actions = new java.util.ArrayList<String>();
+        actions.add("Start Party at Beginning");
+        if (state.currentPositionSupported) actions.add("Start Party at Current Position");
+        actions.add("Join with code");
+        new AlertDialog.Builder(getActivity())
+                .setTitle(R.string.party_mode)
+                .setItems(actions.toArray(new String[actions.size()]),
+                        new DialogInterface.OnClickListener()
+                        {
+                            @Override public void onClick(DialogInterface dialog, int which)
+                            {
+                                String action = actions.get(which);
+                                if (action.startsWith("Start Party"))
+                                {
+                                    if (!party.hasActivePlayback())
+                                    {
+                                        Toast.makeText(getActivity(), R.string.party_no_media,
+                                                Toast.LENGTH_LONG).show();
+                                        return;
+                                    }
+                                    party.createCurrent(action.endsWith("Current Position")
+                                            ? "CURRENT_POSITION" : "BEGINNING");
+                                }
+                                else
+                                {
+                                    showJoinCodeDialog(party, state.invitedPartyId);
+                                }
+                            }
+                        }).show();
+    }
+
+    private void showJoinCodeDialog(final PartyClient party, final String invitedPartyId)
+    {
+        final EditText input = new EditText(getActivity());
+        input.setInputType(InputType.TYPE_CLASS_NUMBER);
+        input.setSingleLine(true);
+        input.setHint("000");
+        new AlertDialog.Builder(getActivity())
+                .setTitle(R.string.party_join_code)
+                .setView(input)
+                .setPositiveButton("Join", new DialogInterface.OnClickListener()
+                {
+                    @Override public void onClick(DialogInterface dialog, int which)
+                    {
+                        try
+                        {
+                            party.join(input.getText().toString(), invitedPartyId, null);
+                            dismiss();
+                        }
+                        catch (PartyProtocolException e)
+                        {
+                            Toast.makeText(getActivity(), e.getMessage(), Toast.LENGTH_LONG).show();
+                        }
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void showJoinedPartyMenu(final PartyClient party, final PartyClient.State state)
+    {
+        final java.util.ArrayList<String> actions = new java.util.ArrayList<String>();
+        if (!state.host && !state.ready && !state.locallyStopped) actions.add("Join & Prepare");
+        if (state.locallyStopped) actions.add("Rejoin");
+        if (state.host)
+        {
+            actions.add("Show join code");
+            actions.add("Invite connected client");
+            actions.add("Play Together");
+            actions.add("End Party");
+        }
+        actions.add("Leave Party");
+        new AlertDialog.Builder(getActivity())
+                .setTitle("Party: " + state.status)
+                .setItems(actions.toArray(new String[actions.size()]),
+                        new DialogInterface.OnClickListener()
+                        {
+                            @Override public void onClick(DialogInterface dialog, int which)
+                            {
+                                String action = actions.get(which);
+                                if ("Join & Prepare".equals(action)) confirmPrepare(party);
+                                else if ("Rejoin".equals(action)) party.rejoin();
+                                else if ("Show join code".equals(action)) showJoinCode(party);
+                                else if ("Invite connected client".equals(action)) showInviteMenu(party);
+                                else if ("Play Together".equals(action)) EventRouter.postCommand(client, SageCommand.PLAY);
+                                else if ("End Party".equals(action)) confirmEnd(party);
+                                else if ("Leave Party".equals(action)) party.leave();
+                            }
+                        }).show();
+    }
+
+    private void confirmPrepare(final PartyClient party)
+    {
+        new AlertDialog.Builder(getActivity())
+                .setTitle("Join & Prepare")
+                .setMessage("Replace current playback with this Party media and keep it paused?")
+                .setPositiveButton("Prepare", new DialogInterface.OnClickListener()
+                {
+                    @Override public void onClick(DialogInterface dialog, int which)
+                    {
+                        party.prepare();
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void showJoinCode(final PartyClient party)
+    {
+        PartyClient.State state = party.getState();
+        if (state.joinCode == null)
+        {
+            party.retrieveJoinCode(false);
+            Toast.makeText(getActivity(), "Retrieving Party code", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        new AlertDialog.Builder(getActivity())
+                .setTitle("Party code")
+                .setMessage(state.joinCodeExpired
+                        ? state.joinCode + "\nExpired - rotate to issue a new code."
+                        : state.joinCode)
+                .setPositiveButton(android.R.string.ok, null)
+                .setNeutralButton("Rotate", new DialogInterface.OnClickListener()
+                {
+                    @Override public void onClick(DialogInterface dialog, int which)
+                    {
+                        party.retrieveJoinCode(true);
+                    }
+                }).show();
+    }
+
+    private void showCreatedJoinCode(String joinCode)
+    {
+        Activity activity = getActivity();
+        if (activity == null) return;
+        new AlertDialog.Builder(activity)
+                .setTitle("Party created")
+                .setMessage("Join code: " + joinCode)
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
+    }
+
+    private void showInviteMenu(final PartyClient party)
+    {
+        PartyClient.State state = party.getState();
+        if (state.connectedSessionHandles.isEmpty())
+        {
+            party.listClients();
+            Toast.makeText(getActivity(), "Loading connected clients", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        final String[] handles = state.connectedSessionHandles.toArray(
+                new String[state.connectedSessionHandles.size()]);
+        new AlertDialog.Builder(getActivity())
+                .setTitle("Invite connected client")
+                .setItems(handles, new DialogInterface.OnClickListener()
+                {
+                    @Override public void onClick(DialogInterface dialog, int which)
+                    {
+                        party.invite(handles[which]);
+                    }
+                }).show();
+    }
+
+    private void confirmEnd(final PartyClient party)
+    {
+        new AlertDialog.Builder(getActivity())
+                .setTitle("End Party?")
+                .setMessage("This ends Party playback for every participant.")
+                .setPositiveButton("End Party", new DialogInterface.OnClickListener()
+                {
+                    @Override public void onClick(DialogInterface dialog, int which)
+                    {
+                        party.end();
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
     }
 
     private void onVideoInfo()
@@ -597,6 +926,7 @@ public class NavigationFragment extends DialogFragment
     public void onStart()
     {
         super.onStart();
+        client.eventbus().register(this);
         Dialog dialog = getDialog();
 
         if (dialog != null)

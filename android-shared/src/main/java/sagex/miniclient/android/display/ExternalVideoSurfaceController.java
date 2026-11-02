@@ -81,6 +81,11 @@ public final class ExternalVideoSurfaceController implements DisplayManager.Disp
 
     public static synchronized ExternalVideoSurfaceController get() { return INSTANCE; }
 
+    public boolean isPresenting()
+    {
+        return presenting;
+    }
+
     /** Registers the singleton and its display listener. Safe to call once at app init. */
     public static synchronized void install(Application app)
     {

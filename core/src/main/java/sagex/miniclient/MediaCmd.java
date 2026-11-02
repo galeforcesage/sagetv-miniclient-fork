@@ -87,7 +87,8 @@ public class MediaCmd
     private int DESIRED_VIDEO_PREBUFFER_SIZE = 16 * 1024 * 1024;
     private int DESIRED_AUDIO_PREBUFFER_SIZE = 2 * 1024 * 1024;
     private int maxPrebufferSize;
-    private MiniClientConnection myConn;
+    private final MiniClientConnection myConn;
+    private long loadedPlaybackAuthorityGeneration = -1;
     private long lastServerStartTime = -1;
 
     /*
@@ -100,8 +101,26 @@ public class MediaCmd
      * playerPos + lastServerStartTime sticks near 0 forever. Stashing the
      * MEDIACMD_SEEK target here lets the post-flush PUSHBUFFER handler use
      * the real seek position as the baseline instead.
+     *
+     * Also stashed on a PULL-mode MEDIACMD_SEEK (see the SEEK handler) so
+     * that if the server reopens as pull-xcode in response (a fresh OPENURL
+     * whose CAP_EFFECTIVE_DELIVERY says pull-xcode), classifyPullTimeline()
+     * can use the exact absolute seek target as the new timeline origin
+     * instead of 0. Harmless no-op otherwise: only consumed there.
      */
     private long pendingSeekTargetMs = -1;
+
+    /**
+     * Whether the current pull-mode stream's player-reported position is
+     * already source/recording-relative ({@link PullTimeline#DIRECT_SOURCE})
+     * or restarts near zero on each open/reopen
+     * ({@link PullTimeline#REBASED_XCODE}, server-conditioned delivery via
+     * /msproxy/XCODE_SETUP). Irrelevant for push mode. Default DIRECT_SOURCE
+     * matches all pre-existing behavior for legacy servers / absent hints.
+     */
+    private enum PullTimeline { DIRECT_SOURCE, REBASED_XCODE }
+
+    private PullTimeline pullTimeline = PullTimeline.DIRECT_SOURCE;
 
     /*
      * Early-push holding buffer.
@@ -179,8 +198,17 @@ public class MediaCmd
      */
     public MediaCmd(MiniClient client)
     {
+        this(client, client.getCurrentConnection());
+    }
+
+    MediaCmd(MiniClient client, MiniClientConnection connection)
+    {
         this.client = client;
-        this.myConn = client.getCurrentConnection();
+        if (connection == null)
+        {
+            throw new IllegalArgumentException("MediaCmd requires its owning connection");
+        }
+        this.myConn = connection;
     }
 
     public static void writeInt(int value, byte[] data, int offset)
@@ -212,8 +240,14 @@ public class MediaCmd
         return playa;
     }
 
+    public boolean ownsFreshPlayback(long authorityGeneration)
+    {
+        return playa != null && loadedPlaybackAuthorityGeneration == authorityGeneration;
+    }
+
     public void close()
     {
+        loadedPlaybackAuthorityGeneration = -1;
         cancelPushDataflowWatchdog();
         if (myConn.getGfxCmd() != null)
             myConn.getGfxCmd().setVideoBounds(null, null);
@@ -345,6 +379,7 @@ public class MediaCmd
             case MEDIACMD_OPENURL:
 
                 this.setLastServerStartPosition(-1);
+                classifyPullTimeline(myConn != null ? myConn.consumePendingEffectiveDeliveryHint() : null);
 
                 int strLen = readInt(0, cmddata);
                 String urlString = "";
@@ -439,6 +474,8 @@ public class MediaCmd
                     contextStore.onMediaOpen(urlString);
                 }
 
+                loadedPlaybackAuthorityGeneration =
+                        myConn.getPlaybackAuthorityGeneration();
                 return 4;
             case MEDIACMD_GETMEDIATIME:
                 if (playa == null)
@@ -479,6 +516,14 @@ public class MediaCmd
                     return 4;
                 log.debug("Play was called");
                 playa.play();
+                return 4;
+            case MEDIACMD_FRAMESTEP:
+                // FRAME_STEP is advertised by common.profile. SageTV uses it
+                // while paused to keep push buffering active and waits for a
+                // four-byte result. Android already retains the paused frame,
+                // so acknowledge the legacy command without advancing it.
+                log.debug("Frame step was called: {}", readInt(0, cmddata));
+                writeInt(1, retbuf, 0);
                 return 4;
             case MEDIACMD_FLUSH:
                 writeInt(1, retbuf, 0);
@@ -784,6 +829,18 @@ public class MediaCmd
                         this.setLastServerStartPosition(seekTime);
                         pendingSeekTargetMs = -1;
                     }
+                    else
+                    {
+                        // Stash the absolute target: if the server reopens
+                        // the stream in response (pull-xcode server
+                        // reconditioning via /msproxy/XCODE_SETUP;ss=<target>,
+                        // signaled by CAP_EFFECTIVE_DELIVERY before the next
+                        // OPENURL), classifyPullTimeline() uses this as the
+                        // new timeline origin instead of 0. A no-op for
+                        // direct-pull in-place seeks: consumed only by that
+                        // check, cleared either way at the next OPENURL.
+                        pendingSeekTargetMs = seekTime;
+                    }
                     playa.seek(seekTime);
                 }
 
@@ -841,6 +898,51 @@ public class MediaCmd
         }
 
         return lastServerStartTime;
+    }
+
+    /**
+     * Classify the pull-mode timeline for the stream being opened by the
+     * current MEDIACMD_OPENURL, using the CAP_EFFECTIVE_DELIVERY hint the
+     * server sends immediately beforehand (null for legacy servers, push
+     * streams, or a plain {@code pull:direct} OPEN).
+     *
+     * <p>When the hint says {@code pull-xcode:...} (server-conditioned pull
+     * via /msproxy/XCODE_SETUP), the new stream's local player timeline
+     * restarts near zero, so the baseline is seeded with the absolute target
+     * of the MEDIACMD_SEEK that triggered this reopen ({@link #pendingSeekTargetMs}),
+     * or 0 for an initial open with no preceding seek. This reuses the exact
+     * same {@code lastServerStartTime} plumbing push mode already relies on
+     * (see {@link #getMediaTimeMillis()}), so every existing consumer
+     * (native TrickplayController, Exo2/IJK legacy fallbacks) picks up the
+     * correct baseline with no further wiring.
+     *
+     * <p>Any other hint (including null / {@code pull:direct}) classifies as
+     * DIRECT_SOURCE: the player's own position is already source-relative,
+     * so the baseline stays 0 -- an exact no-op, identical to pre-existing
+     * behavior.
+     */
+    private void classifyPullTimeline(String effectiveDeliveryHint)
+    {
+        if (effectiveDeliveryHint != null && effectiveDeliveryHint.startsWith("pull-xcode:"))
+        {
+            pullTimeline = PullTimeline.REBASED_XCODE;
+            long originMs = (pendingSeekTargetMs >= 0) ? pendingSeekTargetMs : 0;
+            this.setLastServerStartPosition(originMs);
+            log.debug("MEDIACMD_OPENURL: CAP_EFFECTIVE_DELIVERY={} -> pull timeline REBASED_XCODE, origin={} ms",
+                    effectiveDeliveryHint, originMs);
+        }
+        else
+        {
+            pullTimeline = PullTimeline.DIRECT_SOURCE;
+            if (effectiveDeliveryHint != null)
+            {
+                log.debug("MEDIACMD_OPENURL: CAP_EFFECTIVE_DELIVERY={} -> pull timeline {}",
+                        effectiveDeliveryHint, pullTimeline);
+            }
+        }
+        // Consumed (or was never relevant to this OPENURL) -- never let a
+        // stale seek target leak into a later, unrelated reopen.
+        pendingSeekTargetMs = -1;
     }
 
     private void setLastServerStartPosition(long position)

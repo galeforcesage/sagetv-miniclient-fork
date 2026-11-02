@@ -17,11 +17,13 @@ import com.google.android.exoplayer2.C;
 import com.google.android.exoplayer2.DefaultRenderersFactory;
 import com.google.android.exoplayer2.MediaItem;
 import com.google.android.exoplayer2.PlaybackException;
+import com.google.android.exoplayer2.PlaybackParameters;
 import com.google.android.exoplayer2.audio.AudioCapabilities;
 import com.google.android.exoplayer2.audio.AudioSink;
 import com.google.android.exoplayer2.audio.DefaultAudioSink;
 import com.google.android.exoplayer2.Player;
 import com.google.android.exoplayer2.RendererCapabilities;
+import com.google.android.exoplayer2.SeekParameters;
 import com.google.android.exoplayer2.Timeline;
 import com.google.android.exoplayer2.ext.ffmpeg.FfmpegLibrary;
 import com.google.android.exoplayer2.source.MediaSource;
@@ -37,6 +39,8 @@ import com.google.android.exoplayer2.video.VideoSize;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import android.media.MediaCodecInfo;
 import android.media.MediaCodecList;
@@ -70,9 +74,12 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     static final int MAX_PLAYBACK_RETRY_COUNT = 12;
 
     private MediaSource mediaSource;
+    private volatile boolean matroskaPushRebuildPending;
     private long playbackStartPosition = -1;
     private int initialAudioTrackIndex = -1;
     private volatile long currentPlaybackPosition = 0;
+    private volatile long currentBufferedPosition = -1;
+    private volatile long currentDuration = 0;
     private DefaultTrackSelector trackSelector;
     private int selectedSubtitleTrack = DISABLE_TRACK;
 
@@ -82,12 +89,49 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     // FREEZEDIAG: elapsedRealtime() when the player last entered STATE_BUFFERING,
     // or -1 when not buffering. Used to measure rebuffer duration.
     private long freezeDiagBufferingStartMs = -1;
+    private static final long PARTY_BUFFERING_CONFIRM_MS = 1_000;
+    private long partyBufferingStartedAtMs = -1;
+    private final Handler partyHandler = new Handler(android.os.Looper.getMainLooper());
+    private final Runnable partyBufferingStart = new Runnable()
+    {
+        @Override public void run()
+        {
+            long elapsedMs = android.os.SystemClock.elapsedRealtime()
+                    - partyBufferingStartedAtMs;
+            if (partyBufferingStartedAtMs >= 0
+                    && elapsedMs < PARTY_BUFFERING_CONFIRM_MS)
+            {
+                partyHandler.postDelayed(this,
+                        PARTY_BUFFERING_CONFIRM_MS - elapsedMs);
+                return;
+            }
+            setPartyBuffering(true);
+        }
+    };
+    private final Runnable partyRateReset = new Runnable()
+    {
+        @Override public void run()
+        {
+            if (player != null)
+            {
+                player.setPlaybackParameters(new PlaybackParameters(1.0f));
+            }
+        }
+    };
     // FREEZEDIAG: periodic buffer/ring-fill sampler (started on STATE_READY,
     // stopped on release). Reveals the true cushion trajectory + server
     // refill rate instead of only threshold snapshots.
     private Runnable freezeDiagSampler;
     private long freezeDiagLastSampleMs = -1;
     private long freezeDiagLastBufMs = -1;
+    private long freezeDiagLastPositionMs = -1;
+    private long freezeDiagPositionStallStartedMs = -1;
+    private long freezeDiagRenderedFrames = 0;
+    private long freezeDiagDroppedFrames = 0;
+    private long freezeDiagLastDecoderOutputRealtimeMs = -1;
+    private volatile String videoDecoderName = "unknown";
+    private volatile boolean videoDecoderHardware = false;
+    private volatile android.view.Surface currentVideoSurface;
 
     private boolean showCaptions = false;
     private Handler handler;
@@ -207,12 +251,13 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     // from server real-time pacing (ring near-empty, buffer never grows).
     private void startFreezeDiagSampler()
     {
-        if (!VerboseLogging.FREEZE_DIAG) return;
         if (handler == null) handler = new Handler();
         if (freezeDiagSampler != null) return; // already running
 
         freezeDiagLastSampleMs = -1;
         freezeDiagLastBufMs = -1;
+        freezeDiagLastPositionMs = -1;
+        freezeDiagPositionStallStartedMs = -1;
         freezeDiagSampler = new Runnable()
         {
             @Override
@@ -225,6 +270,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                     long nowMs = android.os.SystemClock.elapsedRealtime();
                     long bufMs = player.getTotalBufferedDuration();
                     long pos = player.getCurrentPosition();
+                    long queuedThroughMs = player.getBufferedPosition();
 
                     int ringFill = -1, ringFree = -1, ringPct = -1;
                     if (pushMode && trickplayController != null && trickplayController.isNativeAvailable())
@@ -252,13 +298,30 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                     freezeDiagLastSampleMs = nowMs;
                     freezeDiagLastBufMs = bufMs;
 
-                    log.logDebug("FREEZEDIAG SAMPLE bufMs=" + bufMs
-                            + " ringFill=" + ringFill
-                            + " ringFree=" + ringFree
-                            + " ringPct=" + ringPct
-                            + " deliverRate=" + rate
-                            + " pos=" + pos
-                            + " pushMode=" + pushMode);
+                    boolean activelyPlaying = player.isPlaying()
+                            && player.getPlaybackState() == Player.STATE_READY;
+                    if (activelyPlaying && pos == freezeDiagLastPositionMs)
+                    {
+                        if (freezeDiagPositionStallStartedMs < 0)
+                            freezeDiagPositionStallStartedMs = nowMs;
+                        else if (nowMs - freezeDiagPositionStallStartedMs >= 6000)
+                        {
+                            logFreezeDiagSnapshot("CLOCK_STALL", nowMs, pos, queuedThroughMs,
+                                    bufMs, ringFill, ringFree, ringPct, rate);
+                            freezeDiagPositionStallStartedMs = nowMs;
+                        }
+                    }
+                    else
+                    {
+                        freezeDiagPositionStallStartedMs = -1;
+                    }
+                    freezeDiagLastPositionMs = pos;
+
+                    if (VerboseLogging.FREEZE_DIAG)
+                    {
+                        logFreezeDiagSnapshot("SAMPLE", nowMs, pos, queuedThroughMs,
+                                bufMs, ringFill, ringFree, ringPct, rate);
+                    }
                 }
                 catch (Throwable t)
                 {
@@ -274,6 +337,44 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             }
         };
         handler.postDelayed(freezeDiagSampler, 2000);
+    }
+
+    private void logFreezeDiagSnapshot(String reason, long nowMs, long pos,
+                                       long queuedThroughMs, long bufMs,
+                                       int ringFill, int ringFree, int ringPct,
+                                       String rate)
+    {
+        ExoPlayer p = player;
+        if (p == null) return;
+        Format video = p.getVideoFormat();
+        Format audio = p.getAudioFormat();
+        android.view.Surface surface = currentVideoSurface;
+        log.logWarning("FREEZEDIAG " + reason
+                + " posMs=" + pos
+                + " queuedThroughMs=" + queuedThroughMs
+                + " bufferedMs=" + bufMs
+                + " state=" + p.getPlaybackState()
+                + " isPlaying=" + p.isPlaying()
+                + " isLoading=" + p.isLoading()
+                + " suppressionReason=" + p.getPlaybackSuppressionReason()
+                + " playWhenReady=" + p.getPlayWhenReady()
+                + " decoder=" + videoDecoderName
+                + " decoderHardware=" + videoDecoderHardware
+                + " videoFormat=" + video
+                + " audioFormat=" + audio
+                + " renderedFrames=" + freezeDiagRenderedFrames
+                + " droppedFrames=" + freezeDiagDroppedFrames
+                + " lastDecoderOutputAgeMs="
+                + (freezeDiagLastDecoderOutputRealtimeMs < 0
+                    ? -1 : nowMs - freezeDiagLastDecoderOutputRealtimeMs)
+                + " surfaceValid=" + (surface != null && surface.isValid())
+                + " audioSessionId=" + eqSessionId
+                + " audioClockPositionMs=" + pos
+                + " ringFill=" + ringFill
+                + " ringFree=" + ringFree
+                + " ringPct=" + ringPct
+                + " deliverRate=" + rate
+                + " pushMode=" + pushMode);
     }
 
     private void stopFreezeDiagSampler()
@@ -395,14 +496,20 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     @Override
     protected long getBufferedPositionMillis()
     {
-        try
-        {
-            return (player != null) ? player.getBufferedPosition() : -1;
-        }
-        catch (Throwable t)
-        {
-            return -1;
-        }
+        return currentBufferedPosition;
+    }
+
+    @Override
+    protected long getDurationMillis()
+    {
+        return currentDuration;
+    }
+
+    @Override
+    public boolean bindPartyAdmission(String handle)
+    {
+        return !pushMode && dataSource instanceof Exo2PullDataSource
+                && ((Exo2PullDataSource) dataSource).bindPartyAdmission(handle);
     }
 
     @Override
@@ -444,6 +551,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     {
         final ExoPlayer p = player;
         if (p == null || holder == null) return;
+        resetPartyReadiness();
         context.runOnUiThread(new Runnable()
         {
             @Override
@@ -453,7 +561,8 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 {
                     // Hot-swaps ExoPlayer's output surface with the running
                     // pipeline intact — position and seek state are preserved.
-                    p.setVideoSurface(holder.getSurface());
+                    currentVideoSurface = holder.getSurface();
+                    p.setVideoSurface(currentVideoSurface);
                     log.logInfo("ExoPlayer video surface re-targeted (surface move)");
                 }
                 catch (Throwable t)
@@ -585,6 +694,22 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
         });
 
         updateMediaSessionPlaybackState(Exo2MediaPlayerImpl.this.getPlaybackPosition());
+    }
+
+    @Override
+    protected void applyPartyHold(final boolean hold)
+    {
+        context.runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                if (player == null) return;
+                player.setVolume(hold ? 0.0f : 1.0f);
+                if (hold) player.setPlayWhenReady(false);
+            }
+        });
+        super.applyPartyHold(hold);
     }
 
     private void seekToImpl(long timeInMillis)
@@ -808,7 +933,81 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     public synchronized void flush()
     {
         log.logDebug("Flush called, pushMode=" + pushMode);
+        retryCount = 0;
+        errorState = false;
+        final boolean rebuildMatroska = pushMode && isMatroskaContainer();
+        final boolean[] resumeAfterRebuild = new boolean[]{state == PLAY_STATE};
+
+        if (rebuildMatroska)
+        {
+            // The server replaces a push Matroska transcode with a complete
+            // fresh stream beginning at EBML. Stop the old extractor before
+            // acknowledging the transport flush so it cannot consume the new
+            // header as if it appeared in the middle of the old stream.
+            matroskaPushRebuildPending = true;
+            final CountDownLatch loaderStopped = new CountDownLatch(1);
+            context.runOnUiThread(new Runnable()
+            {
+                @Override
+                public void run()
+                {
+                    try
+                    {
+                        if (pendingPrebufferGate != null && handler != null)
+                        {
+                            handler.removeCallbacks(pendingPrebufferGate);
+                            pendingPrebufferGate = null;
+                        }
+                        if (player != null)
+                        {
+                            resumeAfterRebuild[0] = player.getPlayWhenReady();
+                            player.stop();
+                            log.logDebug("Push Matroska flush: stopped old extractor generation");
+                        }
+                    }
+                    finally
+                    {
+                        loaderStopped.countDown();
+                    }
+                }
+            });
+            try
+            {
+                if (!loaderStopped.await(2, TimeUnit.SECONDS))
+                {
+                    log.logWarning("Push Matroska flush: timed out stopping old extractor");
+                }
+            }
+            catch (InterruptedException e)
+            {
+                Thread.currentThread().interrupt();
+            }
+        }
+
         super.flush();
+
+        if (rebuildMatroska)
+        {
+            final MediaSource source = mediaSource;
+            runWhenPrebuffered(new Runnable()
+            {
+                @Override
+                public void run()
+                {
+                    if (player == null || source == null)
+                    {
+                        matroskaPushRebuildPending = false;
+                        return;
+                    }
+                    player.setMediaSource(source, true);
+                    player.prepare();
+                    player.setPlayWhenReady(resumeAfterRebuild[0]);
+                    matroskaPushRebuildPending = false;
+                    log.logDebug("Push Matroska flush: rebuilt extractor for fresh stream generation");
+                }
+            });
+            return;
+        }
 
         context.runOnUiThread(new Runnable()
         {
@@ -822,32 +1021,10 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                         return;
                     }
 
-                    // Reset error/retry state so the new stream segment
-                    // gets a clean slate.
-                    retryCount = 0;
-                    errorState = false;
-
                     if (pushMode)
                     {
-                        // Push-mode flush: use a lightweight seekTo(0)
-                        // to flush ExoPlayer's decoder queues and sample
-                        // buffers WITHOUT rebuilding the MediaSource.
-                        //
-                        // Rebuilding (setMediaSource+prepare) triggers a
-                        // full re-sniff of the DataSource. For Matroska
-                        // push this is fatal: the NG server restarts the
-                        // mux at a Cluster boundary, omitting the EBML
-                        // header that MatroskaExtractor.sniff() requires
-                        // at byte 0. MPEG-PS/TS are self-synchronizing so
-                        // re-sniff worked for them, but Matroska is not.
-                        //
-                        // seekTo(0) flushes all SampleQueues and renderer
-                        // pipelines (including DefaultAudioSink) while
-                        // keeping the extractor alive to parse the
-                        // arriving Clusters. The player's reported
-                        // position will jump to the timestamp of the
-                        // first new sample, matching the server's seek
-                        // target communicated via MEDIACMD_SEEK.
+                        // Self-synchronizing push containers can retain their
+                        // extractor and only flush decoder/sample queues.
                         player.seekTo(0);
                         if (VerboseLogging.DETAILED_PLAYER_LOGGING)
                             log.logDebug("Push flush: seekTo(0) to flush decoder queues");
@@ -889,7 +1066,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
      */
     private void runWhenPrebuffered(final Runnable action)
     {
-        final long startedAt = System.currentTimeMillis();
+        final long startedAt = android.os.SystemClock.elapsedRealtime();
         // 16 KB is sufficient for any container header (EBML + Segment +
         // Tracks for Matroska, pack_start_code for MPEG-PS, sync bytes for
         // TS). Keeping this small reduces time-to-first-frame on initial
@@ -907,7 +1084,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 if (pendingPrebufferGate != gate[0]) return; // superseded
                 int filled = (trickplayController != null && trickplayController.isNativeAvailable())
                         ? trickplayController.bufferFilledBytes() : PREBUFFER_THRESHOLD;
-                long elapsed = System.currentTimeMillis() - startedAt;
+                long elapsed = android.os.SystemClock.elapsedRealtime() - startedAt;
                 if (filled >= PREBUFFER_THRESHOLD || elapsed >= TIMEOUT_MS)
                 {
                     if (VerboseLogging.DETAILED_PLAYER_LOGGING)
@@ -938,10 +1115,21 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
         });
     }
 
+    private boolean isMatroskaContainer()
+    {
+        if (containerHint == null) return false;
+        String normalized = containerHint.trim().toUpperCase(java.util.Locale.ROOT);
+        return "MATROSKA".equals(normalized) || "MKV".equals(normalized)
+                || "WEBM".equals(normalized);
+    }
+
     @Override
     protected void setupPlayer(String sageTVurl)
     {
         initialAudioTrackIndex = -1;
+        currentPlaybackPosition = 0;
+        currentBufferedPosition = -1;
+        currentDuration = 0;
 
         if (player != null)
         {
@@ -1055,6 +1243,10 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
         CustomMediaCodecSelector mediaCodecSelector = new CustomMediaCodecSelector();
         renderersFactory.setMediaCodecSelector(mediaCodecSelector);
+        log.logInfo("Exo runtime: library=" + com.google.android.exoplayer2.ExoPlayerLibraryInfo.VERSION
+                + " device=" + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL
+                + " android=" + android.os.Build.VERSION.RELEASE
+                + " sdk=" + android.os.Build.VERSION.SDK_INT);
 
         trackSelector = new DefaultTrackSelector(context.getContext());
 
@@ -1155,10 +1347,72 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                     com.google.android.exoplayer2.analytics.AnalyticsListener.EventTime eventTime,
                     int droppedFrames, long elapsedMs)
             {
+                freezeDiagDroppedFrames += droppedFrames;
                 if (VerboseLogging.FREEZE_DIAG)
                 {
                     log.logDebug("FREEZEDIAG droppedFrames=" + droppedFrames + " overMs=" + elapsedMs);
                 }
+            }
+
+            @Override
+            public void onVideoDecoderInitialized(
+                    com.google.android.exoplayer2.analytics.AnalyticsListener.EventTime eventTime,
+                    String decoderName, long initializedTimestampMs, long initializationDurationMs)
+            {
+                videoDecoderName = decoderName == null ? "unknown" : decoderName;
+                videoDecoderHardware = !(videoDecoderName.startsWith("OMX.google.")
+                        || videoDecoderName.startsWith("c2.android."));
+                log.logInfo("VIDEO DECODER initialized name=" + videoDecoderName
+                        + " hardware=" + videoDecoderHardware
+                        + " initDurationMs=" + initializationDurationMs);
+            }
+
+            @Override
+            public void onVideoInputFormatChanged(
+                    com.google.android.exoplayer2.analytics.AnalyticsListener.EventTime eventTime,
+                    Format format,
+                    com.google.android.exoplayer2.decoder.DecoderReuseEvaluation evaluation)
+            {
+                log.logInfo("VIDEO FORMAT changed format=" + format + " reuse=" + evaluation);
+            }
+
+            @Override
+            public void onVideoFrameProcessingOffset(
+                    com.google.android.exoplayer2.analytics.AnalyticsListener.EventTime eventTime,
+                    long totalProcessingOffsetUs, int frameCount)
+            {
+                freezeDiagRenderedFrames += frameCount;
+                freezeDiagLastDecoderOutputRealtimeMs = android.os.SystemClock.elapsedRealtime();
+            }
+
+            @Override
+            public void onVideoDisabled(
+                    com.google.android.exoplayer2.analytics.AnalyticsListener.EventTime eventTime,
+                    com.google.android.exoplayer2.decoder.DecoderCounters counters)
+            {
+                if (counters != null)
+                {
+                    counters.ensureUpdated();
+                    log.logInfo("VIDEO DECODER disabled name=" + videoDecoderName
+                            + " queuedInput=" + counters.queuedInputBufferCount
+                            + " renderedOutput=" + counters.renderedOutputBufferCount
+                            + " skippedInput=" + counters.skippedInputBufferCount
+                            + " skippedOutput=" + counters.skippedOutputBufferCount
+                            + " dropped=" + counters.droppedBufferCount
+                            + " droppedInput=" + counters.droppedInputBufferCount
+                            + " maxConsecutiveDropped=" + counters.maxConsecutiveDroppedBufferCount);
+                }
+            }
+
+            @Override
+            public void onAudioUnderrun(
+                    com.google.android.exoplayer2.analytics.AnalyticsListener.EventTime eventTime,
+                    int bufferSize, long bufferSizeMs, long elapsedSinceLastFeedMs)
+            {
+                log.logWarning("AUDIO UNDERRUN bufferSize=" + bufferSize
+                        + " bufferMs=" + bufferSizeMs
+                        + " sinceFeedMs=" + elapsedSinceLastFeedMs
+                        + " posMs=" + player.getCurrentPosition());
             }
         });
 
@@ -1169,6 +1423,12 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             {
                 log.logDebug("PLAYER ERROR: " + error.getErrorCodeName());
                 error.printStackTrace();
+
+                if (matroskaPushRebuildPending)
+                {
+                    log.logDebug("Ignoring stale error from replaced Matroska extractor generation");
+                    return;
+                }
 
                 if (retryCount == 0 && !(error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED
                         && pushMode))
@@ -1225,6 +1485,11 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             {
                 if (playbackState == Player.STATE_BUFFERING)
                 {
+                    partyHandler.removeCallbacks(partyBufferingStart);
+                    partyBufferingStartedAtMs =
+                            android.os.SystemClock.elapsedRealtime();
+                    partyHandler.postDelayed(partyBufferingStart,
+                            PARTY_BUFFERING_CONFIRM_MS);
                     if (VerboseLogging.FREEZE_DIAG)
                     {
                         freezeDiagBufferingStartMs = android.os.SystemClock.elapsedRealtime();
@@ -1245,6 +1510,9 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 }
                 if (playbackState == Player.STATE_READY)
                 {
+                    partyHandler.removeCallbacks(partyBufferingStart);
+                    partyBufferingStartedAtMs = -1;
+                    setPartyBuffering(false);
                     log.logDebug("Player.STATE_READY - Media loaded and ready for playback");
                     if (VerboseLogging.FREEZE_DIAG && freezeDiagBufferingStartMs >= 0)
                     {
@@ -1253,10 +1521,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                         log.logDebug("FREEZEDIAG STATE_BUFFERING exit durMs=" + dur
                                 + " bufferedMs=" + player.getTotalBufferedDuration());
                     }
-                    if (VerboseLogging.FREEZE_DIAG)
-                    {
-                        startFreezeDiagSampler();
-                    }
+                    startFreezeDiagSampler();
                     if (errorState)
                     {
                         errorState = false;
@@ -1537,8 +1802,10 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
         //player.setSeekParameters(SeekParameters.CLOSEST_SYNC);
 
         // start playing
-        player.setVideoSurface(resolveInitialVideoHolder().getSurface());
-        player.setPlayWhenReady(true);
+        currentVideoSurface = resolveInitialVideoHolder().getSurface();
+        player.setVideoSurface(currentVideoSurface);
+        player.setVolume(isPartyHold() ? 0.0f : 1.0f);
+        player.setPlayWhenReady(!isPartyHold());
 
         //Create Media Session
         try {
@@ -1552,7 +1819,8 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
         this.playerReady = true;
 
-        super.play();
+        if (isPartyHold()) super.pause();
+        else super.play();
 
         log.logDebug("Creating handler");
         handler = new Handler();
@@ -1567,6 +1835,11 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 {
                     long pos = player.getContentPosition();
                     Exo2MediaPlayerImpl.this.setPlaybackPosition(pos);
+                    long bufferedPosition = player.getBufferedPosition();
+                    currentBufferedPosition = bufferedPosition >= 0
+                            ? bufferedPosition : -1;
+                    long duration = player.getDuration();
+                    currentDuration = duration >= 0 ? duration : 0;
 
                     if (trickplayController != null && trickplayController.isNativeAvailable())
                     {
@@ -1969,6 +2242,66 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
         metaDataBuilder.putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_TITLE, displayTitle);
         metaDataBuilder.putLong(MediaMetadataCompat.METADATA_KEY_DURATION, duration);
         mediaSession.setMetadata(metaDataBuilder.build());
+    }
+
+    @Override
+    protected boolean seekForParty(final long positionMs,
+                                   final sagex.miniclient.party.PartyPlaybackAdapter.SeekAccuracy accuracy)
+    {
+        if (player == null || pushMode) return false;
+        context.runOnUiThread(new Runnable()
+        {
+            @Override public void run()
+            {
+                if (player == null) return;
+                player.setSeekParameters(accuracy
+                        == sagex.miniclient.party.PartyPlaybackAdapter.SeekAccuracy.EXACT
+                        ? SeekParameters.EXACT : SeekParameters.CLOSEST_SYNC);
+                seek(positionMs);
+            }
+        });
+        return true;
+    }
+
+    @Override
+    public boolean supportsPartyTemporaryRate()
+    {
+        return !pushMode;
+    }
+
+    @Override
+    public boolean setPartyTemporaryRate(final double rate, final long durationMs)
+    {
+        if (!supportsPartyTemporaryRate() || player == null
+                || rate < 0.98 || rate > 1.02 || durationMs <= 0) {
+            return false;
+        }
+        partyHandler.removeCallbacks(partyRateReset);
+        context.runOnUiThread(new Runnable()
+        {
+            @Override public void run()
+            {
+                if (player != null)
+                {
+                    player.setPlaybackParameters(new PlaybackParameters((float) rate));
+                    partyHandler.postDelayed(partyRateReset, durationMs);
+                }
+            }
+        });
+        return true;
+    }
+
+    @Override
+    public void cancelPartyScheduledAction()
+    {
+        super.cancelPartyScheduledAction();
+        partyHandler.removeCallbacks(partyBufferingStart);
+        partyBufferingStartedAtMs = -1;
+        partyHandler.removeCallbacks(partyRateReset);
+        if (player != null)
+        {
+            context.runOnUiThread(partyRateReset);
+        }
     }
 
     /**

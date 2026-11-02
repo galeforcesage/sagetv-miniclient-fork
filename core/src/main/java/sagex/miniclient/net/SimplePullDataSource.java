@@ -33,6 +33,8 @@ public class SimplePullDataSource implements ISageTVDataSource {
      */
     static final int READ_TIMEOUT_MS = Integer.getInteger(
             "sagetv.pull.read.timeout.ms", 30_000);
+    static final int CONNECT_TIMEOUT_MS = Integer.getInteger(
+            "sagetv.pull.connect.timeout.ms", 30_000);
 
     Socket remoteServer;
     String uri;
@@ -69,7 +71,7 @@ public class SimplePullDataSource implements ISageTVDataSource {
             log.debug("Open(): {} on host {}", uri, host);
 
             remoteServer = new Socket();
-            remoteServer.connect(new java.net.InetSocketAddress(host, 7818), 2000);
+            remoteServer.connect(new java.net.InetSocketAddress(host, 7818), CONNECT_TIMEOUT_MS);
             if (READ_TIMEOUT_MS > 0) {
                 remoteServer.setSoTimeout(READ_TIMEOUT_MS);
             }
@@ -106,6 +108,11 @@ public class SimplePullDataSource implements ISageTVDataSource {
             }
         } catch (Throwable t) {
             log.error("Unable to open: {}", uri, t);
+            close();
+            if (t instanceof IOException) {
+                throw (IOException) t;
+            }
+            throw new IOException("Unable to open pull data source", t);
         }
 
         return size;
@@ -196,7 +203,7 @@ public class SimplePullDataSource implements ISageTVDataSource {
         return fetch(position, buffer, offset, len);
     }
 
-    public int fetch(long position, byte[] buffer, int offset, int len) throws IOException {
+    public synchronized int fetch(long position, byte[] buffer, int offset, int len) throws IOException {
         if (!opened) {
             throw new IOException("read() called on DataSource that is not opened: " + uri);
         }
@@ -243,6 +250,28 @@ public class SimplePullDataSource implements ISageTVDataSource {
         return bytes;
     }
 
+    /**
+     * Binds the currently-open MediaServer producer to a Party admission grant.
+     * The command must use this exact socket and is serialized with READ/SIZE
+     * traffic so protocol replies cannot interleave.
+     */
+    public synchronized boolean bindPartyAdmission(String handle) {
+        if (!opened || handle == null || !handle.matches("[A-Za-z0-9]{32}")) {
+            return false;
+        }
+        try {
+            String reply = sendStringCommandWithReply("PARTY_BIND " + handle);
+            boolean accepted = "OK".equals(reply);
+            if (!accepted) {
+                log.warn("MediaServer rejected PARTY_BIND");
+            }
+            return accepted;
+        } catch (IOException e) {
+            log.warn("MediaServer PARTY_BIND failed: {}", e.toString());
+            return false;
+        }
+    }
+
     int readBuffer(byte[] buffer, int offset, int len) throws IOException {
         int total = 0;
         int read = 0;
@@ -276,7 +305,9 @@ public class SimplePullDataSource implements ISageTVDataSource {
             buf[total++] = b;
         }
         String val = new String(buf, 0, total);
-        log.debug("Send Command: {}, Got Bytes {} Back with data [{}]", cmd, total, val);
+        String loggedCommand = cmd.startsWith("PARTY_BIND ") ? "PARTY_BIND [REDACTED]" : cmd;
+        log.debug("Send Command: {}, Got Bytes {} Back with data [{}]",
+                loggedCommand, total, val);
         return val;
     }
 }

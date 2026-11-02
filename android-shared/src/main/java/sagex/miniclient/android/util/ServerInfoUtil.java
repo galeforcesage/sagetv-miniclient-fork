@@ -135,6 +135,14 @@ public class ServerInfoUtil {
             if (!ctx.getResources().getBoolean(R.bool.feature_external_display)) return -1;
             if (!MiniclientApplication.get().getClient().properties()
                     .getBoolean(PrefStore.Keys.play_on_external_display, true)) return -1;
+            // The full-activity external-display path is legacy and can leave the
+            // phone's connect UI apparently unresponsive on DeX/HDMI displays that
+            // advertise activity hosting before they can actually launch one.
+            // Keep initial connection on the phone unless the user explicitly
+            // opted into legacy activity relocation. The safer surface-move path
+            // can attach video after the connection is established.
+            if (!MiniclientApplication.get().getClient().properties()
+                    .getBoolean(PrefStore.Keys.auto_switch_display_on_hdmi, false)) return -1;
 
             // Spike/diagnostic: always dump the display topology at connect time.
             ExternalDisplayController.logDisplays(ctx, "connect");

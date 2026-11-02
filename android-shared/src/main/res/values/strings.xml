@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="party_mode">Party</string>
+    <string name="party_unavailable">Party Mode is not available on this server.</string>
+    <string name="party_no_media">Start playback before creating a Party.</string>
+    <string name="party_join_code">Enter three-digit Party code</string>
+    <string name="party_local_stop">Stopped locally. Rejoin to resume Party playback.</string>
 
     <string name="app_name">SageTV MiniClient</string>
 

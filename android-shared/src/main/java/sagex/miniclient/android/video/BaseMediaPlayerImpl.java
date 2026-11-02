@@ -23,6 +23,7 @@ import sagex.miniclient.events.VideoInfoRefresh;
 import sagex.miniclient.events.VideoInfoShow;
 import sagex.miniclient.net.HasPushBuffer;
 import sagex.miniclient.net.PushBufferDataSource;
+import sagex.miniclient.party.PartyPlaybackAdapter;
 import sagex.miniclient.prefs.PrefStore;
 import sagex.miniclient.uibridge.Dimension;
 import sagex.miniclient.uibridge.Rectangle;
@@ -65,10 +66,17 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     protected volatile boolean pendingFlush = false;
     protected String lastUri;
     protected long lastMediaTime = -1;
+    private volatile CanonicalMediaSample lastCanonicalMediaSample =
+            new CanonicalMediaSample(0, -1);
     protected boolean flushed = false;
     protected boolean timeshifted = false;
     protected VideoInfo videoInfo = null;
     protected TrickplayController trickplayController;
+    private long partyPlaybackGeneration;
+    private long partyPlaybackCommandGeneration;
+    private int partyStreamEpoch = Integer.MIN_VALUE;
+    private volatile boolean partyHold;
+    private volatile boolean partyBuffering;
 
     // this is mainly for testing... when we force a different UI aspect than what we really have
     private boolean uiAspectChanged = true;
@@ -111,6 +119,25 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
         state = NO_STATE;
         videoInfo = new VideoInfo();
         trickplayController = new TrickplayController();
+        try
+        {
+            if (context.getClient().getCurrentConnection() != null
+                    && context.getClient().getCurrentConnection().getPartyClient()
+                            .isPlaybackHeld())
+            {
+                partyHold = true;
+                context.runOnUiThread(new Runnable()
+                {
+                    @Override public void run()
+                    {
+                        context.getVideoView().setAlpha(0.0f);
+                    }
+                });
+            }
+        }
+        catch (Throwable ignored)
+        {
+        }
         debug_ar = context.getClient().properties().getBoolean(PrefStore.Keys.debug_ar, false);
     }
 
@@ -132,7 +159,12 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
             log.info("Freeing Media Player");
         }
 
+        cancelPartyScheduledAction();
+        partyBuffering = false;
+        resetPartyReadiness();
         releasePlayer();
+        partyPlaybackGeneration++;
+        notifyPartyPlaybackGenerationChanged();
     }
 
     @Override
@@ -144,10 +176,17 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     @Override
     public void load(byte majorHint, byte minorHint, String encodingHint, final String urlString, String hostname, boolean timeshifted, long buffersize)
     {
+        cancelPartyScheduledAction();
+        partyBuffering = false;
+        resetPartyReadiness();
+        playerReady = false;
+        partyPlaybackGeneration++;
+        notifyPartyPlaybackGenerationChanged();
         final String finalUrl;
 
         lastUri = urlString;
         lastMediaTime = -1;
+        lastCanonicalMediaSample = new CanonicalMediaSample(0, -1);
         eos = false;
         eosServerLogged = false;
         seekPending = false;
@@ -492,6 +531,11 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     public long getMediaTimeMillis(long lastServerTime)
     {
         long reported = computeMediaTimeMillis(lastServerTime);
+        if (reported > 0)
+        {
+            lastCanonicalMediaSample = new CanonicalMediaSample(
+                    android.os.SystemClock.elapsedRealtime(), reported);
+        }
         logPosDiag(reported);
         return reported;
     }
@@ -509,7 +553,7 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
 
     private void logPosDiag(long reported)
     {
-        long now = System.currentTimeMillis();
+        long now = android.os.SystemClock.elapsedRealtime();
         if (now - lastPosDiagMs < 1000) return;
         lastPosDiagMs = now;
         try
@@ -542,12 +586,244 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
      */
     protected long getBufferedPositionMillis() { return -1; }
 
+    protected long getDurationMillis() { return -1; }
+
+    public PartyPlaybackAdapter.Observation getPartyObservation()
+    {
+        long rendered = getRenderedPositionMillis();
+        long buffered = getBufferedPositionMillis();
+        long bufferAhead = rendered >= 0 && buffered >= rendered ? buffered - rendered : -1;
+        long nowMonoMs = android.os.SystemClock.elapsedRealtime();
+        CanonicalMediaSample canonical;
+        if (rendered >= 0 && trickplayController != null
+                && trickplayController.isNativeAvailable())
+        {
+            trickplayController.onPlayerPosition(rendered);
+            long reported = trickplayController.getReportedTime();
+            canonical = reported >= 0
+                    ? new CanonicalMediaSample(nowMonoMs, reported)
+                    : lastCanonicalMediaSample;
+            if (reported >= 0)
+            {
+                lastCanonicalMediaSample = canonical;
+            }
+        }
+        else
+        {
+            canonical = lastCanonicalMediaSample;
+        }
+        long sampleMonoMs = canonical.positionMs >= 0
+                ? canonical.sampleMonoMs : nowMonoMs;
+        long partyPositionMs = canonical.positionMs >= 0
+                ? canonical.positionMs : Math.max(0, rendered);
+        PartyPlaybackAdapter.PlaybackState playbackState;
+        if (partyBuffering && state == PLAY_STATE)
+        {
+            playbackState = PartyPlaybackAdapter.PlaybackState.BUFFERING;
+        }
+        else switch (state)
+        {
+            case PLAY_STATE:
+                playbackState = PartyPlaybackAdapter.PlaybackState.PLAYING;
+                break;
+            case PAUSE_STATE:
+            case LOADED_STATE:
+                playbackState = PartyPlaybackAdapter.PlaybackState.PAUSED;
+                break;
+            case STOPPED_STATE:
+            case EOS_STATE:
+                playbackState = PartyPlaybackAdapter.PlaybackState.STOPPED;
+                break;
+            default:
+                playbackState = PartyPlaybackAdapter.PlaybackState.UNAVAILABLE;
+                break;
+        }
+        return new PartyPlaybackAdapter.Observation(
+                sampleMonoMs,
+                partyPositionMs,
+                rendered,
+                bufferAhead,
+                Math.max(0, getDurationMillis()),
+                playbackState,
+                playerReady && player != null,
+                playerReady && player != null && rendered >= 0,
+                50);
+    }
+
+    private static final class CanonicalMediaSample
+    {
+        final long sampleMonoMs;
+        final long positionMs;
+
+        CanonicalMediaSample(long sampleMonoMs, long positionMs)
+        {
+            this.sampleMonoMs = sampleMonoMs;
+            this.positionMs = positionMs;
+        }
+    }
+
+    public void resetPartyReadiness()
+    {
+        notifyPartyReadinessInvalidated();
+    }
+
+    protected final void notifyPartyReadinessInvalidated()
+    {
+        try
+        {
+            if (context.getClient().getCurrentConnection() != null)
+            {
+                context.getClient().getCurrentConnection().getPartyClient()
+                        .onReadinessInvalidated();
+            }
+        }
+        catch (Throwable ignored)
+        {
+        }
+    }
+
+    public void setPartyCanonicalPosition(long positionMs)
+    {
+        if (positionMs < 0) return;
+        if (trickplayController != null)
+        {
+            trickplayController.installAuthoritativePosition(positionMs);
+        }
+        lastMediaTime = positionMs;
+        lastCanonicalMediaSample = new CanonicalMediaSample(
+                android.os.SystemClock.elapsedRealtime(), positionMs);
+    }
+
+    public boolean executePartyCommand(PartyPlaybackAdapter.ScheduledCommand command)
+    {
+        if (!playerReady || player == null || command == null) return false;
+        if (command.targetPositionMs >= 0
+                && !seekForParty(command.targetPositionMs,
+                        command.seekAccuracy)) {
+            return false;
+        }
+        if (command.targetState == PartyPlaybackAdapter.PlaybackState.PLAYING)
+        {
+            play();
+        }
+        else if (command.targetState == PartyPlaybackAdapter.PlaybackState.PAUSED)
+        {
+            pause();
+        }
+        return true;
+    }
+
+    protected boolean seekForParty(long positionMs,
+                                   PartyPlaybackAdapter.SeekAccuracy accuracy)
+    {
+        seek(positionMs);
+        return true;
+    }
+
+    public void cancelPartyScheduledAction()
+    {
+        if (trickplayController != null)
+        {
+            trickplayController.cancelPendingAction();
+        }
+    }
+
+    public boolean supportsPartyTemporaryRate()
+    {
+        return false;
+    }
+
+    public boolean setPartyTemporaryRate(double rate, long durationMs)
+    {
+        return false;
+    }
+
+    protected final void setPartyBuffering(boolean buffering)
+    {
+        if (partyBuffering == buffering) return;
+        partyBuffering = buffering;
+        notifyPartyPlaybackStateChanged();
+    }
+
+    protected final boolean isPartyBuffering()
+    {
+        return partyBuffering;
+    }
+
+    public void setPartyHold(boolean hold)
+    {
+        partyHold = hold;
+        context.runOnUiThread(new Runnable()
+        {
+            @Override public void run()
+            {
+                try
+                {
+                    context.getVideoView().setAlpha(partyHold ? 0.0f : 1.0f);
+                }
+                catch (Throwable ignored)
+                {
+                }
+            }
+        });
+        applyPartyHold(hold);
+    }
+
+    protected boolean isPartyHold()
+    {
+        return partyHold;
+    }
+
+    protected void applyPartyHold(boolean hold)
+    {
+        if (hold && playerReady && player != null && state == PLAY_STATE) pause();
+    }
+
+    public void localPartyStop()
+    {
+        stop();
+    }
+
+    public String getPartyDeliveryMode()
+    {
+        return pushMode ? "push" : (httpls ? "hls" : "pull");
+    }
+
+    public boolean bindPartyAdmission(String handle)
+    {
+        return false;
+    }
+
+    public long getPartyPlaybackGeneration()
+    {
+        return partyPlaybackGeneration;
+    }
+
+    public long getPartyPlaybackCommandGeneration()
+    {
+        return partyPlaybackCommandGeneration;
+    }
+
+    public void restoreAfterPartyCreateFailure(long generation, boolean wasPlaying)
+    {
+        if (generation == partyPlaybackGeneration && wasPlaying
+                && playerReady && player != null && state == PAUSE_STATE)
+        {
+            play();
+        }
+    }
+
     @Override
     public void setStreamEpoch(int streamEpoch)
     {
         // SEEK_EPOCH_V1 only: align the controller's epoch to the server's.
         // Gated so a legacy session (flag false) never touches epoch state.
         if (!MiniClientConnection.seekEpochV1Negotiated) return;
+        if (partyStreamEpoch != Integer.MIN_VALUE && partyStreamEpoch != streamEpoch)
+        {
+            resetPartyReadiness();
+        }
+        partyStreamEpoch = streamEpoch;
         if (trickplayController != null)
         {
             trickplayController.setServerEpoch(streamEpoch);
@@ -565,9 +841,13 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
         // See MiniPlayerPlugin.getMediaTimeMillis() Javadoc for the contract.
         if (trickplayController != null && trickplayController.isNativeAvailable())
         {
-            if (pushMode) {
-                trickplayController.setServerStartTime(lastServerTime);
-            }
+            // lastServerTime carries the correct pre-mapping baseline for
+            // BOTH modes: push's established mux-time convention, and (via
+            // MediaCmd#classifyPullTimeline, driven by the server's
+            // CAP_EFFECTIVE_DELIVERY hint) a pull-xcode reopen's absolute
+            // seek-target origin. For a plain direct-pull stream it is
+            // always 0 -- an exact no-op, unchanged from prior behavior.
+            trickplayController.setServerStartTime(lastServerTime);
             long reportedTime = trickplayController.getReportedTime();
             if (reportedTime > 0)
             {
@@ -653,8 +933,11 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     @Override
     public void stop()
     {
+        cancelPartyScheduledAction();
+        partyBuffering = false;
         state = STOPPED_STATE;
         context.removeVideoFrame();
+        notifyPartyPlaybackStateChanged();
     }
 
     protected void clearSurface()
@@ -679,7 +962,9 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     @Override
     public void pause()
     {
+        partyPlaybackCommandGeneration++;
         state = PAUSE_STATE;
+        notifyPartyPlaybackStateChanged();
         if (trickplayController != null && trickplayController.isNativeAvailable())
         {
             trickplayController.setPaused(true);
@@ -693,9 +978,11 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     @Override
     public void play()
     {
+        partyPlaybackCommandGeneration++;
         // Only grab audio focus when media playback actually starts.
         AudioUtil.requestAudioFocus(context.getContext());
         state = PLAY_STATE;
+        notifyPartyPlaybackStateChanged();
         if (trickplayController != null && trickplayController.isNativeAvailable())
         {
             trickplayController.setPlaying();
@@ -709,6 +996,8 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     @Override
     public void seek(long timeInMS)
     {
+        partyPlaybackCommandGeneration++;
+        resetPartyReadiness();
         if (VerboseLogging.DETAILED_PLAYER_LOGGING)
         {
             log.debug("SEEK: {}", timeInMS);
@@ -721,6 +1010,37 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
         if (trickplayController != null && trickplayController.isNativeAvailable())
         {
             trickplayController.beginSeek(timeInMS);
+        }
+        notifyPartyPlaybackStateChanged();
+    }
+
+    private void notifyPartyPlaybackStateChanged()
+    {
+        try
+        {
+            if (context.getClient().getCurrentConnection() != null)
+            {
+                context.getClient().getCurrentConnection().getPartyClient()
+                        .onPlaybackStateChanged();
+            }
+        }
+        catch (Throwable ignored)
+        {
+        }
+    }
+
+    private void notifyPartyPlaybackGenerationChanged()
+    {
+        try
+        {
+            if (context.getClient().getCurrentConnection() != null)
+            {
+                context.getClient().getCurrentConnection().getPartyClient()
+                        .onPlaybackGenerationChanged();
+            }
+        }
+        catch (Throwable ignored)
+        {
         }
     }
 
@@ -862,6 +1182,8 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     @Override
     public void flush()
     {
+        partyPlaybackCommandGeneration++;
+        resetPartyReadiness();
         log.debug("JVL - flush called!");
         if (VerboseLogging.DETAILED_PLAYER_LOGGING)
         {
@@ -940,6 +1262,7 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     protected void releasePlayer()
     {
         log.debug("Releasing Player");
+        playerReady = false;
         player = null;
         videoInfo.reset();
         releaseDataSource();

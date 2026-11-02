@@ -1,0 +1,80 @@
+Implement Party Mode v1 in the Android NG client only, compatible with:
+
+- docs/PartyModeV1.md
+- docs/NGClientCapabilities.md
+- docs/party/v1/golden.json
+- docs/party/v1/examples.cjs
+
+The contract and goldens are authoritative. Do not invent fields or implement
+conceptual PRD endpoints. Do not change, deploy, or restart the SageTV server.
+Confirm the target server includes the canonical Party contract without
+replacing newer server runtime work.
+
+Implement the actual PARTY_V1 opcode-1 transport:
+
+- Enforce the 8192-byte UTF-8 JSON limit, schemaVersion 1, case-sensitive
+  names, asymmetric client/server headers, and the normal integer property ACK.
+- Treat RECEIVED and EXECUTED reports as separate protocol messages.
+- Advertise required and optional capability tokens only after their complete
+  guarantees work.
+- Use AVAILABLE/sessionToken/serverEpoch and serialized positive
+  requestSeq/requestId values.
+- Implement snapshot/stateVersion/commandSeq supersession, idempotency, and
+  event-plus-reply deduplication.
+
+Put Android Party controls in the existing media popup/sidecar. Support:
+
+- Host creation at Beginning and Current Position only when advertised.
+- Connected-client invitations and exact three-digit code entry, preserving
+  leading zeros.
+- Explicit paused Join & Prepare, code display/rotation, leave, rejoin, resume,
+  and separately confirmed host END.
+- Shared PLAY, PAUSE, FF, REW, FF2, and REW2 from the server timeline.
+- Local Stop that affects only this client, reports LOCALLY_STOPPED, and never
+  sends ordinary Sage STOP, Party ACTION STOP, or host END.
+
+Use Android elapsedRealtime milliseconds:
+
+- Establish confidence from at least five low-delay samples.
+- Refresh every five seconds and reset on reconnect, foreground transition, or
+  network change.
+- Translate executeAtServerMonoMs using serverMinusClientMs.
+- Keep preparation paused.
+- READY requires surface activation, at least 1500 ms buffered (or remaining
+  media), a confident clock, and server-confirmed admission for the actual
+  producer.
+
+Implement real media admission:
+
+- Direct MediaServer pull sends PARTY_BIND on the same successful OPEN
+  connection.
+- Pull-xcode also requires the normal XCODE_SETUP lifecycle; do not advertise
+  it until implemented.
+- HLS uses X-SageTV-Party-Admission on every applicable request; do not place
+  proof in URLs.
+- Server-owned push is confirmed against actual output.
+- Remote or unconfirmed push fails closed.
+
+Apply scheduled commands/corrections and report observed execution, landing,
+and failures. Send POSITION at the documented cadence. Preserve keep-moving
+buffering and report degraded recovery.
+
+Reconnect honors the 15-second slot grace and private recovery token, then
+repeats admission, clock synchronization, and preparation. Never use physical
+socket, client ID, IP address, or account alone as participant identity. Keep
+session tokens, recovery tokens, join codes, and admission proof out of URLs,
+logs, and analytics. Do not write participant resume/watched progress during
+Party playback.
+
+Add deterministic adapter and real-transport integration tests matching the
+goldens for framing, negotiation, authorization, roster limits, wrong media,
+duplicates/reordering, Stop isolation, FF/REW, scheduling, asymmetric clocks,
+readiness/resource denial, corrections, buffering, late join, reconnect, host
+loss, shutdown, and per-viewer cleanup.
+
+Report hardware tests separately. Do not claim decoder position/seek/rate,
+surface activation, background/network, long mixed-client synchronization,
+encoder headroom, or resource teardown behavior from unit tests.
+
+Do not implement NativePlaybackOwnershipV1 or NativeViewerRecoveryProposal as
+Android Party APIs.

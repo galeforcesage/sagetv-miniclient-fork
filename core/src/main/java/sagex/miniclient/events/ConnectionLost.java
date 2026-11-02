@@ -7,6 +7,6 @@ public class ConnectionLost {
     public final boolean reconnecting;
 
     public ConnectionLost(boolean willReconnect) {
-        this.reconnecting = false;
+        this.reconnecting = willReconnect;
     }
 }

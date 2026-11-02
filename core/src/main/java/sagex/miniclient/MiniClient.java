@@ -25,6 +25,8 @@ import sagex.miniclient.events.ConnectedEvent;
 import sagex.miniclient.logging.ILogger;
 import sagex.miniclient.ngcontext.NgPlaybackContextStore;
 import sagex.miniclient.prefs.PrefStore;
+import sagex.miniclient.net.ConnectionAttemptCoordinator;
+import sagex.miniclient.party.PartyRecoveryState;
 
 /**
  * MiniClient is the central access point to all things MiniClient.
@@ -42,6 +44,7 @@ public class MiniClient
     Thread connectionThread = null;
     private String MACAddress;
     private MiniClientConnection currentConnection;
+    private final PartyRecoveryState partyRecoveryState = new PartyRecoveryState();
     private sagex.miniclient.uibridge.UIRenderer<?> UIRenderer;
     private SageTVLocatorService locatorService;
     private String cryptoFormats;
@@ -51,6 +54,8 @@ public class MiniClient
     private ServerInfo connectedServer;
     private ImageCache imageCache;
     private volatile DownloadStatusProvider downloadStatusProvider;
+    private final ConnectionAttemptCoordinator<MiniClientConnection> connectionAttempts =
+            new ConnectionAttemptCoordinator<MiniClientConnection>();
 
     public MiniClient(MiniClientOptions options, ILogger logger)
     {
@@ -168,18 +173,37 @@ public class MiniClient
         return MACAddress;
     }
 
-    public MiniClientConnection getCurrentConnection() {
-        return currentConnection;
+    public synchronized MiniClientConnection getCurrentConnection() {
+        return connectionAttempts.getCurrent();
     }
 
-    public void setCurrentConnection(MiniClientConnection currentConnection)
+    public synchronized void setCurrentConnection(MiniClientConnection currentConnection)
     {
         this.currentConnection = currentConnection;
+        connectionAttempts.setCurrent(currentConnection);
+    }
+
+    public synchronized boolean clearCurrentConnection(MiniClientConnection connection)
+    {
+        boolean cleared = connectionAttempts.clearCurrent(connection);
+        if (cleared) currentConnection = null;
+        return cleared;
+    }
+
+    public boolean ownsConnectionAttempt(long attemptId)
+    {
+        return connectionAttempts.isOwner(attemptId);
+    }
+
+    public PartyRecoveryState getPartyRecoveryState()
+    {
+        return partyRecoveryState;
     }
 
     public boolean isConnected()
     {
-        return currentConnection != null && currentConnection.isConnected();
+        MiniClientConnection connection = getCurrentConnection();
+        return connection != null && connection.isConnected();
     }
 
     public sagex.miniclient.uibridge.UIRenderer<?> getUIRenderer() {
@@ -193,6 +217,15 @@ public class MiniClient
 
     public void connect(ServerInfo si, MACAddressResolver macAddressResolver) throws IOException
     {
+        ConnectionAttemptCoordinator.BeginResult<MiniClientConnection> begin =
+                connectionAttempts.beginAttemptCapturingPending();
+        final long attemptId = begin.attemptId;
+        if (begin.supersededPending != null)
+        {
+            begin.supersededPending.close(
+                    sagex.miniclient.net.ConnectionProgress.ClosureOrigin.LOCAL_REPLACED,
+                    "superseded by newer connection attempt");
+        }
         if (si.isLocatorOnly() || si.forceLocator)
         {
             log.logDebug("Resolving Server Address from GUID " + si);
@@ -210,17 +243,57 @@ public class MiniClient
         }
 
         imageCache = new ImageCache(this, log.getLoggerInstance(ImageCache.class));
-        MiniClientConnection connection = new MiniClientConnection(this, macAddressResolver.getMACAddress(), si, log.getLoggerInstance(MiniClientConnection.class));
-        connection.connect();
-        eventbus().post(new ConnectedEvent());
+        MiniClientConnection connection = new MiniClientConnection(this, macAddressResolver.getMACAddress(),
+                si, log.getLoggerInstance(MiniClientConnection.class), attemptId);
+        if (!connectionAttempts.registerPending(attemptId, connection))
+        {
+            throw new IOException("Connection attempt was superseded before start");
+        }
+        try
+        {
+            connection.connect();
+            ConnectionAttemptCoordinator.PublishResult<MiniClientConnection> result =
+                    connectionAttempts.publish(attemptId, connection);
+            if (!result.accepted)
+            {
+                connection.close(sagex.miniclient.net.ConnectionProgress.ClosureOrigin.LOCAL_CANCEL,
+                        "stale connection attempt completed");
+                throw new IOException("Connection attempt was superseded");
+            }
+            MiniClientConnection replaced = result.replaced;
+            currentConnection = connection;
+            if (replaced != null && replaced != connection)
+            {
+                replaced.close(sagex.miniclient.net.ConnectionProgress.ClosureOrigin.LOCAL_REPLACED,
+                        "newer connection published");
+            }
+            eventbus().post(new ConnectedEvent());
+        }
+        catch (IOException e)
+        {
+            connectionAttempts.clearPending(connection);
+            connection.close(sagex.miniclient.net.ConnectionProgress.ClosureOrigin.TRANSPORT_ERROR,
+                    e.getMessage());
+            throw e;
+        }
     }
 
     public void closeConnection()
     {
-        if (currentConnection != null)
+        ConnectionAttemptCoordinator.CancelResult<MiniClientConnection> cancelled =
+                connectionAttempts.cancelAll();
+        MiniClientConnection current = cancelled.current;
+        MiniClientConnection pending = cancelled.pending;
+        currentConnection = null;
+        if (pending != null)
         {
-            currentConnection.close();
-            currentConnection = null;
+            pending.close(sagex.miniclient.net.ConnectionProgress.ClosureOrigin.LOCAL_CANCEL,
+                    "connection attempt cancelled");
+        }
+        if (current != null)
+        {
+            current.close(sagex.miniclient.net.ConnectionProgress.ClosureOrigin.INTENTIONAL_STOP,
+                    "client close requested");
         }
         if (imageCache!=null)
         {

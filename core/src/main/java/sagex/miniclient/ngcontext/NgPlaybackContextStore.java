@@ -118,6 +118,10 @@ public final class NgPlaybackContextStore {
         return livePoller;
     }
 
+    public boolean refreshCurrentByClientName(String clientName) {
+        return livePoller.refreshByClientName(serverBaseUrl, clientName);
+    }
+
     /**
      * Shut down all resources (connection closing).
      */

@@ -137,13 +137,13 @@
             android:title="@string/use_native_resolution_title"/>
 
         <CheckBoxPreference
-            android:defaultValue="true"
+            android:defaultValue="false"
             android:key="exit_on_standby"
             android:summary="@string/exit_on_standby_summary"
             android:title="@string/exit_on_standby_title" />
 
         <CheckBoxPreference
-            android:defaultValue="true"
+            android:defaultValue="false"
             android:key="app_destroy_on_pause"
             android:summary="@string/terminate_onpause_summary"
             android:title="@string/terminate_onpause_title" />

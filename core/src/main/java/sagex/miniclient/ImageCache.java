@@ -58,7 +58,7 @@ public class ImageCache
         return canDo;
     }
 
-    public void cleanUp()
+    public synchronized void cleanUp()
     {
         log.logDebug("Resetting up in-memory cache states");
         imageCacheSize.set(0);
@@ -66,9 +66,12 @@ public class ImageCache
         lruImageMap.clear();
         if (imageMap.size()>0)
         {
-            for (ImageHolder ih : imageMap.values())
+            for (java.util.Map.Entry<Integer, sagex.miniclient.uibridge.ImageHolder> entry : imageMap.entrySet())
             {
-                ih.dispose();
+                sagex.miniclient.uibridge.ImageHolder holder = entry.getValue();
+                client.getUIRenderer().unloadImage(entry.getKey(), holder);
+                if (holder != null && holder.get() != null)
+                    holder.dispose();
             }
         }
         imageMap.clear();
@@ -85,7 +88,7 @@ public class ImageCache
         return h;
     }
 
-    public void put(int imghandle, ImageHolder<?> img, int width, int height) {
+    public synchronized void put(int imghandle, ImageHolder<?> img, int width, int height) {
 
         if (img.getHandle()!= imghandle)
         {
@@ -107,7 +110,26 @@ public class ImageCache
         }
     }
 
-    public void makeRoom(int width, int height)
+    public synchronized boolean replacePendingImage(int imghandle, ImageHolder<?> pending,
+                                                    ImageHolder<?> decoded, int width, int height) {
+        if (imageMap.get(imghandle) != pending)
+            return false;
+
+        imageMap.put(imghandle, decoded);
+        long newBytes = (long) width * height * 4;
+        Long prev = accountedSize.put(imghandle, newBytes);
+        long total = imageCacheSize.addAndGet(newBytes - (prev != null ? prev : 0L));
+
+        if (VerboseLogging.DETAILED_IMAGE_CACHE)
+        {
+            log.logDebug("Replaced pending image " + imghandle + " with size: " + width + "x" + height
+                    + " (" + Utils.toMB(newBytes) + "mb); Cache " + Utils.toMB(total)
+                    + "mb/" + Utils.toMB(imageCacheLimit) + "mb");
+        }
+        return true;
+    }
+
+    public synchronized void makeRoom(int width, int height)
     {
         if (VerboseLogging.DETAILED_IMAGE_CACHE)
         {
@@ -149,7 +171,7 @@ public class ImageCache
         client.getCurrentConnection().postImageUnload(oldestImage);
     }
 
-    public void unloadImage(int handle) {
+    public synchronized void unloadImage(int handle) {
         ImageHolder bi = imageMap.get(handle);
         imageMap.remove(handle);
         Long acct = accountedSize.remove(handle);
@@ -162,7 +184,9 @@ public class ImageCache
 
                 log.logDebug("Unloaded " + handle + " with size: " + bi.getWidth() + "x" +  bi.getHeight() + " (" + Utils.toMB(freed) + "mb); Cache " + Utils.toMB(total) + "mb/" + Utils.toMB(imageCacheLimit)+ "mb)");
             }
-            bi.dispose();
+            client.getUIRenderer().unloadImage(handle, bi);
+            if (bi.get() != null)
+                bi.dispose();
         } else {
             // Holder already gone but we may still be charged for it — reconcile.
             if (acct != null) imageCacheSize.addAndGet(-acct);
@@ -171,7 +195,6 @@ public class ImageCache
             }
         }
         clearImageAccess(handle);
-        client.getUIRenderer().unloadImage(handle, bi);
     }
 
     public java.io.File getCachedImageFile(String resourceID)

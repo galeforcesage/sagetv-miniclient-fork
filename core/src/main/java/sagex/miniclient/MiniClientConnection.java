@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Properties;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.atomic.AtomicLong;
 
 import sagex.miniclient.events.ConnectionLost;
 import sagex.miniclient.events.DownloadRequestEvent;
@@ -40,6 +41,12 @@ import sagex.miniclient.uibridge.UIRenderer;
 import sagex.miniclient.util.Utils;
 import sagex.miniclient.media.AudioCodec;
 import sagex.miniclient.ngcontext.NgPlaybackContextStore;
+import sagex.miniclient.net.ConnectionProgress;
+import sagex.miniclient.party.PartyClient;
+import sagex.miniclient.party.PartyPlaybackAdapter;
+import sagex.miniclient.party.PartyProtocol;
+import sagex.miniclient.party.PartyProtocolException;
+import sagex.miniclient.net.PullServerProbe;
 
 
 public class MiniClientConnection implements SageTVInputCallback
@@ -342,6 +349,12 @@ public class MiniClientConnection implements SageTVInputCallback
     private MediaCmd myMedia;
     private java.net.Socket gfxSocket;
     private java.net.Socket mediaSocket;
+    private final long connectionAttemptId;
+    private final AtomicLong socketSequence = new AtomicLong();
+    private final java.util.concurrent.ConcurrentHashMap<java.net.Socket, ConnectionProgress> socketProgress =
+            new java.util.concurrent.ConcurrentHashMap<java.net.Socket, ConnectionProgress>();
+    private final java.util.concurrent.ConcurrentHashMap<java.net.Socket, Boolean> attemptSockets =
+            new java.util.concurrent.ConcurrentHashMap<java.net.Socket, Boolean>();
 
     private String myID;
     private java.io.DataInputStream gfxIs;
@@ -356,7 +369,8 @@ public class MiniClientConnection implements SageTVInputCallback
     private int replyCount;
     private GFXCMD2 myGfx;
     private EventRouterThread eventRouterThread;
-    private boolean alive;
+    private volatile boolean alive;
+    private long playbackAuthorityGeneration = 1;
     private String currentCrypto = null;
     private boolean fontServer;
     private java.util.Timer uiTimer;
@@ -380,7 +394,7 @@ public class MiniClientConnection implements SageTVInputCallback
     private java.util.Map lruImageMap = new java.util.HashMap();
     private boolean usesAdvancedImageCaching;
     private boolean reconnectAllowed;
-    private boolean firstFrameStarted;
+    private volatile boolean firstFrameStarted;
     private boolean performingReconnect;
 
     // Reconnect with exponential backoff (aligned with PWA architecture)
@@ -389,6 +403,7 @@ public class MiniClientConnection implements SageTVInputCallback
     private static final long RECONNECT_MAX_DELAY_MS = 16000;
     private static final long SHORT_SESSION_THRESHOLD_MS = 30000;
     private static final int SHORT_SESSION_STORM_LIMIT = 10;
+    private static final long GFX_COMMAND_STALL_TIMEOUT_MS = 4000;
     private long connectionEstablishedTime;
     private int shortSessionCount;
 
@@ -406,6 +421,7 @@ public class MiniClientConnection implements SageTVInputCallback
      */
     private final java.util.Map<String, List<String>> perPlayerCapabilities = new java.util.concurrent.ConcurrentHashMap<>();
     private final java.util.Map<String, String> perPlayerConstraintProperties = new java.util.HashMap<>();
+    private final PartyClient partyClient;
     /**
      * Bumped every time {@link #refreshClientCapabilities()} detects the output
      * sink changed mid-session (HDMI hotplug, TV/AVR on/off, surround toggle).
@@ -420,6 +436,19 @@ public class MiniClientConnection implements SageTVInputCallback
      * Advisory only: local runtime decoder safety remains authoritative.
      */
     private volatile String serverEffectivePlayerHint = "";
+
+    /**
+     * Server-provided delivery-mechanism token from CAP_EFFECTIVE_DELIVERY,
+     * sent immediately before the OPENURL it applies to. Session-sticky for
+     * that single next OPENURL only: {@link #consumePendingEffectiveDeliveryHint()}
+     * clears it so it can never leak into a later, unrelated media item.
+     * Values: {@code pull:direct} (player position already source-relative,
+     * no adjustment) or {@code pull-xcode:<mode>[;params]} (server-conditioned
+     * pull via /msproxy/XCODE_SETUP; the new stream's local timeline restarts
+     * near zero and must be rebased). Null/absent = legacy server or push
+     * stream; treated as {@code pull:direct} semantics (no behavior change).
+     */
+    private volatile String pendingEffectiveDeliveryHint = null;
 
     private MenuHint menuHint = new MenuHint();
     private Properties profileProperties;
@@ -477,6 +506,7 @@ public class MiniClientConnection implements SageTVInputCallback
                 case AUTO:
                 default:     break;
             }
+
         }
         // AUTO (or unset): default to LEGACY advertisement.
         // Receipt of SAGETV_NG_SERVER=1 from the server promotes to NG.
@@ -707,8 +737,15 @@ public class MiniClientConnection implements SageTVInputCallback
 
     public MiniClientConnection(MiniClient client, String myID, ServerInfo msi, ILogger log)
     {
+        this(client, myID, msi, log, 0);
+    }
+
+    public MiniClientConnection(MiniClient client, String myID, ServerInfo msi, ILogger log,
+                                long connectionAttemptId)
+    {
         this.log = log;
         this.client = client;
+        this.connectionAttemptId = connectionAttemptId;
         currentCrypto = client.getCryptoFormats();
 
         uiRenderer = client.getUIRenderer();
@@ -726,13 +763,17 @@ public class MiniClientConnection implements SageTVInputCallback
         {
             if (msi.address.indexOf(":") != -1)
             {
-                msi.address = msi.address.substring(0, msi.address.indexOf(":"));
-                msi.port = 31099;
+                String addressAndPort = msi.address;
+                int colon = addressAndPort.lastIndexOf(':');
+                msi.address = addressAndPort.substring(0, colon);
                 try
                 {
-                    msi.port = Integer.parseInt(msi.address.substring(msi.address.indexOf(":") + 1));
+                    msi.port = Integer.parseInt(addressAndPort.substring(colon + 1));
                 }
-                catch (NumberFormatException e) { }
+                catch (NumberFormatException e)
+                {
+                    msi.port = 31099;
+                }
             }
         }
 
@@ -746,6 +787,10 @@ public class MiniClientConnection implements SageTVInputCallback
         this.msi = msi;
         usesAdvancedImageCaching = false;
         this.playbackContextStore = new NgPlaybackContextStore(client.eventbus());
+        this.playbackContextStore.setServerBaseUrl(serverBaseUrl());
+        PartyPlaybackAdapter partyAdapter = client.options().createPartyPlaybackAdapter(client);
+        this.partyClient = new PartyClient(client, this, partyAdapter,
+                client.getPartyRecoveryState(), log);
     }
 
     public MenuHint getMenuHint() {
@@ -804,11 +849,25 @@ public class MiniClientConnection implements SageTVInputCallback
         java.net.Socket sake = null;
         java.io.InputStream inStream = null;
         java.io.OutputStream outStream = null;
+        ConnectionProgress progress = null;
         try {
-            log.logInfo("Establishing Server Connection " + msi + " for Connection Type: " + connType);
+            long socketId = socketSequence.incrementAndGet();
+            progress = new ConnectionProgress(connectionAttemptId, socketId,
+                    new ConnectionProgress.Clock() {
+                        @Override public long nowMs() { return System.currentTimeMillis(); }
+                    }, 30000, 120000);
+            progress.advance(ConnectionProgress.Phase.CONNECTING);
+            log.logInfo("TRANSPORT phase=CONNECTING channel=" + connType + " " + progress.summary());
             sake = new java.net.Socket();
+            socketProgress.put(sake, progress);
+            attemptSockets.put(sake, Boolean.TRUE);
             sake.connect(new java.net.InetSocketAddress(msi.address, msi.port), 30000);
-            sake.setSoTimeout(30000);
+            if (!client.ownsConnectionAttempt(connectionAttemptId))
+            {
+                throw new java.net.SocketException("connection attempt superseded");
+            }
+            progress.advance(ConnectionProgress.Phase.SOCKET_CONNECTED);
+            sake.setSoTimeout(progress.nextReadTimeoutMs());
             sake.setTcpNoDelay(true);
             sake.setKeepAlive(true);
             // Tune OS keep-alive timing so a dead control connection is
@@ -835,15 +894,48 @@ public class MiniClientConnection implements SageTVInputCallback
             log.logInfo("Establishing Server Connection using Client ID: " + msg);
             outStream.write(msg);
             outStream.write(connType);
-            int rez = inStream.read();
+            outStream.flush();
+            progress.sent(msg.length + 1);
+            progress.advance(ConnectionProgress.Phase.HANDSHAKE_SENT);
+            long requestStartedAtMs = System.currentTimeMillis();
+            int rez;
+            while (true)
+            {
+                try
+                {
+                    sake.setSoTimeout(progress.nextReadTimeoutMs());
+                    rez = inStream.read();
+                    break;
+                }
+                catch (java.net.SocketTimeoutException timeout)
+                {
+                    if (progress.isAbsoluteExpired() || progress.isIdleExpired())
+                    {
+                        progress.close(ConnectionProgress.ClosureOrigin.LOCAL_TIMEOUT,
+                                progress.isAbsoluteExpired() ? "absolute attempt cap" : "handshake idle timeout");
+                        throw new java.net.SocketTimeoutException(progress.summary());
+                    }
+                }
+            }
+            progress.received(rez < 0 ? 0 : 1, requestStartedAtMs);
+            if (!client.ownsConnectionAttempt(connectionAttemptId))
+            {
+                throw new java.net.SocketException("connection attempt superseded");
+            }
             if (rez != 2) {
                 log.logError("Error with reply from server: " + rez);
                 inStream.close();
                 outStream.close();
                 sake.close();
+                progress.close(ConnectionProgress.ClosureOrigin.REMOTE_CLOSE,
+                        "server refused channel " + connType);
+                socketProgress.remove(sake);
+                attemptSockets.remove(sake);
                 return null;
             }
-            log.logInfo("Connection accepted by server: " + msi);
+            progress.advance(ConnectionProgress.Phase.HANDSHAKE_ACCEPTED);
+            progress.advance(ConnectionProgress.Phase.CHANNEL_REGISTERED);
+            log.logInfo("TRANSPORT phase=CHANNEL_REGISTERED channel=" + connType + " " + progress.summary());
             sake.setSoTimeout(0);
             return sake;
         } catch (java.io.IOException e) {
@@ -863,20 +955,35 @@ public class MiniClientConnection implements SageTVInputCallback
                     outStream.close();
             } catch (Exception e1) {
             }
+            if (sake != null)
+            {
+                socketProgress.remove(sake);
+                attemptSockets.remove(sake);
+            }
+            if (progress != null)
+            {
+                ConnectionProgress.ClosureOrigin origin;
+                if (!client.ownsConnectionAttempt(connectionAttemptId))
+                {
+                    origin = ConnectionProgress.ClosureOrigin.LOCAL_CANCEL;
+                }
+                else if (e instanceof java.net.SocketTimeoutException)
+                {
+                    origin = ConnectionProgress.ClosureOrigin.LOCAL_TIMEOUT;
+                }
+                else
+                {
+                    origin = ConnectionProgress.ClosureOrigin.TRANSPORT_ERROR;
+                }
+                progress.close(origin, e.getMessage());
+                log.logWarning("TRANSPORT failure channel=" + connType + " " + progress.summary());
+            }
             throw e;
         }
     }
 
     public void connect() throws java.io.IOException {
         discoverCodecSupport();
-
-        if (client.getCurrentConnection() != null) {
-            // TODO: We should check if the connection is the same as this one, if so, then just use this connection.
-            if (client.getCurrentConnection() != this) {
-                log.logWarning("We already have server connection.  Shutting it down before connecting with this one.");
-                client.getCurrentConnection().close();
-            }
-        }
 
         log.logInfo("Connecting to media server at" + msi);
         while (mediaSocket == null) {
@@ -902,7 +1009,6 @@ public class MiniClientConnection implements SageTVInputCallback
         }
         log.logInfo("Connected to gfx server: " + msi);
 
-        client.setCurrentConnection(this);
         connectionEstablishedTime = System.currentTimeMillis();
 
         alive = true;
@@ -1112,6 +1218,29 @@ public class MiniClientConnection implements SageTVInputCallback
         catch (Throwable t)
         {
             log.logError("forceMediaReconnect failed", t);
+        }
+    }
+
+    public void requestPartyMediaReconnect()
+    {
+        forceMediaReconnect();
+    }
+
+    public void requestPartyControlReconnect()
+    {
+        if (!reconnectAllowed || performingReconnect || !alive) return;
+        try
+        {
+            java.net.Socket socket = gfxSocket;
+            if (socket != null)
+            {
+                log.logInfo("Forcing Party control reconnect after network boundary");
+                socket.close();
+            }
+        }
+        catch (Throwable t)
+        {
+            log.logError("requestPartyControlReconnect failed", t);
         }
     }
 
@@ -1365,37 +1494,72 @@ public class MiniClientConnection implements SageTVInputCallback
         return alive;
     }
 
+    public synchronized long getPlaybackAuthorityGeneration()
+    {
+        return playbackAuthorityGeneration;
+    }
+
+    public synchronized boolean ownsFreshPlayback(MediaCmd media)
+    {
+        return alive && client.getCurrentConnection() == this && media != null
+                && media == myMedia
+                && media.ownsFreshPlayback(playbackAuthorityGeneration);
+    }
+
+    private synchronized void invalidatePlaybackAuthority(
+            String reason, boolean capabilitySessionChanged)
+    {
+        playbackAuthorityGeneration++;
+        log.logInfo("PARTY playback authority invalidated generation="
+                + playbackAuthorityGeneration + " reason=" + reason);
+        partyClient.onTransportGenerationChanged(capabilitySessionChanged);
+    }
+
     public void close() {
+        close(ConnectionProgress.ClosureOrigin.INTENTIONAL_STOP, "connection closed");
+    }
+
+    public synchronized void close(ConnectionProgress.ClosureOrigin origin, String reason) {
+        if (!alive && gfxSocket == null && mediaSocket == null && attemptSockets.isEmpty())
+        {
+            return;
+        }
         alive = false;
+        partyClient.close();
         try {
             client.options().stopSinkCapabilityMonitoring();
         } catch (Exception e) {
         }
         try {
-            client.setCurrentConnection(null);
+            client.clearCurrentConnection(this);
         } catch (Exception e) {
         }
 
-        try {
-            gfxSocket.close();
-        } catch (Exception e) {
+        for (java.net.Socket socket : attemptSockets.keySet())
+        {
+            try {
+                socket.close();
+            } catch (Exception e) {
+            }
         }
 
         GFXCMD2 oldGfx = myGfx;
         myGfx = null;
         if (oldGfx != null)
             oldGfx.close();
-        try {
-            mediaSocket.close();
-        } catch (Exception e) {
-        }
 
         if (eventRouterThread!=null) {
             // shut down the event router thread
             eventRouterThread.interrupt();
         }
 
-        client = null;
+        for (ConnectionProgress progress : socketProgress.values())
+        {
+            progress.close(origin, reason);
+            log.logInfo("TRANSPORT phase=CLOSED " + progress.summary());
+        }
+        socketProgress.clear();
+        attemptSockets.clear();
     }
 
     private void GFXThread()
@@ -1417,23 +1581,31 @@ public class MiniClientConnection implements SageTVInputCallback
         int retval;
         byte[] retbuf = new byte[4];
         final java.util.Vector gfxSyncVector = new java.util.Vector();
+        final java.util.concurrent.atomic.AtomicLong gfxCommandStartedAtMs =
+                new java.util.concurrent.atomic.AtomicLong(0);
+        final java.util.concurrent.atomic.AtomicReference<String> activeGfxCommand =
+                new java.util.concurrent.atomic.AtomicReference<String>("");
+        final java.util.concurrent.atomic.AtomicBoolean gfxCommandWatchdogTripped =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        final Thread gfxCommandThread = Thread.currentThread();
 
         // Try to connect to the media server port to see if we can actually do
         // pull-mode streaming.
-        boolean canDoPullStreaming = false;
-
-        try
+        log.logInfo("Testing pull-mode media service at " + msi.address + ":7818");
+        PullServerProbe.Result pullProbeResult = PullServerProbe.probe(msi.address);
+        boolean canDoPullStreaming = pullProbeResult == PullServerProbe.Result.SUPPORTED;
+        if (pullProbeResult == PullServerProbe.Result.SUPPORTED)
         {
-            log.logInfo("Testing to see if server can do a pull mode streaming connection at: " + msi.address + ":7818...");
-            java.net.Socket mediaTest = new java.net.Socket();
-            mediaTest.connect(new java.net.InetSocketAddress(msi.address, 7818), 2000);
-            mediaTest.close();
-            canDoPullStreaming = true;
-            log.logInfo("Server can do a pull-mode streaming connection at: " +  msi.address + ":7818");
+            log.logInfo("PULL_PROBE result=SUPPORTED server=" + msi.address);
         }
-        catch (Exception e)
+        else if (pullProbeResult == PullServerProbe.Result.UNSUPPORTED)
         {
-            log.logWarning("Failed pull mode media test....only use push mode for server: " + msi.address);
+            log.logInfo("PULL_PROBE result=UNSUPPORTED server=" + msi.address);
+        }
+        else
+        {
+            log.logWarning("PULL_PROBE result=INDETERMINATE server=" + msi.address
+                    + " reason=transient_or_high_latency; preserving explicit pull preference");
         }
 
         // Smart streaming fallback: compute the effective streaming mode based on
@@ -1483,7 +1655,7 @@ public class MiniClientConnection implements SageTVInputCallback
             //   - dynamic otherwise (raw push first, then server falls back to remux/transcode)
             effectiveStreamingMode = canDoPullStreaming ? "pull" : "dynamic";
             log.logInfo("STREAMING AUTOMATIC: resolved to '" + effectiveStreamingMode
-                    + "' (pull available: " + canDoPullStreaming + ")");
+                    + "' (pull probe: " + pullProbeResult + ")");
         } else if (perServerExplicit) {
             // User pinned a per-server explicit mode. Do NOT auto-override to pull
             // even if port 7818 is reachable -- that's the whole point of the
@@ -1507,10 +1679,17 @@ public class MiniClientConnection implements SageTVInputCallback
             log.logWarning("STREAMING OVERRIDE: 'fixed' -> 'dynamic' "
                     + "(port 7818 unreachable, falling back to dynamic push to avoid server FFmpeg dependency)");
         } else if ("pull".equalsIgnoreCase(userStreamingMode)) {
-            // User wanted pull but port 7818 is unreachable
-            effectiveStreamingMode = "dynamic";
-            log.logWarning("STREAMING OVERRIDE: 'pull' -> 'dynamic' "
-                    + "(port 7818 unreachable, falling back to dynamic push mode)");
+            if (pullProbeResult == PullServerProbe.Result.INDETERMINATE)
+            {
+                effectiveStreamingMode = "pull";
+                log.logWarning("STREAMING: keeping explicit pull because port 7818 probe was transient/indeterminate");
+            }
+            else
+            {
+                effectiveStreamingMode = "dynamic";
+                log.logWarning("STREAMING OVERRIDE: 'pull' -> 'dynamic' "
+                        + "(port 7818 refused the connection)");
+            }
         } else {
             // User chose dynamic, keep it
             effectiveStreamingMode = userStreamingMode;
@@ -1518,7 +1697,7 @@ public class MiniClientConnection implements SageTVInputCallback
 
         log.logInfo("Effective streaming mode: '" + effectiveStreamingMode
                 + "' (user configured: '" + userStreamingMode
-                + "', pull available: " + canDoPullStreaming + ")");
+                + "', pull probe: " + pullProbeResult + ")");
 
         try
         {
@@ -1582,7 +1761,8 @@ public class MiniClientConnection implements SageTVInputCallback
                         }
                         catch (Exception e)
                         {
-                            if (reconnectAllowed && alive && firstFrameStarted && !encryptEvents)
+                            if (reconnectAllowed && alive && firstFrameStarted && !encryptEvents
+                                    && !gfxCommandWatchdogTripped.get())
                             {
                                 // Short-session storm guard: track consecutive short sessions
                                 // like PWA's _shortSessionCount pattern
@@ -1608,6 +1788,12 @@ public class MiniClientConnection implements SageTVInputCallback
                                 }
 
                                 performingReconnect = true;
+                                invalidatePlaybackAuthority(
+                                        "GFX connection generation changed", true);
+                                if (client != null)
+                                {
+                                    client.eventbus().post(new ConnectionLost(true));
+                                }
                                 enabledzip = false;
                                 log.logError("GFX channel detected a connection error, attempting reconnect with exponential backoff", e);
                                 try
@@ -1643,8 +1829,8 @@ public class MiniClientConnection implements SageTVInputCallback
                                     log.logInfo("Reconnect attempt " + (attempt + 1) + "/" + MAX_RECONNECT_ATTEMPTS);
                                     try
                                     {
-                                        gfxSocket = EstablishServerConnection(5);
-                                        if (gfxSocket == null)
+                                        java.net.Socket candidate = EstablishServerConnection(5);
+                                        if (candidate == null)
                                         {
                                             // EstablishServerConnection() returns null ONLY when the
                                             // server completed the TCP handshake but replied with a
@@ -1662,6 +1848,14 @@ public class MiniClientConnection implements SageTVInputCallback
                                                     + ": server refused reconnect (intentional disconnect) — aborting reconnect");
                                             break;
                                         }
+                                        if (!alive || !client.ownsConnectionAttempt(connectionAttemptId))
+                                        {
+                                            candidate.close();
+                                            log.logWarning("Discarding stale GFX reconnect socket for attempt="
+                                                    + connectionAttemptId);
+                                            break;
+                                        }
+                                        gfxSocket = candidate;
                                         eventChannel = new java.io.DataOutputStream(new java.io.BufferedOutputStream(gfxSocket.getOutputStream()));
                                         myStream = gfxIs = new java.io.DataInputStream(gfxSocket.getInputStream());
 
@@ -1714,7 +1908,7 @@ public class MiniClientConnection implements SageTVInputCallback
                                     performingReconnect = false;
                                     if (client != null)
                                     {
-                                        client.eventbus().post(new ConnectionLost(performingReconnect));
+                                        client.eventbus().post(new ConnectionLost(false));
                                     }
                                     synchronized (gfxSyncVector)
                                     {
@@ -1723,6 +1917,7 @@ public class MiniClientConnection implements SageTVInputCallback
                                     }
                                 }
                                 performingReconnect = false;
+                                partyClient.onTransportReconnected();
                             }
                             else
                             {
@@ -1744,6 +1939,62 @@ public class MiniClientConnection implements SageTVInputCallback
             };
             gfxReadThread.setDaemon(true);
             gfxReadThread.start();
+
+            Thread gfxWatchdogThread = new Thread("GFXWatchdog-" + msi.address)
+            {
+                @Override
+                public void run()
+                {
+                    while (alive && !gfxCommandWatchdogTripped.get())
+                    {
+                        try
+                        {
+                            Thread.sleep(250);
+                        }
+                        catch (InterruptedException e)
+                        {
+                            Thread.currentThread().interrupt();
+                            return;
+                        }
+
+                        if (!firstFrameStarted)
+                            continue;
+
+                        long startedAt = gfxCommandStartedAtMs.get();
+                        if (startedAt == 0
+                                || System.currentTimeMillis() - startedAt < GFX_COMMAND_STALL_TIMEOUT_MS)
+                            continue;
+
+                        if (!gfxCommandStartedAtMs.compareAndSet(startedAt, 0)
+                                || !gfxCommandWatchdogTripped.compareAndSet(false, true))
+                            continue;
+
+                        long elapsed = System.currentTimeMillis() - startedAt;
+                        Runtime runtime = Runtime.getRuntime();
+                        StringBuilder stack = new StringBuilder();
+                        for (StackTraceElement frame : gfxCommandThread.getStackTrace())
+                        {
+                            stack.append("\n    at ").append(frame);
+                        }
+                        log.logError("GFX command stalled for " + elapsed + "ms while processing "
+                                + activeGfxCommand.get()
+                                + "; closing the graphics session before a late synchronous reply can corrupt framing."
+                                + " Heap used=" + (runtime.totalMemory() - runtime.freeMemory())
+                                + " max=" + runtime.maxMemory()
+                                + "; GFX thread stack:" + stack);
+                        try
+                        {
+                            gfxSocket.close();
+                        }
+                        catch (Exception e)
+                        {
+                            log.logWarning("Failed to close stalled GFX socket: " + e.getMessage());
+                        }
+                    }
+                }
+            };
+            gfxWatchdogThread.setDaemon(true);
+            gfxWatchdogThread.start();
 
             while (alive)
             {
@@ -1777,6 +2028,17 @@ public class MiniClientConnection implements SageTVInputCallback
 
                 command = (cmd[0] & 0xFF);
                 len = ((cmd[1] & 0xFF) << 16) | ((cmd[2] & 0xFF) << 8) | (cmd[3] & 0xFF);
+                final long commandStartedAt = System.currentTimeMillis();
+                String commandLabel = "type=" + command + " len=" + len;
+                if (command == DRAWING_CMD_TYPE && len > 0)
+                {
+                    int gfxCommand = cmdbuffer[0] & 0xFF;
+                    String gfxName = (gfxCommand >= 0 && gfxCommand < GFXCMD2.CMD_NAMES.length)
+                            ? GFXCMD2.CMD_NAMES[gfxCommand] : "UNKNOWN";
+                    commandLabel = "GFX " + gfxName + "(" + gfxCommand + ") len=" + len;
+                }
+                activeGfxCommand.set(commandLabel);
+                gfxCommandStartedAtMs.set(commandStartedAt);
 
                 if ((command & 0x80) != 0) // Local video update command
                 {
@@ -1835,7 +2097,7 @@ public class MiniClientConnection implements SageTVInputCallback
                         }
                         retval = myGfx.ExecuteGFXCommand(command, len, cmdbuffer, hasret);
 
-                        if (hasret[0] != 0)
+                        if (hasret[0] != 0 && !gfxCommandWatchdogTripped.get())
                         {
                             retbuf[0] = (byte) ((retval >> 24) & 0xFF);
                             retbuf[1] = (byte) ((retval >> 16) & 0xFF);
@@ -1869,6 +2131,11 @@ public class MiniClientConnection implements SageTVInputCallback
                                 log.recordException(e);
                                 eventChannelError();
                             }
+                        }
+                        else if (hasret[0] != 0)
+                        {
+                            log.logWarning("Suppressing late GFX reply for " + activeGfxCommand.get()
+                                    + " because the stall watchdog already closed the session");
                         }
                     }
                 }
@@ -2132,7 +2399,9 @@ public class MiniClientConnection implements SageTVInputCallback
                         {
                             caps.append(",TRICKPLAY_POSITION_V1");
                         }
-                        if (client.properties().getBoolean(PrefStore.Keys.cap_seek_epoch_v1, true))
+                        // SEEK_EPOCH_V1 default FALSE: the current GETMEDIATIME
+                        // wire response cannot carry an epoch tag. See PrefStore.
+                        if (client.properties().getBoolean(PrefStore.Keys.cap_seek_epoch_v1, false))
                         {
                             caps.append(",SEEK_EPOCH_V1");
                         }
@@ -2160,6 +2429,16 @@ public class MiniClientConnection implements SageTVInputCallback
                                 && !advertisedSurfaceIds().isEmpty())
                         {
                             caps.append(",PLAYBACK_SURFACES_V1");
+                        }
+                        if (partyClient.supportsRequiredGuarantees())
+                        {
+                            caps.append(",PARTY_V1,PARTY_JOIN_CODE_V1,PARTY_MONOTONIC_V1")
+                                    .append(",PARTY_POSITION_V1,PARTY_SCHEDULED_V1")
+                                    .append(",PARTY_SEEK_V1,PARTY_LOCAL_STOP_V1")
+                                    .append(",PARTY_START_POSITION_V1,PARTY_PREPARE_V1")
+                                    .append(",PARTY_GROWING_MEDIA_V1");
+                            partyClient.start();
+                            partyClient.onCapabilitiesNegotiated();
                         }
                         propVal = caps.toString();
                         log.logInfo("SAGETV_NG_CAPABILITIES -> '" + propVal + "'");
@@ -2210,11 +2489,16 @@ public class MiniClientConnection implements SageTVInputCallback
                     else if ("SEEK_EPOCH_V1".equals(propName))
                     {
                         // NG Trick-Play & Position Reporting Contract, capability 2.
-                        // Every server-initiated reposition starts a new epoch; the
-                        // client tags position reports with the epoch it is rendering
-                        // and discards samples from a superseded epoch, so a report
-                        // sampled before a reposition can never be applied after it.
-                        if (client.properties().getBoolean(PrefStore.Keys.cap_seek_epoch_v1, true))
+                        // Default FALSE / not negotiated: the current GETMEDIATIME
+                        // wire response is a fixed-size field and cannot carry an
+                        // epoch tag alongside the position without breaking legacy
+                        // parsers. Epoch bookkeeping still runs client-side
+                        // (TrickplayController bumps it on every flush and uses it
+                        // as its own stale-sample guard) regardless of this flag;
+                        // this only controls whether it's advertised/negotiated on
+                        // the wire. Flip the pref once a wire format exists that
+                        // can carry it.
+                        if (client.properties().getBoolean(PrefStore.Keys.cap_seek_epoch_v1, false))
                         {
                             propVal = "TRUE";
                             seekEpochV1Negotiated = true;
@@ -3098,6 +3382,23 @@ public class MiniClientConnection implements SageTVInputCallback
                             serverPublicKey = keyFactory.generatePublic(pubKeySpec);
                             retval = 0;
                         }
+                        else if (PartyProtocol.PROPERTY_NAME.equals(propName))
+                        {
+                            try
+                            {
+                                org.json.JSONObject envelope =
+                                        PartyProtocol.decodePropertyPayload(
+                                                cmdbuffer, 0, 4 + nameLen + valLen);
+                                partyClient.onServerEnvelope(envelope.toString());
+                                retval = 0;
+                            }
+                            catch (PartyProtocolException e)
+                            {
+                                log.logWarning("Rejected invalid inbound PARTY_V1 property: "
+                                        + e.getMessage());
+                                retval = 1;
+                            }
+                        }
                         else if ("CRYPTO_ALGORITHMS".equals(propName))
                         {
                             currentCrypto = new String(cmdbuffer, 4 + nameLen, valLen);
@@ -3307,6 +3608,19 @@ public class MiniClientConnection implements SageTVInputCallback
                             }
                             retval = 0;
                         }
+                        else if ("CAP_EFFECTIVE_DELIVERY".equals(propName))
+                        {
+                            // NG server hint sent immediately before the OPENURL it
+                            // applies to, disambiguating a plain pull OPEN from a
+                            // server-conditioned pull-xcode OPEN (whose local timeline
+                            // restarts near zero and must be rebased by lastServerTime
+                            // — see MediaCmd#classifyPullTimeline). Consumed exactly
+                            // once by that next OPENURL; never leaks to a later one.
+                            propVal = new String(cmdbuffer, 4 + nameLen, valLen);
+                            pendingEffectiveDeliveryHint = propVal;
+                            log.logInfo("Server delivery hint: CAP_EFFECTIVE_DELIVERY=" + propVal);
+                            retval = 0;
+                        }
                         else if ("CMD_DOWNLOAD_REQUEST".equals(propName)
                                 || "TRANSFER_SESSION_ACK".equals(propName))
                         {
@@ -3484,6 +3798,8 @@ public class MiniClientConnection implements SageTVInputCallback
                 }
 
                 // Remove whatever we just processed
+                gfxCommandStartedAtMs.compareAndSet(commandStartedAt, 0);
+                activeGfxCommand.compareAndSet(commandLabel, "");
                 synchronized (gfxSyncVector)
                 {
                     gfxSyncVector.remove(0);
@@ -3679,9 +3995,12 @@ public class MiniClientConnection implements SageTVInputCallback
      * PULL-playable set as bare tokens (fail-open both transports), plus, for the
      * IJK surface, the push-only program-stream container as an explicit
      * {@code MPEG2-PS;push=true;pull=false} token (see the CONTAINERS branch).
-     * DELIVERY_MODES advertises {@code push,pull}: the server prefers pull for a
-     * DIRECT_PLAY decision (the enhancement path) and push for conditioned/remuxed
-     * content (Android's traditional path), so both content classes keep working.
+     * DELIVERY_MODES advertises only {@code push,pull}. Android does not
+     * implement the server's XCODE_SETUP control handshake, so advertising
+     * pull-xcode causes the server to select a transport that this client then
+     * incorrectly drives with ordinary OPEN/SIZE/READ commands. Keep the
+     * dormant pull-xcode timeline support fail-safe for future implementation,
+     * but do not negotiate that mode until its full open/seek lifecycle exists.
      */
     private String surfaceAttr(String id, String attr)
     {
@@ -3705,8 +4024,11 @@ public class MiniClientConnection implements SageTVInputCallback
         }
         if ("VIDEO_CODECS".equals(attr))
         {
-            return PlaybackSurfaceCanon.csv(
-                    PlaybackSurfaceCanon.canonVideo(perPlayerCapabilities.get(vKey)));
+            return buildVideoConstraintCsv(
+                    PlaybackSurfaceCanon.canonVideo(perPlayerCapabilities.get(vKey)),
+                    (client != null && client.options() != null)
+                            ? client.options().getDeviceClass() : "UNKNOWN",
+                    media3);
         }
         if ("AUDIO_CODECS".equals(attr))
         {
@@ -3746,19 +4068,19 @@ public class MiniClientConnection implements SageTVInputCallback
             java.util.List<String> pull =
                     PlaybackSurfaceCanon.canonContainer(perPlayerCapabilities.get(pullKey));
             String bare = PlaybackSurfaceCanon.csv(pull);
-            if (media3)
-            {
-                return bare;
-            }
             java.util.List<String> push =
                     PlaybackSurfaceCanon.canonContainer(perPlayerCapabilities.get(pushKey));
-            if (!push.contains("MPEG2-PS"))
-            {
-                return bare;
-            }
             StringBuilder sb = new StringBuilder(bare);
-            if (sb.length() > 0) sb.append(',');
-            sb.append("MPEG2-PS;push=true;pull=false");
+            if (push.contains("MPEG2-TS"))
+            {
+                if (sb.length() > 0) sb.append(',');
+                sb.append("MPEG2-TS;push=true;pull=false");
+            }
+            if (!media3 && push.contains("MPEG2-PS"))
+            {
+                if (sb.length() > 0) sb.append(',');
+                sb.append("MPEG2-PS;push=true;pull=false");
+            }
             return sb.toString();
         }
         return "";
@@ -4357,6 +4679,49 @@ public class MiniClientConnection implements SageTVInputCallback
                 eventChannelError();
             }
         }
+    }
+
+    public void postPartyMessage(String json)
+    {
+        if (performingReconnect || eventChannel == null || json == null)
+            return;
+        try
+        {
+            org.json.JSONObject envelope = PartyProtocol.parseEnvelope(json);
+            byte[] payload = PartyProtocol.encodePropertyPayload(envelope);
+            synchronized (eventChannel)
+            {
+                eventChannel.write(SET_PROPERTY_CMD_TYPE);
+                eventChannel.write((payload.length >> 16) & 0xFF);
+                eventChannel.write((payload.length >> 8) & 0xFF);
+                eventChannel.write(payload.length & 0xFF);
+                eventChannel.writeInt(0);
+                eventChannel.writeInt(replyCount++);
+                eventChannel.writeInt(0);
+                if (encryptEvents && evtEncryptCipher != null)
+                {
+                    eventChannel.write(evtEncryptCipher.doFinal(payload));
+                }
+                else
+                {
+                    eventChannel.write(payload);
+                }
+                eventChannel.flush();
+            }
+        }
+        catch (PartyProtocolException e)
+        {
+            log.logError("Rejected outbound PARTY_V1 envelope: " + e.getMessage(), e);
+        }
+        catch (Exception e)
+        {
+            log.logError("Failed to post PARTY_V1 envelope", e);
+        }
+    }
+
+    public PartyClient getPartyClient()
+    {
+        return partyClient;
     }
 
     private static String escapeJson(String value) {
@@ -5084,7 +5449,7 @@ public class MiniClientConnection implements SageTVInputCallback
         java.io.OutputStream os = null;
         java.io.DataInputStream is = null;
         while (alive) {
-            myMedia = new MediaCmd(client);
+            myMedia = new MediaCmd(client, this);
             try {
                 os = mediaSocket.getOutputStream();
                 is = new java.io.DataInputStream(mediaSocket.getInputStream());
@@ -5112,6 +5477,11 @@ public class MiniClientConnection implements SageTVInputCallback
             } catch (Exception e) {
                 log.logError("Error w/ Media Thread", e);
             } finally {
+                if (alive)
+                {
+                    invalidatePlaybackAuthority(
+                            "media connection generation changed", false);
+                }
                 try {
                     os.close();
                 } catch (Exception e) {
@@ -5123,29 +5493,66 @@ public class MiniClientConnection implements SageTVInputCallback
                 }
                 is = null;
                 try {
-                    mediaSocket.close();
+                    java.net.Socket closedMediaSocket = mediaSocket;
+                    if (closedMediaSocket != null)
+                    {
+                        closedMediaSocket.close();
+                        attemptSockets.remove(closedMediaSocket);
+                        socketProgress.remove(closedMediaSocket);
+                    }
                 } catch (Exception e) {
                 }
                 mediaSocket = null;
             }
             if (!alive)
                 break;
-            try {
-                mediaSocket = EstablishServerConnection(1);
-            } catch (Exception e) {
-                connectionError();
+            boolean mediaReconnected = false;
+            for (int attempt = 0; attempt < 3 && alive; attempt++)
+            {
+                try
+                {
+                    log.logWarning("TRANSPORT media reconnect attempt=" + (attempt + 1) + "/3");
+                    java.net.Socket candidate = EstablishServerConnection(1);
+                    if (candidate != null && alive && client.ownsConnectionAttempt(connectionAttemptId))
+                    {
+                        mediaSocket = candidate;
+                        mediaReconnected = true;
+                        log.logInfo("TRANSPORT media reconnect succeeded attempt=" + (attempt + 1));
+                        partyClient.onMediaTransportReconnected();
+                        break;
+                    }
+                    if (candidate != null)
+                    {
+                        candidate.close();
+                    }
+                }
+                catch (Exception e)
+                {
+                    log.logWarning("TRANSPORT media reconnect failed attempt=" + (attempt + 1)
+                            + " reason=" + e.getMessage());
+                }
+                if (attempt < 2)
+                {
+                    try
+                    {
+                        Thread.sleep(1000L << attempt);
+                    }
+                    catch (InterruptedException e)
+                    {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
             }
-            if (mediaSocket == null) {
-                // System.out.println("couldn't connect to media server,
-                // retrying in 1 secs.");
-                // try{Thread.sleep(1000);}catch(InterruptedException e){}
+            if (!mediaReconnected && alive)
+            {
                 connectionError();
             }
         }
     }
 
     private void connectionError() {
-        close();
+        close(ConnectionProgress.ClosureOrigin.TRANSPORT_ERROR, "channel reconnect exhausted");
     }
 
     private void eventChannelError() {
@@ -5158,11 +5565,20 @@ public class MiniClientConnection implements SageTVInputCallback
             } catch (Exception e) {
             }
         } else
-            close();
+            close(ConnectionProgress.ClosureOrigin.TRANSPORT_ERROR, "event channel failure");
     }
 
     public String getServerName() {
         return msi.address;
+    }
+
+    private String serverBaseUrl() {
+        String address = msi.address;
+        if (address != null && address.indexOf(':') >= 0
+                && !address.startsWith("[") && !address.endsWith("]")) {
+            address = "[" + address + "]";
+        }
+        return "http://" + address + ":" + msi.port;
     }
 
     public void addTimerTask(java.util.TimerTask addMe, long delay, long period) {
@@ -5200,6 +5616,21 @@ public class MiniClientConnection implements SageTVInputCallback
      */
     public String getServerEffectivePlayerHint() {
         return serverEffectivePlayerHint == null ? "" : serverEffectivePlayerHint;
+    }
+
+    /**
+     * Consume the pending CAP_EFFECTIVE_DELIVERY hint (if any) for the
+     * OPENURL currently being processed. Clears it so a stale value can
+     * never apply to a later, unrelated media item.
+     *
+     * @return the hint string (e.g. {@code "pull:direct"} or
+     *         {@code "pull-xcode:browserhd;ss=504839"}), or {@code null} if
+     *         none was pending (legacy server, or this is a push stream).
+     */
+    public String consumePendingEffectiveDeliveryHint() {
+        String hint = pendingEffectiveDeliveryHint;
+        pendingEffectiveDeliveryHint = null;
+        return hint;
     }
 
     /** Set the pre-stream metadata received via MEDIACMD_STREAMINFO (command 40). */

@@ -135,6 +135,65 @@ public class GFXCMD2 {
                 | (cmddata[pos + 0] & 0xFF);
     }
 
+    private void loadCachedImageAsync(final java.io.File cachedFile, final String rezName,
+                                      final int handle, final int width, final int height) {
+        final sagex.miniclient.uibridge.ImageHolder placeholder = new sagex.miniclient.uibridge.ImageHolder();
+        placeholder.setHandle(handle);
+        placeholder.setDecodePending(true);
+        client.getImageCache().put(handle, placeholder, 1, 1);
+        client.getImageCache().registerImageAccess(handle);
+
+        Runnable decodeTask = new Runnable() {
+            @Override
+            public void run() {
+                sagex.miniclient.uibridge.ImageHolder image = null;
+                try {
+                    image = windowManager.readImage(cachedFile);
+                    if (image == null || image.getWidth() != width || image.getHeight() != height) {
+                        if (image != null) {
+                            log.warn("Cached image dimension mismatch for rezName={} cacheSize={}x{} reqSize={}x{}",
+                                    rezName, image.getWidth(), image.getHeight(), width, height);
+                            image.dispose();
+                        } else {
+                            log.warn("Cached image decode returned null for rezName={}", rezName);
+                        }
+                        cachedFile.delete();
+                        client.getImageCache().unloadImage(handle);
+                        client.getImageCache().postImageUnload(handle);
+                        myConn.postOfflineCacheChange(false, rezName);
+                        return;
+                    }
+
+                    image.setHandle(handle);
+                    image.setDecodePending(false);
+                    client.getImageCache().makeRoom(width, height);
+                    if (!client.getImageCache().replacePendingImage(handle, placeholder, image, width, height)) {
+                        image.dispose();
+                        return;
+                    }
+                    windowManager.registerTexture(image);
+                } catch (Throwable e) {
+                    log.error("Async cached image decode failed for handle {} resource {}", handle, rezName, e);
+                    if (image != null) {
+                        image.dispose();
+                    }
+                    client.getImageCache().unloadImage(handle);
+                    client.getImageCache().postImageUnload(handle);
+                    myConn.postOfflineCacheChange(false, rezName);
+                }
+            }
+        };
+
+        try {
+            client.getBackgroundService().submit(decodeTask);
+        } catch (java.util.concurrent.RejectedExecutionException ree) {
+            log.warn("Background pool rejected cached image decode for handle {}; using fallback thread", handle);
+            Thread fallback = new Thread(decodeTask, "CachedImageDecode-" + handle);
+            fallback.setDaemon(true);
+            fallback.start();
+        }
+    }
+
     public static short readShort(int pos, byte[] cmddata) {
         pos += 4; // for the 4 bytes for the header
         return (short) (((cmddata[pos + 0] & 0xFF) << 8) | (cmddata[pos + 1] & 0xFF));
@@ -522,29 +581,12 @@ public class GFXCMD2 {
                                 lastImageResourceIDHandle = imghandle = Math.abs(lastImageResourceID.hashCode());
                                 java.io.File cachedFile = client.getImageCache().getCachedImageFile(rezName);
                                 if (cachedFile != null) {
-                                    // We've got it locally in our cache! Read it
-                                    // from there.
-                                    sagex.miniclient.uibridge.ImageHolder bi = windowManager.readImage(cachedFile);
-                                    if (bi == null || bi.getWidth() != width || bi.getHeight() != height) {
-                                        if (bi != null) {
-                                            // It doesn't match the cache
-                                            log.debug("PREPIMAGE: CACHE ID verification failed for rezName={} cacheSize={}x{} reqSize={}x{}",
-                                                    rezName, bi.getWidth(), bi.getHeight(), width, height);
-                                            bi.dispose();
-                                            cachedFile.delete();
-                                        }
-                                        // else we failed loading it from the cache
-                                        // so we want it for sure!
-                                    } else {
-                                        imghandle = handleCount++;
-                                        if (VerboseLogging.DETAILED_GFX)
-                                            log.debug("PREPIMAGE[{}]: Loading Loading From Cache: {}", imghandle, cachedFile);
-                                        bi.setHandle(imghandle);
-                                        client.getImageCache().put(imghandle, bi, width, height);
-                                        windowManager.registerTexture(bi);
-                                        hasret[0] = 1;
-                                        return -1 * imghandle;
-                                    }
+                                    imghandle = handleCount++;
+                                    if (VerboseLogging.DETAILED_GFX)
+                                        log.debug("PREPIMAGE[{}]: Scheduling cached decode: {}", imghandle, cachedFile);
+                                    loadCachedImageAsync(cachedFile, rezName, imghandle, width, height);
+                                    hasret[0] = 1;
+                                    return -1 * imghandle;
                                 }
                             } catch (Exception e) {
                                 log.error("ERROR loading compressed image", e);
@@ -593,40 +635,12 @@ public class GFXCMD2 {
                     String rezName = new String(cmddata, 20, strlen - 1);
                     log.debug("imghandle=" + imghandle + " width=" + width + " height=" + height + " strlen=" + strlen
                             + " rezName=" + rezName);
-                    client.getImageCache().makeRoom(width, height);
-                    client.getImageCache().registerImageAccess(imghandle);
                     try {
                         log.debug("Loading resource from cache: {}", rezName);
                         java.io.File cachedFile = client.getImageCache().getCachedImageFile(rezName);
                         if (cachedFile != null) {
-                            // We've got it locally in our cache! Read it from
-                            // there.
-                            log.debug("Image found in cache!");
-
-                            // We've got it locally in our cache! Read it from
-                            // there.
-                            sagex.miniclient.uibridge.ImageHolder bi = windowManager.readImage(cachedFile);
-                            if (bi == null || bi.getWidth() != width || bi.getHeight() != height) {
-                                if (bi != null) {
-                                    // It doesn't match the cache
-                                    log.debug("LOADIMAGECACHE: CACHE ID verification failed for rezName={} cacheSize={}x{} reqSize={}x{}",
-                                            rezName, bi.getWidth(), bi.getHeight(), width, height);
-                                    bi.dispose();
-                                    cachedFile.delete();
-                                }
-                                // else we failed loading it from the cache so we
-                                // want it for sure!
-                                // This load failed but the server thought it would
-                                // succeed, so we need to inform it that the image
-                                // is no longer loaded.
-                                client.getImageCache().postImageUnload(imghandle);
-                                myConn.postOfflineCacheChange(false, rezName);
-                            } else {
-                                bi.setHandle(imghandle);
-                                client.getImageCache().put(imghandle, bi, width, height);
-                                windowManager.registerTexture(bi);
-                                hasret[0] = 0;
-                            }
+                            log.debug("Image found in cache; scheduling decode");
+                            loadCachedImageAsync(cachedFile, rezName, imghandle, width, height);
                         } else {
                             log.error("ERROR Image not found in cache that should be there! rezName={}", rezName);
                             // This load failed but the server thought it would
@@ -856,7 +870,7 @@ public class GFXCMD2 {
                         final boolean asyncDelete = deleteCacheFile;
 
                         // Create placeholder marked as decode-pending
-                        sagex.miniclient.uibridge.ImageHolder placeholder = new sagex.miniclient.uibridge.ImageHolder();
+                        final sagex.miniclient.uibridge.ImageHolder placeholder = new sagex.miniclient.uibridge.ImageHolder();
                         placeholder.setHandle(asyncHandle);
                         placeholder.setDecodePending(true);
                         client.getImageCache().put(asyncHandle, placeholder, 1, 1);
@@ -876,7 +890,11 @@ public class GFXCMD2 {
                                         // did not, so decoded images accumulated past
                                         // the limit and permanently wedged the cache.
                                         client.getImageCache().makeRoom(img.getWidth(), img.getHeight());
-                                        client.getImageCache().put(asyncHandle, img, img.getWidth(), img.getHeight());
+                                        if (!client.getImageCache().replacePendingImage(
+                                                asyncHandle, placeholder, img, img.getWidth(), img.getHeight())) {
+                                            img.dispose();
+                                            return;
+                                        }
                                         windowManager.registerTexture(img);
                                     } else {
                                         log.error("Async decode returned null for handle {}", asyncHandle);
@@ -893,11 +911,10 @@ public class GFXCMD2 {
                         try {
                             client.getBackgroundService().submit(decodeTask);
                         } catch (java.util.concurrent.RejectedExecutionException ree) {
-                            // Background pool unavailable (e.g. shut down mid-teardown).
-                            // Never let a rejected submit kill the GFX thread — decode
-                            // synchronously as a fallback (legacy behavior).
-                            log.warn("Background pool rejected image decode for handle {}; decoding synchronously", asyncHandle);
-                            decodeTask.run();
+                            log.warn("Background pool rejected image decode for handle {}; using fallback thread", asyncHandle);
+                            Thread fallback = new Thread(decodeTask, "ImageDecode-" + asyncHandle);
+                            fallback.setDaemon(true);
+                            fallback.start();
                         }
                         return handle;
                     }

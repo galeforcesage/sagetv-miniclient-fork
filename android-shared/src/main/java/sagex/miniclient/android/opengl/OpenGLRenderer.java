@@ -472,11 +472,20 @@ public class OpenGLRenderer implements UIRenderer<OpenGLTexture>, GLSurfaceView.
     }
 
     @Override
-    public void unloadImage(int handle, ImageHolder<OpenGLTexture> bi) {
+    public void unloadImage(final int handle, final ImageHolder<OpenGLTexture> bi) {
         if (bi != null && bi.get() != null) {
             log.debug("Unloading Image: {}", bi);
-            bi.get().delete();
-            bi.dispose();
+            final OpenGLTexture texture = bi.get();
+            bi.set(null);
+            synchronized (renderQueue) {
+                renderQueue.add(new Runnable() {
+                    @Override
+                    public void run() {
+                        texture.delete();
+                    }
+                });
+            }
+            glView.requestRender();
         }
     }
 
@@ -686,6 +695,32 @@ public class OpenGLRenderer implements UIRenderer<OpenGLTexture>, GLSurfaceView.
         return uiSize;
     }
 
+    // --- NG display-measurement (shared with MiniClientGDXRenderer) ------------
+    // These delegate to DisplayMeasurement so the OpenGL UI path (the default,
+    // use_opengl_ui=true) reports the same honest NG 4K sink / refresh / HDR /
+    // local-only-panel as the GDX path. Without these overrides the UIRenderer
+    // defaults return "" and the server sees a 0x0 sink.
+
+    @Override
+    public String getDisplaySinkResolution() {
+        return sagex.miniclient.android.display.DisplayMeasurement.getDisplaySinkResolution(activity);
+    }
+
+    @Override
+    public String getDisplayRefreshRates() {
+        return sagex.miniclient.android.display.DisplayMeasurement.getDisplayRefreshRates(activity);
+    }
+
+    @Override
+    public String getDisplayHdrTypes() {
+        return sagex.miniclient.android.display.DisplayMeasurement.getDisplayHdrTypes(activity);
+    }
+
+    @Override
+    public boolean isLocalOnlyMobilePanel() {
+        return sagex.miniclient.android.display.DisplayMeasurement.isLocalOnlyMobilePanel(activity);
+    }
+
     @Override
     public void setFullScreen(boolean b) {
         log.warn("Set FullScreen was called but we did nothing with {}", b);
@@ -779,9 +814,15 @@ public class OpenGLRenderer implements UIRenderer<OpenGLTexture>, GLSurfaceView.
     @Override
     public void onMenuHint(MenuHint hint) {
         activity.showHideKeyboard(hint.hasTextInput);
-        if (client.properties().getBoolean(PrefStore.Keys.exit_on_standby, true) && hint.isScreenSaver()) {
+        sagex.miniclient.android.display.ExternalVideoSurfaceController external =
+                sagex.miniclient.android.display.ExternalVideoSurfaceController.get();
+        boolean externalPlayback = external != null && external.isPresenting();
+        if (client.properties().getBoolean(PrefStore.Keys.exit_on_standby, false)
+                && hint.isScreenSaver() && !externalPlayback) {
             log.warn("Exiting SageTV because of Screen Saver being activated.");
             activity.finish();
+        } else if (hint.isScreenSaver() && externalPlayback) {
+            log.info("Ignoring SageTV screensaver exit while video is active on an external display.");
         }
     }
 

@@ -12,6 +12,7 @@ import sagex.miniclient.android.video.MediaSessionCallbackHandler;
 import sagex.miniclient.android.middleware.TrickplayController;
 import sagex.miniclient.android.middleware.TransportIjkMediaSource;
 import sagex.miniclient.media.SubtitleTrack;
+import sagex.miniclient.party.PartyPlaybackAdapter;
 import sagex.miniclient.prefs.PrefStore;
 import sagex.miniclient.uibridge.Dimension;
 import sagex.miniclient.util.VerboseLogging;
@@ -24,6 +25,8 @@ import tv.danmaku.ijk.media.player.misc.IjkTrackInfo;
 import android.support.v4.media.MediaMetadataCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static sagex.miniclient.util.Utils.toHHMMSS;
 
@@ -47,11 +50,121 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
      * completes having never rendered a frame).
      */
     boolean firstFrameRendered = false;
+    private volatile boolean audioRenderingStarted;
+    private volatile boolean videoRenderingStarted;
+    private volatile long partyBufferingProbePositionMs = -1;
+    private volatile long partyBufferingProbeGeneration = -1;
+    private volatile long partyBufferingProbeStartedAtMs = -1;
+    private static final long PARTY_BUFFERING_CONFIRM_MS = 1_000;
+    private final android.os.Handler partyHandler =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable partyBufferingStart = new Runnable()
+    {
+        @Override public void run()
+        {
+            long elapsedMs = android.os.SystemClock.elapsedRealtime()
+                    - partyBufferingProbeStartedAtMs;
+            if (partyBufferingProbeStartedAtMs >= 0
+                    && elapsedMs < PARTY_BUFFERING_CONFIRM_MS)
+            {
+                partyHandler.postDelayed(this,
+                        PARTY_BUFFERING_CONFIRM_MS - elapsedMs);
+                return;
+            }
+            IMediaPlayer current = player;
+            long currentPositionMs = -1;
+            if (current != null)
+            {
+                try
+                {
+                    currentPositionMs = current.getCurrentPosition();
+                }
+                catch (Throwable ignored)
+                {
+                }
+            }
+            if (IjkPartyBufferingGate.renderedOutputStillAdvancing(
+                    partyBufferingProbePositionMs,
+                    currentPositionMs,
+                    partyBufferingProbeGeneration,
+                    getPartyPlaybackCommandGeneration(),
+                    audioRenderingStarted || videoRenderingStarted))
+            {
+                log.debug("Ignoring stale IJK buffering start; rendered output advanced {} ms",
+                        currentPositionMs - partyBufferingProbePositionMs);
+                setPartyBuffering(false);
+                return;
+            }
+            if (IjkPartyBufferingGate.renderedPositionDiscontinuous(
+                    partyBufferingProbePositionMs,
+                    currentPositionMs,
+                    partyBufferingProbeGeneration,
+                    getPartyPlaybackCommandGeneration(),
+                    audioRenderingStarted || videoRenderingStarted))
+            {
+                log.debug("Restarting IJK buffering confirmation after rendered "
+                        + "position reset {} -> {}",
+                        partyBufferingProbePositionMs, currentPositionMs);
+                partyBufferingProbePositionMs = currentPositionMs;
+                partyBufferingProbeStartedAtMs =
+                        android.os.SystemClock.elapsedRealtime();
+                partyHandler.postDelayed(this, PARTY_BUFFERING_CONFIRM_MS);
+                return;
+            }
+            setPartyBuffering(true);
+        }
+    };
+
+    @Override
+    public void cancelPartyScheduledAction()
+    {
+        super.cancelPartyScheduledAction();
+        partyHandler.removeCallbacks(partyBufferingStart);
+        partyBufferingProbePositionMs = -1;
+        partyBufferingProbeGeneration = -1;
+        partyBufferingProbeStartedAtMs = -1;
+    }
+    private final IjkPartyBufferTracker partyBufferTracker = new IjkPartyBufferTracker();
+    private String playerUrl;
+    private volatile boolean pauseAfterGenerationRebuild;
+    private volatile boolean rebuildingMatroskaGeneration;
     MediaSessionCompat mediaSession;
+    /**
+     * Guards releasePlayer() against overlapping/duplicate invocations (e.g. a
+     * GFX-channel disconnect teardown racing a near-simultaneous activity
+     * finish()/exit teardown). Without this, a second call could still observe
+     * the old (non-null) {@code player}/{@code mediaSession} references --
+     * {@code player} was previously nulled out only at the very end of
+     * releasePlayer(), after the real teardown work ran -- and redundantly
+     * re-run native release/EGL teardown concurrently with the first call's
+     * still-settling teardown. That produced an observed
+     * "libEGL: call to OpenGL ES API with no current context" violation and
+     * left the renderer's native state inconsistent for the next playback
+     * attempt (decoder configures cleanly but never renders a frame).
+     */
+    private final Object releaseLock = new Object();
 
     public IJKMediaPlayerImpl(AndroidUIController activity)
     {
         super(activity, true, true);
+    }
+
+    private void pauseAfterGenerationRebuildIfActivated()
+    {
+        if (!pauseAfterGenerationRebuild || !(player instanceof IjkMediaPlayer)) return;
+        IjkMediaPlayer ijk = (IjkMediaPlayer) player;
+        boolean audioActive = isActiveTrack(ijk, IjkTrackInfo.MEDIA_TRACK_TYPE_AUDIO);
+        boolean videoActive = isActiveTrack(ijk, IjkTrackInfo.MEDIA_TRACK_TYPE_VIDEO);
+        if (!IjkPartyTrackActivation.hasRendered(
+                audioActive, videoActive,
+                audioRenderingStarted, videoRenderingStarted))
+        {
+            return;
+        }
+        pauseAfterGenerationRebuild = false;
+        player.pause();
+        state = PAUSE_STATE;
+        updateMediaSessionPlaybackState(player.getCurrentPosition());
     }
 
     /**
@@ -65,8 +178,13 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
      *
      * <p>The {@code resumeMode} / {@code resumeTimeOffset} hack compensates for IJK's
      * quirk of resetting its internal clock to 0 after a seek to a non-zero
-     * position in PUSH mode. Native trickplay handles this via
-     * {@code baseOffsetMs = seekTargetMs - positionMs} during RECOVERING.
+     * position in PUSH mode, or after a server-conditioned pull-xcode reopen
+     * (/msproxy/XCODE_SETUP) whose new local timeline restarts near zero --
+     * both cases are driven by {@code serverStartTime} carrying the correct
+     * baseline (see MediaCmd#classifyPullTimeline for the pull-xcode case).
+     * Direct pull leaves {@code serverStartTime} at 0, an exact no-op. Native
+     * trickplay handles this via {@code baseOffsetMs = seekTargetMs - positionMs}
+     * during RECOVERING.
      */
     @Override
     public long getPlayerMediaTimeMillis(long serverStartTime)
@@ -79,72 +197,74 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
             trickplayController.onPlayerPosition(time);
         }
 
-        if (pushMode)
+        // Applies to push and to a server-conditioned pull-xcode reopen
+        // alike (see class javadoc above); a direct-pull stream always has
+        // serverStartTime == 0 here, so this whole block is a no-op for it
+        // (falls straight to the resumeMode==false branch below).
+        //
+        // we haven't determined the "resume" time yet
+        if (resumeTimeOffset < 0)
         {
-            // we haven't determined the "resume" time yet
-            if (resumeTimeOffset < 0)
+            if (serverStartTime < 500)
             {
-                if (serverStartTime < 500)
-                {
-                    // this is start from beginning
-                    resumeMode = false;
-                    resumeTimeOffset = 0;
-                }
-                else
-                {
-                    // IJK's getMediaTime() is a little quirky for PS/TS streams.  Basically, when you start
-                    // from 0, then seeking works fine.  But, when you resume from some other time, the
-                    // players internal clock is reset to 0.  So, the stream plays at the right position, but
-                    // the timescale is reset to 0.  For that reason, when pushMode is enabled, you can follow
-                    // the logic to see what has to happen to ensure the correct media time.
-                    resumeMode = true;
-                    resumeTimeOffset = serverStartTime;
-                    log.debug("IJK: getMediaTime(): RESUME from {}", resumeTimeOffset);
-                }
-            }
-
-            if (time < 0)
-            {
-                // player is adjusting, after a push/seek.
-                if (VerboseLogging.DETAILED_PLAYER_LOGGING)
-                {
-                    log.debug("IJK: getPlayerMediaTimeMillis(): player adjusting using 0 but time was {}", toHHMMSS(time, true));
-                }
-
-                return time;
-            }
-
-            if (resumeMode)
-            {
-                // when in resume mode, you go back before the start of the resume, player time
-                // seems to do a PTS rollover of sorts
-                long realTime = time;
-
-                if (time + resumeTimeOffset > PTS_ROLLOVER)
-                {
-                    // need to adjust the time
-                    time = time - PTS_ROLLOVER;
-                }
-                time = time + resumeTimeOffset;
-
-                if (VerboseLogging.DETAILED_PLAYER_LOGGING)
-                {
-                    if (logTime != realTime / 1000)
-                    {
-                        logTime = realTime / 1000;
-                        log.debug("IJK: getPlayerMediaTimeMillis(): resume: {}, player time: {}, total: {}", toHHMMSS(resumeTimeOffset, true), toHHMMSS(realTime, true), toHHMMSS(time, true));
-                    }
-                }
+                // this is start from beginning
+                resumeMode = false;
+                resumeTimeOffset = 0;
             }
             else
             {
-                if (VerboseLogging.DETAILED_PLAYER_LOGGING)
+                // IJK's getMediaTime() is a little quirky for PS/TS streams.  Basically, when you start
+                // from 0, then seeking works fine.  But, when you resume from some other time, the
+                // players internal clock is reset to 0.  So, the stream plays at the right position, but
+                // the timescale is reset to 0.  For that reason, when pushMode is enabled, you can follow
+                // the logic to see what has to happen to ensure the correct media time.
+                resumeMode = true;
+                resumeTimeOffset = serverStartTime;
+                log.debug("IJK: getMediaTime(): RESUME from {}", resumeTimeOffset);
+            }
+        }
+
+        if (time < 0)
+        {
+            // player is adjusting, after a push/seek.
+            if (VerboseLogging.DETAILED_PLAYER_LOGGING)
+            {
+                log.debug("IJK: getPlayerMediaTimeMillis(): player adjusting using 0 but time was {}", toHHMMSS(time, true));
+            }
+
+            return time;
+        }
+
+        if (resumeMode)
+        {
+            // when in resume mode, you go back before the start of the resume, player time
+            // seems to do a PTS rollover of sorts
+            long realTime = time;
+
+            if (time + resumeTimeOffset > PTS_ROLLOVER)
+            {
+                // need to adjust the time
+                time = time - PTS_ROLLOVER;
+            }
+            time = time + resumeTimeOffset;
+
+            if (VerboseLogging.DETAILED_PLAYER_LOGGING)
+            {
+                if (logTime != realTime / 1000)
                 {
-                    if (logTime != time / 1000)
-                    {
-                        logTime = time / 1000;
-                        log.debug("IJK: getPlayerMediaTimeMillis(): time: {}", toHHMMSS(time, true));
-                    }
+                    logTime = realTime / 1000;
+                    log.debug("IJK: getPlayerMediaTimeMillis(): resume: {}, player time: {}, total: {}", toHHMMSS(resumeTimeOffset, true), toHHMMSS(realTime, true), toHHMMSS(time, true));
+                }
+            }
+        }
+        else
+        {
+            if (VerboseLogging.DETAILED_PLAYER_LOGGING)
+            {
+                if (logTime != time / 1000)
+                {
+                    logTime = time / 1000;
+                    log.debug("IJK: getPlayerMediaTimeMillis(): time: {}", toHHMMSS(time, true));
                 }
             }
         }
@@ -171,10 +291,113 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     @Override
     protected long getBufferedPositionMillis()
     {
-        // IJK exposes buffered fill only as a percentage via onBufferingUpdate,
-        // not an absolute buffered-head time, so we can't report a comparable
-        // absolute value here.
+        // IJK exposes cache duration rather than an absolute buffered-head
+        // position. Party readiness consumes those native measurements through
+        // getPartyObservation(); NG-POSDIAG keeps this unavailable because its
+        // contract requires an absolute player-timeline position.
         return -1;
+    }
+
+    @Override
+    public PartyPlaybackAdapter.Observation getPartyObservation()
+    {
+        PartyPlaybackAdapter.Observation base = super.getPartyObservation();
+        IMediaPlayer current = player;
+        boolean prepared = playerReady && current != null;
+        if (!(current instanceof IjkMediaPlayer) || !prepared)
+        {
+            return new PartyPlaybackAdapter.Observation(
+                    base.sampleMonoMs, base.positionMs, base.renderedPositionMs,
+                    -1, base.durationMs, base.state, prepared, false,
+                    base.precisionMs);
+        }
+
+        IjkMediaPlayer ijk = (IjkMediaPlayer) current;
+        boolean audioActive = isActiveTrack(ijk, IjkTrackInfo.MEDIA_TRACK_TYPE_AUDIO);
+        boolean videoActive = isActiveTrack(ijk, IjkTrackInfo.MEDIA_TRACK_TYPE_VIDEO);
+        boolean activated = IjkPartyTrackActivation.hasRendered(
+                audioActive, videoActive,
+                audioRenderingStarted, videoRenderingStarted);
+        long bufferAheadMs = -1;
+        if (activated)
+        {
+            try
+            {
+                bufferAheadMs = partyBufferTracker.sample(
+                        base.sampleMonoMs,
+                        ijk.getAudioCachedDuration(),
+                        ijk.getVideoCachedDuration(),
+                        audioActive,
+                        videoActive);
+            }
+            catch (Throwable t)
+            {
+                partyBufferTracker.reset();
+            }
+        }
+
+        return new PartyPlaybackAdapter.Observation(
+                base.sampleMonoMs,
+                base.positionMs,
+                base.renderedPositionMs,
+                bufferAheadMs, base.durationMs,
+                base.state, prepared, activated, base.precisionMs);
+    }
+
+    @Override
+    public void resetPartyReadiness()
+    {
+        partyBufferTracker.reset();
+        super.resetPartyReadiness();
+    }
+
+    private boolean isActiveTrack(IjkMediaPlayer ijk, int trackType)
+    {
+        try
+        {
+            int selectedTrack = ijk.getSelectedTrack(trackType);
+            if (selectedTrack >= 0) return true;
+            ITrackInfo[] tracks = ijk.getTrackInfo();
+            if (tracks == null) return false;
+            int matchingTracks = 0;
+            for (ITrackInfo track : tracks)
+            {
+                if (track != null && track.getTrackType() == trackType) matchingTracks++;
+            }
+            return IjkPartyTrackActivation.isActive(
+                    selectedTrack, matchingTracks);
+        }
+        catch (Throwable t)
+        {
+            return false;
+        }
+    }
+
+    private void resetPartyActivation()
+    {
+        audioRenderingStarted = false;
+        videoRenderingStarted = false;
+        resetPartyReadiness();
+    }
+
+    @Override
+    protected long getDurationMillis()
+    {
+        try
+        {
+            return player != null && player.getDuration() >= 0 ? player.getDuration() : 0;
+        }
+        catch (Throwable t)
+        {
+            return 0;
+        }
+    }
+
+    @Override
+    public boolean bindPartyAdmission(String handle)
+    {
+        return !pushMode && dataSource instanceof IJKPullMediaSource
+                && ((IJKPullMediaSource) dataSource).bindPartyAdmission(handle);
     }
 
     @Override
@@ -200,6 +423,8 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     {
         final IMediaPlayer p = player;
         if (p == null || holder == null) return;
+        videoRenderingStarted = false;
+        resetPartyReadiness();
         context.runOnUiThread(new Runnable()
         {
             @Override
@@ -263,8 +488,31 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     }
 
     @Override
+    protected void applyPartyHold(boolean hold)
+    {
+        IMediaPlayer current = player;
+        if (current != null)
+        {
+            try
+            {
+                current.setVolume(hold ? 0.0f : 1.0f, hold ? 0.0f : 1.0f);
+            }
+            catch (Throwable ignored)
+            {
+            }
+        }
+        super.applyPartyHold(hold);
+    }
+
+    @Override
     public void flush()
     {
+        resetPartyActivation();
+        if (pushMode && isMatroskaContainer())
+        {
+            rebuildPushMatroskaGeneration();
+            return;
+        }
         if (!playerReady)
         {
             log.debug("Player not ready, deferring flush");
@@ -336,6 +584,8 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     {
         log.debug("Creating Player");
 
+        playerUrl = sageTVurl;
+        resetPartyActivation();
         preSeekPos = -1;
         resumeTimeOffset = -1;
         resumeMode = false;
@@ -539,14 +789,60 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                 @Override
                 public boolean onInfo(IMediaPlayer mp, int what, int extra)
                 {
+                    if (what == IMediaPlayer.MEDIA_INFO_BUFFERING_START)
+                    {
+                        partyHandler.removeCallbacks(partyBufferingStart);
+                        partyBufferingProbePositionMs = mp.getCurrentPosition();
+                        partyBufferingProbeGeneration =
+                                getPartyPlaybackCommandGeneration();
+                        partyBufferingProbeStartedAtMs =
+                                android.os.SystemClock.elapsedRealtime();
+                        partyHandler.postDelayed(partyBufferingStart,
+                                PARTY_BUFFERING_CONFIRM_MS);
+                    }
+                    else if (what == IMediaPlayer.MEDIA_INFO_BUFFERING_END)
+                    {
+                        partyHandler.removeCallbacks(partyBufferingStart);
+                        partyBufferingProbePositionMs = -1;
+                        partyBufferingProbeGeneration = -1;
+                        partyBufferingProbeStartedAtMs = -1;
+                        setPartyBuffering(false);
+                    }
                     if (what == IMediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START
                         || what == IMediaPlayer.MEDIA_INFO_AUDIO_RENDERING_START)
                     {
+                        log.info("IJK {} rendering started at playerPositionMs={}",
+                                what == IMediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START
+                                        ? "video" : "audio",
+                                player != null ? player.getCurrentPosition() : -1);
+                        if (isPartyHold())
+                        {
+                            try
+                            {
+                                player.setVolume(0.0f, 0.0f);
+                            }
+                            catch (Throwable ignored)
+                            {
+                            }
+                        }
                         firstFrameRendered = true;
+                        if (what == IMediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START
+                                && !videoRenderingStarted)
+                        {
+                            videoRenderingStarted = true;
+                            resetPartyReadiness();
+                        }
+                        if (what == IMediaPlayer.MEDIA_INFO_AUDIO_RENDERING_START
+                                && !audioRenderingStarted)
+                        {
+                            audioRenderingStarted = true;
+                            resetPartyReadiness();
+                        }
                         if (trickplayController != null && trickplayController.isNativeAvailable() && player != null)
                         {
                             trickplayController.onPlayerPosition(player.getCurrentPosition());
                         }
+                        pauseAfterGenerationRebuildIfActivated();
                     }
 
                     // Attach the client EQ once audio is actually rendering: only then has
@@ -579,8 +875,48 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                         pendingPlay = false;
                     }
 
-                    player.start();
-                    state = PLAY_STATE;
+                    // Apply a server-requested initial audio track BEFORE start(). IJK
+                    // auto-selects a default audio track as soon as the decoder starts
+                    // running; correcting it afterward races IJK's own default-stream
+                    // heuristic (observed picking an AC3 SAP sub-stream over Main) and
+                    // is not reliably honored by selectTrack() once playback is already
+                    // decoding the wrong track. playerReady is already true above, so
+                    // setAudioTrack() applies immediately instead of deferring.
+                    if (initialAudioStreamPos != -1)
+                    {
+                        setAudioTrack(initialAudioStreamPos);
+                    }
+
+                    if (isPartyHold())
+                    {
+                        player.setVolume(0.0f, 0.0f);
+                        if (player instanceof IjkMediaPlayer)
+                        {
+                            IjkMediaPlayer ijk = (IjkMediaPlayer) player;
+                            int audioTrack = partyAudioTrack(ijk);
+                            if (audioTrack >= 0)
+                            {
+                                if (ijk.getSelectedTrack(
+                                        IjkTrackInfo.MEDIA_TRACK_TYPE_AUDIO) != audioTrack)
+                                {
+                                    ijk.selectTrack(audioTrack);
+                                }
+                                log.info("Party hold retained muted IJK audio track {}",
+                                        audioTrack);
+                            }
+                            else
+                            {
+                                log.warn("Party hold could not resolve an IJK audio track");
+                            }
+                        }
+                        player.start();
+                        state = PLAY_STATE;
+                    }
+                    else
+                    {
+                        player.start();
+                        state = PLAY_STATE;
+                    }
 
                     // First attempt (often still session 0 here); the real attach happens
                     // on MEDIA_INFO_AUDIO_RENDERING_START once the AudioTrack exists.
@@ -638,22 +974,35 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                     mediaSession.setActive(true);
 
                     updateMediaSessionPlaybackState(player.getCurrentPosition());
-
-                    if (initialAudioStreamPos != -1)
-                    {
-                        setAudioTrack(initialAudioStreamPos);
-                    }
                 }
             });
 
             player.prepareAsync();
             log.debug("mediaplayer has our URL");
         }
+
         catch (Exception e)
         {
             log.error("Failed to create player", e);
             playerFailed();
         }
+    }
+
+    private int partyAudioTrack(IjkMediaPlayer ijk)
+    {
+        int selected = ijk.getSelectedTrack(IjkTrackInfo.MEDIA_TRACK_TYPE_AUDIO);
+        if (selected >= 0) return selected;
+        IjkTrackInfo[] tracks = ijk.getTrackInfo();
+        if (tracks == null) return -1;
+        for (int i = 0; i < tracks.length; i++)
+        {
+            if (tracks[i] != null
+                    && tracks[i].getTrackType() == IjkTrackInfo.MEDIA_TRACK_TYPE_AUDIO)
+            {
+                return i;
+            }
+        }
+        return -1;
     }
 
     protected void seekToImpl(long timeInMillis)
@@ -662,9 +1011,88 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
         player.seekTo(timeInMillis);
     }
 
+    private boolean isMatroskaContainer()
+    {
+        if (containerHint == null) return false;
+        String normalized = containerHint.trim().toUpperCase(java.util.Locale.ROOT);
+        return "MATROSKA".equals(normalized) || "MKV".equals(normalized)
+                || "WEBM".equals(normalized);
+    }
+
+    private void rebuildPushMatroskaGeneration()
+    {
+        final String rebuildUrl = playerUrl;
+        final boolean resumePlaying = state == PLAY_STATE;
+        rebuildingMatroskaGeneration = true;
+        final CountDownLatch stopped = new CountDownLatch(1);
+        context.runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                try
+                {
+                    releasePlayer();
+                    log.info("Push Matroska flush: retired old IJK parser/player generation");
+                }
+                finally
+                {
+                    stopped.countDown();
+                }
+            }
+        });
+        awaitGenerationStep(stopped, "retiring old IJK parser/player");
+
+        super.flush();
+
+        final CountDownLatch rebuilt = new CountDownLatch(1);
+        context.runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                try
+                {
+                    if (rebuildUrl == null)
+                    {
+                        playerFailed();
+                        return;
+                    }
+                    pauseAfterGenerationRebuild = !resumePlaying;
+                    state = LOADED_STATE;
+                    context.setupVideoFrame();
+                    setupPlayer(rebuildUrl);
+                    log.info("Push Matroska flush: created fresh IJK parser/player generation");
+                }
+                finally
+                {
+                    rebuildingMatroskaGeneration = false;
+                    rebuilt.countDown();
+                }
+            }
+        });
+        awaitGenerationStep(rebuilt, "creating fresh IJK parser/player");
+    }
+
+    private void awaitGenerationStep(CountDownLatch latch, String action)
+    {
+        try
+        {
+            if (!latch.await(2, TimeUnit.SECONDS))
+            {
+                log.warn("Push Matroska flush: timed out {}", action);
+            }
+        }
+        catch (InterruptedException e)
+        {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     @Override
     public void seek(long timeInMS)
     {
+        resetPartyActivation();
         super.seek(timeInMS);
         if (player == null || state == NO_STATE || state == LOADED_STATE)
         {
@@ -830,21 +1258,33 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
         }
 
         int audioTrackCount = 0;
+        int foundPos = -1;
 
         for (int i = 0; i < info.length; i++)
         {
-            if (info[i] != null && info[i].getTrackType() == IjkTrackInfo.MEDIA_TRACK_TYPE_AUDIO)
+            if (info[i] == null) continue;
+
+            // Temporary diagnostic: dump every track IJK enumerates (type/lang/codec)
+            // so we can verify its physical audio-track order actually matches the
+            // SageTV PES-stream-ID assumption above (SAP-vs-Main mis-selection triage).
+            log.debug("AudioTrackScan i={} type={} lang={} info={}",
+                    i, info[i].getTrackType(), info[i].getLanguage(), info[i].getInfoInline());
+
+            if (info[i].getTrackType() == IjkTrackInfo.MEDIA_TRACK_TYPE_AUDIO)
             {
-                if (audioTrackCount == zeroBasedPos)
+                if (foundPos == -1 && audioTrackCount == zeroBasedPos)
                 {
-                    return i;
+                    foundPos = i;
                 }
 
                 audioTrackCount++;
             }
         }
 
-        return -1;
+        log.debug("AudioTrackScan sageTVPosition={} zeroBasedPos={} audioTrackCount={} resolvedIjkPos={}",
+                sageTVPosition, zeroBasedPos, audioTrackCount, foundPos);
+
+        return foundPos;
     }
 
     /**
@@ -962,15 +1402,38 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
 
     protected void releasePlayer()
     {
-        if(mediaSession != null)
+        resetPartyActivation();
+        if (!rebuildingMatroskaGeneration)
         {
-            log.debug("Media Session RELEASE");
-            mediaSession.setActive(false);
-            mediaSession.release();
+            pauseAfterGenerationRebuild = false;
+        }
+        // Atomically claim the player/mediaSession references and null them
+        // out BEFORE doing any teardown work. If releasePlayer() is invoked
+        // a second time while this teardown is still in flight (e.g. a
+        // GFX-channel disconnect handler racing an activity finish()/exit
+        // path), the second call sees null immediately and returns as a
+        // true no-op instead of redundantly touching the same native
+        // player/surface/EGL state. See releaseLock javadoc above.
+        final IMediaPlayer playerToRelease;
+        final MediaSessionCompat mediaSessionToRelease;
+        synchronized (releaseLock)
+        {
+            if (player == null && mediaSession == null)
+                return;
+            playerToRelease = player;
+            mediaSessionToRelease = mediaSession;
+            player = null;
             mediaSession = null;
         }
 
-        if (player == null)
+        if (mediaSessionToRelease != null)
+        {
+            log.debug("Media Session RELEASE");
+            mediaSessionToRelease.setActive(false);
+            mediaSessionToRelease.release();
+        }
+
+        if (playerToRelease == null)
             return;
         log.debug("Releasing Player");
 
@@ -978,18 +1441,18 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
         {
             try
             {
-                if (player.isPlaying())
+                if (playerToRelease.isPlaying())
                 {
                     try
                     {
-                        player.pause();
+                        playerToRelease.pause();
                     }
                     catch (Throwable t)
                     {
                     }
                     try
                     {
-                        player.stop();
+                        playerToRelease.stop();
                     }
                     catch (Throwable t)
                     {
@@ -1012,7 +1475,7 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
 
             try
             {
-                player.reset();
+                playerToRelease.reset();
             }
             catch (Throwable t)
             {
@@ -1026,7 +1489,7 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
 
         try
         {
-            player.release();
+            playerToRelease.release();
         }
         catch (Throwable t)
         {
@@ -1044,7 +1507,6 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
             sagex.miniclient.android.audio.eq.EqManager.get().onPlayerReleased();
         }
         catch (Throwable ignored) { }
-        player = null;
 
         super.releasePlayer();
     }
@@ -1105,4 +1567,3 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
         mediaSession.setMetadata(metaDataBuilder.build());
     }
 }
-
