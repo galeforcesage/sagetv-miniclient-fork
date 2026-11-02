@@ -2,6 +2,7 @@ package sagex.miniclient.android.video.exoplayer2;
 
 import com.google.android.exoplayer2.ExoPlayer;
 import com.google.android.exoplayer2.Format;
+import com.google.android.exoplayer2.Tracks;
 import com.google.android.exoplayer2.source.TrackGroup;
 import com.google.android.exoplayer2.trackselection.TrackSelectionOverride;
 import com.google.android.exoplayer2.upstream.DataSource;
@@ -37,6 +38,7 @@ import com.google.android.exoplayer2.ui.SubtitleView;
 import com.google.android.exoplayer2.video.VideoSize;
 
 import java.util.HashSet;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
@@ -52,6 +54,7 @@ import sagex.miniclient.android.ui.AndroidUIController;
 import sagex.miniclient.android.util.Logger;
 import sagex.miniclient.android.video.BaseMediaPlayerImpl;
 import sagex.miniclient.android.video.MediaSessionCallbackHandler;
+import sagex.miniclient.android.video.PlaybackTelemetry;
 import sagex.miniclient.android.middleware.TrickplayController;
 import sagex.miniclient.android.middleware.TransportDataSource;
 import sagex.miniclient.media.SubtitleCodec;
@@ -149,6 +152,12 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     private int eqSessionId = 0;
     private int eqChannelCount = 2;
     private boolean eqIsPcm = true;
+    private volatile long decodedVideoFrames;
+    private volatile long droppedVideoFrames;
+    private volatile long decoderLatencyMs = -1;
+    private volatile int rebufferCount;
+    private volatile long stalledDurationMs;
+    private volatile long stallStartedAtMs = -1;
 
     private void pushEqAudioState()
     {
@@ -205,6 +214,67 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     public long getPlaybackPosition()
     {
         return this.currentPlaybackPosition;
+    }
+
+    @Override
+    public PlaybackTelemetry getPlaybackTelemetry()
+    {
+        ExoPlayer currentPlayer = player;
+        if (currentPlayer == null) return PlaybackTelemetry.UNAVAILABLE;
+
+        long bufferedDurationMs = Math.max(
+                0, currentPlayer.getBufferedPosition() - currentPlayer.getCurrentPosition());
+        long totalStallMs = stalledDurationMs;
+        if (stallStartedAtMs >= 0)
+        {
+            totalStallMs += android.os.SystemClock.elapsedRealtime() - stallStartedAtMs;
+        }
+
+        return new PlaybackTelemetry.Builder()
+                .decoder(videoDecoderName, videoDecoderHardware)
+                .bufferedDurationMs(bufferedDurationMs)
+                .rebuffer(rebufferCount, totalStallMs)
+                .frameCounts(decodedVideoFrames, droppedVideoFrames)
+                .decoderLatencyMs(decoderLatencyMs)
+                .tracks(getPlaybackTracks(currentPlayer))
+                .build();
+    }
+
+    private List<PlaybackTelemetry.Track> getPlaybackTracks(ExoPlayer currentPlayer)
+    {
+        List<PlaybackTelemetry.Track> result = new ArrayList<>();
+        Tracks tracks = currentPlayer.getCurrentTracks();
+        int groupIndex = 0;
+        for (Tracks.Group group : tracks.getGroups())
+        {
+            TrackGroup mediaTrackGroup = group.getMediaTrackGroup();
+            String type = getTrackTypeName(group.getType());
+            for (int trackIndex = 0; trackIndex < group.length; trackIndex++)
+            {
+                Format format = group.getTrackFormat(trackIndex);
+                result.add(new PlaybackTelemetry.Track(
+                        "exo:" + type + ":" + groupIndex + ":" + trackIndex,
+                        type,
+                        format.language,
+                        format.codecs != null ? format.codecs : format.sampleMimeType,
+                        format.channelCount,
+                        group.isTrackSelected(trackIndex)));
+            }
+            groupIndex++;
+        }
+        return result;
+    }
+
+    private static String getTrackTypeName(int trackType)
+    {
+        switch (trackType)
+        {
+            case C.TRACK_TYPE_VIDEO: return "video";
+            case C.TRACK_TYPE_AUDIO: return "audio";
+            case C.TRACK_TYPE_TEXT: return "text";
+            case C.TRACK_TYPE_METADATA: return "metadata";
+            default: return "unknown";
+        }
     }
 
     public void setPlaybackPosition(long position)
@@ -1347,6 +1417,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                     com.google.android.exoplayer2.analytics.AnalyticsListener.EventTime eventTime,
                     int droppedFrames, long elapsedMs)
             {
+                droppedVideoFrames += droppedFrames;
                 freezeDiagDroppedFrames += droppedFrames;
                 if (VerboseLogging.FREEZE_DIAG)
                 {
@@ -1360,8 +1431,10 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                     String decoderName, long initializedTimestampMs, long initializationDurationMs)
             {
                 videoDecoderName = decoderName == null ? "unknown" : decoderName;
-                videoDecoderHardware = !(videoDecoderName.startsWith("OMX.google.")
-                        || videoDecoderName.startsWith("c2.android."));
+                String lowerName = videoDecoderName.toLowerCase(java.util.Locale.US);
+                videoDecoderHardware = !(lowerName.startsWith("omx.google.")
+                        || lowerName.startsWith("c2.android.")
+                        || lowerName.contains("ffmpeg"));
                 log.logInfo("VIDEO DECODER initialized name=" + videoDecoderName
                         + " hardware=" + videoDecoderHardware
                         + " initDurationMs=" + initializationDurationMs);
@@ -1381,6 +1454,12 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                     com.google.android.exoplayer2.analytics.AnalyticsListener.EventTime eventTime,
                     long totalProcessingOffsetUs, int frameCount)
             {
+                decodedVideoFrames += frameCount;
+                if (frameCount > 0)
+                {
+                    decoderLatencyMs =
+                            Math.abs(totalProcessingOffsetUs / frameCount) / 1000;
+                }
                 freezeDiagRenderedFrames += frameCount;
                 freezeDiagLastDecoderOutputRealtimeMs = android.os.SystemClock.elapsedRealtime();
             }
@@ -1490,6 +1569,11 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                             android.os.SystemClock.elapsedRealtime();
                     partyHandler.postDelayed(partyBufferingStart,
                             PARTY_BUFFERING_CONFIRM_MS);
+                    if (stallStartedAtMs < 0)
+                    {
+                        rebufferCount++;
+                        stallStartedAtMs = android.os.SystemClock.elapsedRealtime();
+                    }
                     if (VerboseLogging.FREEZE_DIAG)
                     {
                         freezeDiagBufferingStartMs = android.os.SystemClock.elapsedRealtime();
@@ -1498,6 +1582,12 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                                 + " pos=" + player.getCurrentPosition()
                                 + " pushMode=" + pushMode);
                     }
+                }
+                else if (stallStartedAtMs >= 0)
+                {
+                    stalledDurationMs +=
+                            android.os.SystemClock.elapsedRealtime() - stallStartedAtMs;
+                    stallStartedAtMs = -1;
                 }
                 if (playbackState == Player.STATE_ENDED)
                 {
