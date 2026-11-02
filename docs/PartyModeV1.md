@@ -910,6 +910,9 @@ from being mistaken for lost membership or producer admission.
 ACK a COMMAND with `stage:"RECEIVED"` and that command's version/sequence. After
 actual execution/landing, ACK again with `stage:"EXECUTED"` and its observed
 success, position, state and monotonic sample time; do not treat receipt as execution.
+If a participant-specific HARD CORRECTION for the same version, command sequence and
+target state supersedes a pending COMMAND, successful correction landing also completes
+that command: send both CORRECTION_RESULT and the command's final EXECUTED ACK.
 
 Deadband is max(adapter precision,125 ms), or max(precision,250 ms) when measured
 p95 RTT >40 ms. One moderate violation at or below 750 ms is observed; two

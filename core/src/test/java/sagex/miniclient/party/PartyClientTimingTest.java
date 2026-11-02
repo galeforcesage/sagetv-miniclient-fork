@@ -58,6 +58,24 @@ public class PartyClientTimingTest
     }
 
     @Test
+    public void matchingCorrectionSupersedesPendingCommand()
+    {
+        JSONObject command = new JSONObject()
+                .put("commandSeq", 7)
+                .put("stateVersion", 3)
+                .put("targetState", "PLAYING");
+        JSONObject correction = new JSONObject(command.toString())
+                .put("kind", "HARD")
+                .put("targetPositionMs", 4_000);
+
+        assertTrue(PartyClient.correctionSupersedesCommand(command, correction));
+        assertFalse(PartyClient.correctionSupersedesCommand(command,
+                new JSONObject(correction.toString()).put("commandSeq", 8)));
+        assertFalse(PartyClient.correctionSupersedesCommand(command,
+                new JSONObject(correction.toString()).put("targetState", "PAUSED")));
+    }
+
+    @Test
     public void playingTargetProjectsToTheObservationTime()
     {
         assertEquals(8_250, PartyClient.projectPlayingTarget(

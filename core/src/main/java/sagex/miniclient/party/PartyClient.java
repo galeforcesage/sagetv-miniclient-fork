@@ -184,6 +184,8 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
     private long lastRenderedSampleMonoMs;
     private int renderedRecoverySamples;
     private String activeCorrectionId;
+    private JSONObject activeCommand;
+    private JSONObject supersededCommand;
     private JSONObject deferredCorrection;
     private long preparedPlaybackGeneration = -1;
     private long preparedPathGeneration;
@@ -1347,6 +1349,11 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
             deferredCorrection = new JSONObject(correction.toString());
             return;
         }
+        if (activeCommand != null
+                && !correctionSupersedesCommand(activeCommand, correction)) {
+            deferredCorrection = new JSONObject(correction.toString());
+            return;
+        }
         activeCorrectionId = correctionId;
         correctionPending = true;
         ready = false;
@@ -1359,7 +1366,15 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
             recoverClock("schedule");
             return;
         }
+        JSONObject commandSupersededByCorrection = correction
+                && correctionSupersedesCommand(activeCommand, message)
+                ? new JSONObject(activeCommand.toString()) : null;
         cancelScheduledPlayback();
+        if (correction) {
+            supersededCommand = commandSupersededByCorrection;
+        } else {
+            activeCommand = new JSONObject(message.toString());
+        }
         final long playbackCommandGeneration = adapter.playbackCommandGeneration();
         final long deadline = clockModel.clientDeadline(
                 message.optLong("executeAtServerMonoMs"));
@@ -1412,6 +1427,7 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
                         || playbackGeneration != adapter.playbackGeneration()) {
                     if (executionObserver != null) executionObserver.cancel(false);
                     if (correction && generation == synchronizationGeneration) {
+                        completeSupersededCommand(null, false);
                         recoverFromFailedCorrection();
                     }
                     return;
@@ -1468,6 +1484,7 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
                 }
                 if (correction) {
                     sendCorrectionResult(message, observation, success);
+                    completeSupersededCommand(observation, success);
                     if (success) {
                         correctionRecoveryPending = false;
                         correctionPending = false;
@@ -1484,18 +1501,41 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
                     }
                 } else {
                     sendCommandAck(message, "EXECUTED", observation, success);
+                    activeCommand = null;
                     transitionPending = false;
                     runDeferredAction();
                     sendCombinedSync(true);
+                    runDeferredCorrection();
                 }
             }
         }, 0, 100, TimeUnit.MILLISECONDS);
+    }
+
+    private void completeSupersededCommand(
+            PartyPlaybackAdapter.Observation observation, boolean success) {
+        JSONObject command = supersededCommand;
+        supersededCommand = null;
+        if (command == null) return;
+        sendCommandAck(command, "EXECUTED", observation, success);
+        transitionPending = false;
+        runDeferredAction();
     }
 
     static boolean commandGenerationSettled(boolean commandObserved,
                                             long stableSinceMs, long nowMs) {
         return commandObserved && stableSinceMs >= 0
                 && nowMs - stableSinceMs >= PUSH_COMMAND_SETTLE_MS;
+    }
+
+    static boolean correctionSupersedesCommand(JSONObject command,
+                                                JSONObject correction) {
+        return command != null && correction != null
+                && command.optLong("commandSeq", -1)
+                        == correction.optLong("commandSeq", -2)
+                && command.optLong("stateVersion", -1)
+                        == correction.optLong("stateVersion", -2)
+                && command.optString("targetState", "")
+                        .equals(correction.optString("targetState", ""));
     }
 
     private void recoverFromFailedCorrection() {
@@ -2007,6 +2047,8 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         if (executionObserver != null) executionObserver.cancel(false);
         scheduledCommand = null;
         executionObserver = null;
+        activeCommand = null;
+        supersededCommand = null;
         adapter.cancelScheduledAction();
     }
 
