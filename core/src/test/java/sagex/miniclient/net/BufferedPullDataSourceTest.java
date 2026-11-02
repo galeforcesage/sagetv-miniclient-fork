@@ -101,4 +101,18 @@ public class BufferedPullDataSourceTest {
         assertEquals(BufferedPullDataSource.MAX_BUFFER * 3 + 1, reads);
     }
 
+    @Test
+    public void testConfiguredBufferSize() throws Exception {
+        int configuredSize = 1024 * 1024;
+        BufferedPullDataSource pds = new BufferedPullDataSource(null, configuredSize);
+        pds.remoteReader = new DataInputStream(new MockInputStream(configuredSize * 2));
+        pds.remoteWriter = new ByteArrayOutputStream();
+        pds._buffer = new byte[configuredSize];
+        pds.opened = true;
+        pds.size = configuredSize * 2L;
+
+        byte[] buffer = new byte[configuredSize + 1];
+        assertEquals(buffer.length, pds.read(0, buffer, 0, buffer.length));
+    }
+
 }

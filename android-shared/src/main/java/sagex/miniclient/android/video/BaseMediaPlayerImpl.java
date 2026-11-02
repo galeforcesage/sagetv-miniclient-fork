@@ -22,6 +22,8 @@ import sagex.miniclient.android.util.AudioUtil;
 import sagex.miniclient.events.VideoInfoRefresh;
 import sagex.miniclient.events.VideoInfoShow;
 import sagex.miniclient.net.HasPushBuffer;
+import sagex.miniclient.net.HasClose;
+import sagex.miniclient.net.CancellableDataSource;
 import sagex.miniclient.net.PushBufferDataSource;
 import sagex.miniclient.party.PartyPlaybackAdapter;
 import sagex.miniclient.prefs.PrefStore;
@@ -40,7 +42,8 @@ import sagex.miniclient.video.VideoInfoResponse;
 /**
  * Created by seans on 06/10/15.
  */
-public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniPlayerPlugin, HasVideoInfo
+public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
+        implements MiniPlayerPlugin, HasVideoInfo, PlaybackTelemetryProvider
 {
 
 
@@ -142,6 +145,12 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
     public TrickplayController getTrickplayController()
     {
         return trickplayController;
+    }
+
+    @Override
+    public PlaybackTelemetry getPlaybackTelemetry()
+    {
+        return PlaybackTelemetry.UNAVAILABLE;
     }
 
     @Override
@@ -1260,9 +1269,24 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource> implements MiniP
 
     protected void releaseDataSource()
     {
-        if (dataSource instanceof HasPushBuffer)
+        if (dataSource instanceof CancellableDataSource)
+        {
+            ((CancellableDataSource) dataSource).cancel();
+        }
+        else if (dataSource instanceof HasPushBuffer)
         {
             ((HasPushBuffer) dataSource).release();
+        }
+        else if (dataSource instanceof HasClose)
+        {
+            try
+            {
+                ((HasClose) dataSource).close();
+            }
+            catch (IOException error)
+            {
+                log.warn("Failed to close media data source", error);
+            }
         }
     }
 
