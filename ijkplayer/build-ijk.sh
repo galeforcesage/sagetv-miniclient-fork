@@ -123,6 +123,17 @@ prepare_ffmpeg()
     apply_named_patch "$ffmpeg_root" \
         "$FFMPEG_PATCH_DIR/0001-add-ijk-application-protocol-hooks.patch"
     grep -q 'if (sti->index_entries)' "$ffmpeg_root/libavformat/seek.c"
+    for protocol in \
+        ijkmediadatasource \
+        ijkhttphook \
+        ijklongurl \
+        ijksegment \
+        ijktcphook \
+        ijkio
+    do
+        grep -q "extern URLProtocol ff_${protocol}_protocol;" \
+            "$ffmpeg_root/libavformat/protocols.c"
+    done
 }
 
 for abi in armv7a arm64; do
@@ -158,6 +169,17 @@ build_ffmpeg()
     bash -x ./compile-ffmpeg.sh "$abi" 2>&1 | tee "$log_file"
 
     local config_mak="$IJKPLAYER_ROOT/android/contrib/ffmpeg-$abi/ffbuild/config.mak"
+    local protocol_list="$IJKPLAYER_ROOT/android/contrib/ffmpeg-$abi/libavformat/protocol_list.c"
+    for protocol in \
+        ijkmediadatasource \
+        ijkhttphook \
+        ijklongurl \
+        ijksegment \
+        ijktcphook \
+        ijkio
+    do
+        grep -q "&ff_${protocol}_protocol" "$protocol_list"
+    done
     grep -q -- "-z,max-page-size=16384" "$config_mak"
     grep -q -- "-z,common-page-size=16384" "$config_mak"
     grep -q -- "-z,relro" "$config_mak"

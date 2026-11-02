@@ -48,6 +48,22 @@ index e096b0b..ec4a57a 100644
      .name                = "async",
      .url_open2           = async_open,
      .url_read            = async_read,
+diff --git a/libavformat/protocols.c b/libavformat/protocols.c
+--- a/libavformat/protocols.c
++++ b/libavformat/protocols.c
+@@ -24,6 +24,12 @@
+ #include "url.h"
+ 
+ extern const URLProtocol ff_async_protocol;
++extern URLProtocol ff_ijkmediadatasource_protocol;
++extern URLProtocol ff_ijkhttphook_protocol;
++extern URLProtocol ff_ijklongurl_protocol;
++extern URLProtocol ff_ijksegment_protocol;
++extern URLProtocol ff_ijktcphook_protocol;
++extern URLProtocol ff_ijkio_protocol;
+ extern const URLProtocol ff_bluray_protocol;
+ extern const URLProtocol ff_cache_protocol;
+ extern const URLProtocol ff_concat_protocol;
 diff --git a/libavformat/ijkutils.c b/libavformat/ijkutils.c
 new file mode 100644
 index 0000000..77cb151
