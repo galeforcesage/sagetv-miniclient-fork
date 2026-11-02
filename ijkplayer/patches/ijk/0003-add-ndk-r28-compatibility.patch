@@ -1,0 +1,182 @@
+diff --git a/android/contrib/tools/do-compile-ffmpeg.sh b/android/contrib/tools/do-compile-ffmpeg.sh
+index d6b3ba63..4be56561 100755
+--- a/android/contrib/tools/do-compile-ffmpeg.sh
++++ b/android/contrib/tools/do-compile-ffmpeg.sh
+@@ -34,7 +34,7 @@ if [ -z "$FF_ARCH" ]; then
+ 
+ 
+ FF_BUILD_ROOT=`pwd`
+-FF_ANDROID_PLATFORM=android-9
++FF_ANDROID_PLATFORM=android-21
+ 
+ 
+ FF_BUILD_NAME=
+@@ -82,7 +82,7 @@ if [ "$FF_ARCH" = "armv7a" ]; then
+     FF_SOURCE=$FF_BUILD_ROOT/$FF_BUILD_NAME
+ 
+     FF_CROSS_PREFIX=arm-linux-androideabi
+-    FF_TOOLCHAIN_NAME=${FF_CROSS_PREFIX}-${FF_GCC_VER}
++    FF_CLANG_TRIPLE=armv7a-linux-androideabi
+ 
+     FF_CFG_FLAGS="$FF_CFG_FLAGS --arch=arm --cpu=cortex-a8"
+     FF_CFG_FLAGS="$FF_CFG_FLAGS --enable-neon"
+@@ -152,7 +152,7 @@ elif [ "$FF_ARCH" = "arm64" ]; then
+     FF_SOURCE=$FF_BUILD_ROOT/$FF_BUILD_NAME
+ 
+     FF_CROSS_PREFIX=aarch64-linux-android
+-    FF_TOOLCHAIN_NAME=${FF_CROSS_PREFIX}-${FF_GCC_64_VER}
++    FF_CLANG_TRIPLE=aarch64-linux-android
+ 
+     FF_CFG_FLAGS="$FF_CFG_FLAGS --arch=aarch64 --enable-yasm"
+ 
+@@ -175,8 +175,7 @@ if [ ! -d $FF_SOURCE ]; then
+     exit 1
+ fi
+ 
+-FF_TOOLCHAIN_PATH=$FF_BUILD_ROOT/build/$FF_BUILD_NAME/toolchain
+-FF_MAKE_TOOLCHAIN_FLAGS="$FF_MAKE_TOOLCHAIN_FLAGS --install-dir=$FF_TOOLCHAIN_PATH"
++FF_TOOLCHAIN_PATH=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64
+ 
+ FF_SYSROOT=$FF_TOOLCHAIN_PATH/sysroot
+ FF_PREFIX=$FF_BUILD_ROOT/build/$FF_BUILD_NAME/output
+@@ -197,27 +196,17 @@ mkdir -p $FF_PREFIX
+ # mkdir -p $FF_SYSROOT
+ 
+ 
+-FF_TOOLCHAIN_TOUCH="$FF_TOOLCHAIN_PATH/touch"
+-if [ ! -f "$FF_TOOLCHAIN_TOUCH" ]; then
+-    $ANDROID_NDK/build/tools/make-standalone-toolchain.sh \
+-        $FF_MAKE_TOOLCHAIN_FLAGS \
+-        --platform=$FF_ANDROID_PLATFORM \
+-        --toolchain=$FF_TOOLCHAIN_NAME
+-    touch $FF_TOOLCHAIN_TOUCH;
+-fi
+-
+-
+ #--------------------
+ echo ""
+ echo "--------------------"
+ echo "[*] check ffmpeg env"
+ echo "--------------------"
+ export PATH=$FF_TOOLCHAIN_PATH/bin/:$PATH
+-#export CC="ccache ${FF_CROSS_PREFIX}-gcc"
+-export CC="${FF_CROSS_PREFIX}-gcc"
+-export LD=${FF_CROSS_PREFIX}-ld
+-export AR=${FF_CROSS_PREFIX}-ar
+-export STRIP=${FF_CROSS_PREFIX}-strip
++export CC="$FF_TOOLCHAIN_PATH/bin/${FF_CLANG_TRIPLE}21-clang"
++export LD="$CC"
++export AR="$FF_TOOLCHAIN_PATH/bin/llvm-ar"
++export NM="$FF_TOOLCHAIN_PATH/bin/llvm-nm"
++export STRIP="$FF_TOOLCHAIN_PATH/bin/llvm-strip"
+ 
+ FF_CFLAGS="-O3 -Wall -pipe \
+     -std=c99 \
+@@ -265,6 +254,6 @@ FF_CFG_FLAGS="$FF_CFG_FLAGS --prefix=$FF_PREFIX"
+ 
+ # Advanced options (experts only):
+-FF_CFG_FLAGS="$FF_CFG_FLAGS --cross-prefix=${FF_CROSS_PREFIX}-"
++FF_CFG_FLAGS="$FF_CFG_FLAGS --cc=$CC --ld=$LD --ar=$AR --nm=$NM --strip=$STRIP"
+ FF_CFG_FLAGS="$FF_CFG_FLAGS --enable-cross-compile"
+ FF_CFG_FLAGS="$FF_CFG_FLAGS --target-os=linux"
+ FF_CFG_FLAGS="$FF_CFG_FLAGS --enable-pic"
+@@ -273,5 +262,5 @@ FF_CFG_FLAGS="$FF_CFG_FLAGS --enable-pic"
+ 
+-if [ "$FF_ARCH" = "x86" ]; then
++if [ "$FF_ARCH" = "x86" ] || [ "$FF_ARCH" = "armv7a" ]; then
+     FF_CFG_FLAGS="$FF_CFG_FLAGS --disable-asm"
+ else
+     # Optimization options (experts only):
+diff --git a/android/contrib/tools/do-detect-env.sh b/android/contrib/tools/do-detect-env.sh
+index 36d64fdc..694c4779 100644
+--- a/android/contrib/tools/do-detect-env.sh
++++ b/android/contrib/tools/do-detect-env.sh
+@@ -68,6 +68,9 @@ case "$IJK_NDK_REL" in
+         IJK_NDK_REL=$(grep -o '^Pkg\.Revision.*=[0-9]*.*' $ANDROID_NDK/source.properties 2>/dev/null | sed 's/[[:space:]]*//g' | cut -d "=" -f 2)
+         echo "IJK_NDK_REL=$IJK_NDK_REL"
+         case "$IJK_NDK_REL" in
++            28*)
++                echo "NDKr$IJK_NDK_REL detected"
++            ;;
+             11*|12*|13*|14*)
+                 if test -d ${ANDROID_NDK}/toolchains/arm-linux-androideabi-4.9
+                 then
+diff --git a/android/contrib/ffmpeg-arm64/libavcodec/aarch64/h264dsp_init_aarch64.c b/android/contrib/ffmpeg-arm64/libavcodec/aarch64/h264dsp_init_aarch64.c
+index 29e48067..79f1d912 100644
+--- a/android/contrib/ffmpeg-arm64/libavcodec/aarch64/h264dsp_init_aarch64.c
++++ b/android/contrib/ffmpeg-arm64/libavcodec/aarch64/h264dsp_init_aarch64.c
+@@ -34,20 +34,20 @@ void ff_h264_h_loop_filter_chroma_neon(uint8_t *pix, int stride, int alpha,
+                                        int beta, int8_t *tc0);
+ 
+-void ff_weight_h264_pixels_16_neon(uint8_t *dst, int stride, int height,
++void ff_weight_h264_pixels_16_neon(uint8_t *dst, ptrdiff_t stride, int height,
+                                    int log2_den, int weight, int offset);
+-void ff_weight_h264_pixels_8_neon(uint8_t *dst, int stride, int height,
++void ff_weight_h264_pixels_8_neon(uint8_t *dst, ptrdiff_t stride, int height,
+                                   int log2_den, int weight, int offset);
+-void ff_weight_h264_pixels_4_neon(uint8_t *dst, int stride, int height,
++void ff_weight_h264_pixels_4_neon(uint8_t *dst, ptrdiff_t stride, int height,
+                                   int log2_den, int weight, int offset);
+ 
+-void ff_biweight_h264_pixels_16_neon(uint8_t *dst, uint8_t *src, int stride,
++void ff_biweight_h264_pixels_16_neon(uint8_t *dst, uint8_t *src, ptrdiff_t stride,
+                                      int height, int log2_den, int weightd,
+                                      int weights, int offset);
+-void ff_biweight_h264_pixels_8_neon(uint8_t *dst, uint8_t *src, int stride,
++void ff_biweight_h264_pixels_8_neon(uint8_t *dst, uint8_t *src, ptrdiff_t stride,
+                                     int height, int log2_den, int weightd,
+                                     int weights, int offset);
+-void ff_biweight_h264_pixels_4_neon(uint8_t *dst, uint8_t *src, int stride,
++void ff_biweight_h264_pixels_4_neon(uint8_t *dst, uint8_t *src, ptrdiff_t stride,
+                                     int height, int log2_den, int weightd,
+                                     int weights, int offset);
+ 
+ void ff_h264_idct_add_neon(uint8_t *dst, int16_t *block, int stride);
+diff --git a/ijkmedia/ijkplayer/android/pipeline/ffpipeline_android.c b/ijkmedia/ijkplayer/android/pipeline/ffpipeline_android.c
+index edbdc3dd..b2c0b848 100644
+--- a/ijkmedia/ijkplayer/android/pipeline/ffpipeline_android.c
++++ b/ijkmedia/ijkplayer/android/pipeline/ffpipeline_android.c
+@@ -106,6 +106,6 @@ static int func_config_video_decoder(IJKFF_Pipeline *pipeline, FFPlayer *ffp)
+ {
+     IJKFF_Pipeline_Opaque *opaque = pipeline->opaque;
+-    int                       ret = NULL;
++    int                       ret = 0;
+ 
+     if (ffp->node_vdec) {
+         ret = ffpipenode_config_from_android_mediacodec(ffp, pipeline, opaque->weak_vout, ffp->node_vdec);
+diff --git a/ijkmedia/ijkplayer/ff_ffplay.c b/ijkmedia/ijkplayer/ff_ffplay.c
+index 0b1d33e3..2f796153 100644
+--- a/ijkmedia/ijkplayer/ff_ffplay.c
++++ b/ijkmedia/ijkplayer/ff_ffplay.c
+@@ -86,15 +86,6 @@
+ #define AV_CODEC_CAP_DR1 CODEC_CAP_DR1
+ #endif
+ 
+-// FIXME: 9 work around NDKr8e or gcc4.7 bug
+-// isnan() may not recognize some double NAN, so we test both double and float
+-#if defined(__ANDROID__)
+-#ifdef isnan
+-#undef isnan
+-#endif
+-#define isnan(x) (isnan((double)(x)) || isnanf((float)(x)))
+-#endif
+-
+ #if defined(__ANDROID__)
+ #define printf(...) ALOGD(__VA_ARGS__)
+ #endif
+diff --git a/ijkmedia/ijksdl/ijksdl_egl.c b/ijkmedia/ijksdl/ijksdl_egl.c
+index b84e207e..0f735e23 100644
+--- a/ijkmedia/ijksdl/ijksdl_egl.c
++++ b/ijkmedia/ijksdl/ijksdl_egl.c
+@@ -24,8 +24,11 @@
+ #include "ijksdl_egl.h"
+ 
+ #include <stdlib.h>
+ #include <stdbool.h>
++#ifdef __ANDROID__
++#include <android/native_window.h>
++#endif
+ #include "ijksdl/ijksdl_gles2.h"
+ #include "ijksdl/ijksdl_log.h"
+ #include "ijksdl/ijksdl_vout.h"
+ #include "ijksdl/gles2/internal.h"

@@ -170,6 +170,12 @@ task copyAndroidNatives() {
             }
         }
     }
+
+    copy {
+        from file("native-overrides")
+        into file("libs")
+        include "**/*.so"
+    }
 }
 
 preBuild.dependsOn copyAndroidNatives

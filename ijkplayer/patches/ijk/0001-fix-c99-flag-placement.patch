@@ -1,0 +1,39 @@
+diff --git a/ijkmedia/ijkj4a/Android.mk b/ijkmedia/ijkj4a/Android.mk
+index 37d2bee6..b29a26d2 100644
+--- a/ijkmedia/ijkj4a/Android.mk
++++ b/ijkmedia/ijkj4a/Android.mk
+@@ -19,7 +19,7 @@
+ LOCAL_PATH := $(call my-dir)
+ 
+ include $(CLEAR_VARS)
+-LOCAL_CFLAGS += -std=c99
++LOCAL_CONLYFLAGS += -std=c99
+ 
+ LOCAL_C_INCLUDES += $(LOCAL_PATH)
+ LOCAL_C_INCLUDES += $(realpath $(LOCAL_PATH))
+diff --git a/ijkmedia/ijkplayer/Android.mk b/ijkmedia/ijkplayer/Android.mk
+index cbb35e47..cdb11198 100644
+--- a/ijkmedia/ijkplayer/Android.mk
++++ b/ijkmedia/ijkplayer/Android.mk
+@@ -26,7 +26,7 @@ include $(CLEAR_VARS)
+ ifeq ($(TARGET_ARCH_ABI),armeabi-v7a)
+ LOCAL_CFLAGS += -mfloat-abi=soft
+ endif
+-LOCAL_CFLAGS += -std=c99
++LOCAL_CONLYFLAGS += -std=c99
+ LOCAL_LDLIBS += -llog -landroid
+ 
+ LOCAL_C_INCLUDES += $(LOCAL_PATH)
+diff --git a/ijkmedia/ijksdl/Android.mk b/ijkmedia/ijksdl/Android.mk
+index 7574a951..bac84a38 100644
+--- a/ijkmedia/ijksdl/Android.mk
++++ b/ijkmedia/ijksdl/Android.mk
+@@ -20,7 +20,7 @@
+ LOCAL_PATH := $(call my-dir)
+ 
+ include $(CLEAR_VARS)
+-LOCAL_CFLAGS += -std=c99
++LOCAL_CONLYFLAGS += -std=c99
+ LOCAL_LDLIBS += -llog -landroid -lOpenSLES -lEGL -lGLESv2
+ 
+ LOCAL_C_INCLUDES += $(LOCAL_PATH)

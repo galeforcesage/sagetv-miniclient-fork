@@ -1,0 +1,12 @@
+diff --git a/gdx/build.gradle b/gdx/build.gradle
+index 81413769d..30c7ecf01 100644
+--- a/gdx/build.gradle
++++ b/gdx/build.gradle
+@@ -111,6 +111,6 @@ jnigen {
+ 	add(Linux, x64, RISCV)
+ 	add(Android) {
+-		linkerFlags += " -llog"
++		linkerFlags += " -llog -Wl,-z,relro -Wl,-z,now -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384"
+ 	}
+ 	add(MacOsX, x64)
+ 	add(MacOsX, x64, ARM)

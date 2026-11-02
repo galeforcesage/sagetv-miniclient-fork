@@ -1,0 +1,22 @@
+diff --git a/libavformat/utils.c b/libavformat/utils.c
+index b508d205dc6..86d16b461cb 100644
+--- a/libavformat/utils.c
++++ b/libavformat/utils.c
+@@ -2132,6 +2132,17 @@ int ff_seek_frame_binary(AVFormatContext *s, int stream_index,
+     ts_min = AV_NOPTS_VALUE;
+     pos_limit = -1; // GCC falsely says it may be uninitialized.
+ 
++    /* Piped MPEG-PS streams can legitimately have no seek index. */
++    if (stream_index >= 0 && stream_index < (int)s->nb_streams) {
++        AVStream *seek_stream = s->streams[stream_index];
++        if (!seek_stream->index_entries || seek_stream->nb_index_entries <= 0) {
++            av_log(s, AV_LOG_WARNING,
++                   "ff_seek_frame_binary: no index entries for stream %d\n",
++                   stream_index);
++            return -1;
++        }
++    }
++
+     st = s->streams[stream_index];
+     if (st->index_entries) {
+         AVIndexEntry *e;

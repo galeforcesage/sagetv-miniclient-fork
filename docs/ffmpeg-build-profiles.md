@@ -105,3 +105,50 @@ python tools/verify-native-alignment.py \
 
 The verifier checks every `LOAD` segment and applies Android's `GNU_RELRO`
 end-alignment rule, including the dedicated-RELRO-`LOAD` exception.
+
+## Final APK and AAB gates
+
+Source AAR verification is not sufficient. Build both retained ABI variants
+through the final online and mobile application artifacts:
+
+```text
+./gradlew \
+  :android-tv:assembleOnlineRelease \
+  :android-tv:assembleMobileRelease \
+  :android-tv:bundleOnlineRelease \
+  :android-tv:bundleMobileRelease
+```
+
+Run `verify-native-alignment.py` against all four outputs so every packaged
+`.so` in `armeabi-v7a` and `arm64-v8a` is inspected:
+
+```text
+python tools/verify-native-alignment.py \
+  --readelf "$ANDROID_NDK/toolchains/llvm/prebuilt/<host>/bin/llvm-readelf" \
+  android-tv/build/outputs/apk/online/release/android-tv-online-release.apk \
+  android-tv/build/outputs/apk/mobile/release/android-tv-mobile-release.apk \
+  android-tv/build/outputs/bundle/onlineRelease/android-tv-online-release.aab \
+  android-tv/build/outputs/bundle/mobileRelease/android-tv-mobile-release.aab
+```
+
+Use Build Tools 35 or newer for the official APK ZIP-alignment check:
+
+```text
+zipalign -v -c -P 16 4 android-tv/build/outputs/apk/online/release/android-tv-online-release.apk
+zipalign -v -c -P 16 4 android-tv/build/outputs/apk/mobile/release/android-tv-mobile-release.apk
+```
+
+Inspect each AAB with standalone bundletool:
+
+```text
+java -jar bundletool-all.jar dump config --bundle=<artifact.aab>
+```
+
+`optimizations.uncompressNativeLibraries.alignment` must be
+`PAGE_ALIGNMENT_16K`.
+
+Release packaging requires the production signing properties. A temporary
+keystore may be used to create an inspectable artifact, but that does not
+validate production signing. Completion also requires installing and
+exercising playback on a 16 KB Android emulator or device; static ELF and ZIP
+checks cannot replace that runtime smoke test.

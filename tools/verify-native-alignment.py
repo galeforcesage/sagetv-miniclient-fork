@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import argparse
 import pathlib
-import re
 import subprocess
 import sys
 import tempfile
@@ -9,15 +8,6 @@ import zipfile
 
 
 PAGE_SIZE = 0x4000
-HEADER_RE = re.compile(
-    r"^\s*(LOAD|GNU_RELRO)\s+"
-    r"(0x[0-9a-fA-F]+)\s+"
-    r"(0x[0-9a-fA-F]+)\s+"
-    r"(0x[0-9a-fA-F]+)\s+"
-    r"(0x[0-9a-fA-F]+)\s+"
-    r"(0x[0-9a-fA-F]+)\s+"
-    r".*?\s+(0x[0-9a-fA-F]+)\s*$"
-)
 
 
 def program_headers(readelf: pathlib.Path, shared_object: pathlib.Path):
@@ -29,16 +19,17 @@ def program_headers(readelf: pathlib.Path, shared_object: pathlib.Path):
     )
     headers = []
     for line in result.stdout.splitlines():
-        match = HEADER_RE.match(line)
-        if match:
+        fields = line.split()
+        if len(fields) >= 8 and fields[0] in {"LOAD", "GNU_RELRO"}:
             headers.append(
                 {
-                    "type": match.group(1),
-                    "offset": int(match.group(2), 16),
-                    "vaddr": int(match.group(3), 16),
-                    "filesz": int(match.group(5), 16),
-                    "memsz": int(match.group(6), 16),
-                    "align": int(match.group(7), 16),
+                    "type": fields[0],
+                    "offset": int(fields[1], 16),
+                    "vaddr": int(fields[2], 16),
+                    "filesz": int(fields[4], 16),
+                    "memsz": int(fields[5], 16),
+                    "flags": "".join(fields[6:-1]),
+                    "align": int(fields[-1], 16),
                 }
             )
     return headers

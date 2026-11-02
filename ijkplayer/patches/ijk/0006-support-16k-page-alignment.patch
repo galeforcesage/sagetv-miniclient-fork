@@ -1,0 +1,92 @@
+diff --git a/android/contrib/tools/do-compile-ffmpeg.sh b/android/contrib/tools/do-compile-ffmpeg.sh
+index 4be56561..8672e859 100755
+--- a/android/contrib/tools/do-compile-ffmpeg.sh
++++ b/android/contrib/tools/do-compile-ffmpeg.sh
+@@ -247,7 +247,8 @@ if [ -f "${FF_DEP_LIBSOXR_LIB}/libsoxr.a" ]; then
+     FF_DEP_LIBS="$FF_DEP_LIBS -L${FF_DEP_LIBSOXR_LIB} -lsoxr"
+ fi
+ 
+-FF_CFG_FLAGS="$FF_CFG_FLAGS $COMMON_FF_CFG_FLAGS"
++FF_CFG_FLAGS="$FF_CFG_FLAGS $COMMON_FF_CFG_FLAGS --disable-linux-perf"
++FF_EXTRA_LDFLAGS="$FF_EXTRA_LDFLAGS -Wl,-Bsymbolic -Wl,-z,relro -Wl,-z,now -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384"
+ 
+ #--------------------
+ # Standard options:
+@@ -341,10 +342,12 @@ do
+     done
+ done
+ 
++set -x
+ $CC -lm -lz -shared --sysroot=$FF_SYSROOT -Wl,--no-undefined -Wl,-z,noexecstack $FF_EXTRA_LDFLAGS \
+     -Wl,-soname,libijkffmpeg.so \
+     $FF_C_OBJ_FILES \
+     $FF_ASM_OBJ_FILES \
+     $FF_DEP_LIBS \
+     -o $FF_PREFIX/libijkffmpeg.so
++{ set +x; } 2>/dev/null
+ 
+ mysedi() {
+diff --git a/android/ijkplayer/ijkplayer-arm64/src/main/jni/Application.mk b/android/ijkplayer/ijkplayer-arm64/src/main/jni/Application.mk
+index 19189c34..e163c05f 100644
+--- a/android/ijkplayer/ijkplayer-arm64/src/main/jni/Application.mk
++++ b/android/ijkplayer/ijkplayer-arm64/src/main/jni/Application.mk
+@@ -23,10 +23,11 @@ APP_ABI := arm64-v8a
+ NDK_TOOLCHAIN_VERSION=4.9
+ APP_PIE := false
+ 
+-APP_STL := stlport_static
++APP_STL := c++_static
+ 
+ APP_CFLAGS := -O3 -Wall -pipe \
+     -ffast-math \
+     -fstrict-aliasing -Werror=strict-aliasing \
+     -Wno-psabi -Wa,--noexecstack \
+     -DANDROID -DNDEBUG
++APP_SUPPORT_FLEXIBLE_PAGE_SIZES := true
+diff --git a/android/ijkplayer/ijkplayer-armv7a/src/main/jni/Application.mk b/android/ijkplayer/ijkplayer-armv7a/src/main/jni/Application.mk
+index 3e16f98d..5817bada 100644
+--- a/android/ijkplayer/ijkplayer-armv7a/src/main/jni/Application.mk
++++ b/android/ijkplayer/ijkplayer-armv7a/src/main/jni/Application.mk
+@@ -18,15 +18,16 @@
+ # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ 
+ APP_OPTIM := release
+-APP_PLATFORM := android-9
++APP_PLATFORM := android-21
+ APP_ABI := armeabi-v7a
+ NDK_TOOLCHAIN_VERSION=4.9
+ APP_PIE := false
+ 
+-APP_STL := stlport_static
++APP_STL := c++_static
+ 
+ APP_CFLAGS := -O3 -Wall -pipe \
+     -ffast-math \
+     -fstrict-aliasing -Werror=strict-aliasing \
+     -Wno-psabi -Wa,--noexecstack \
+     -DANDROID -DNDEBUG
++APP_SUPPORT_FLEXIBLE_PAGE_SIZES := true
+diff --git a/ijkmedia/ijkplayer/Android.mk b/ijkmedia/ijkplayer/Android.mk
+index cdb11198..80d82ca9 100644
+--- a/ijkmedia/ijkplayer/Android.mk
++++ b/ijkmedia/ijkplayer/Android.mk
+@@ -28,6 +28,7 @@ LOCAL_CFLAGS += -mfloat-abi=soft
+ endif
+ LOCAL_CONLYFLAGS += -std=c99
+ LOCAL_LDLIBS += -llog -landroid
++LOCAL_LDFLAGS += -Wl,-z,relro -Wl,-z,now -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384
+ 
+ LOCAL_C_INCLUDES += $(LOCAL_PATH)
+ LOCAL_C_INCLUDES += $(realpath $(LOCAL_PATH)/..)
+diff --git a/ijkmedia/ijksdl/Android.mk b/ijkmedia/ijksdl/Android.mk
+index bac84a38..9d281390 100644
+--- a/ijkmedia/ijksdl/Android.mk
++++ b/ijkmedia/ijksdl/Android.mk
+@@ -22,6 +22,7 @@ LOCAL_PATH := $(call my-dir)
+ include $(CLEAR_VARS)
+ LOCAL_CONLYFLAGS += -std=c99
+ LOCAL_LDLIBS += -llog -landroid -lOpenSLES -lEGL -lGLESv2
++LOCAL_LDFLAGS += -Wl,-z,relro -Wl,-z,now -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384
+ 
+ LOCAL_C_INCLUDES += $(LOCAL_PATH)
+ LOCAL_C_INCLUDES += $(realpath $(LOCAL_PATH)/..)
