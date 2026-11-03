@@ -65,6 +65,21 @@ apply_named_patch()
     rm -f "$normalized_patch"
 }
 
+disable_legacy_ffmpeg_abi()
+{
+    local header_root="$1"
+    sed -i -E \
+        's/^#define FF_API_INIT_PACKET.*/#define FF_API_INIT_PACKET 0/' \
+        "$header_root/libavcodec/version_major.h"
+    sed -i -E \
+        's/^#define FF_API_OLD_CHANNEL_LAYOUT.*/#define FF_API_OLD_CHANNEL_LAYOUT 0/' \
+        "$header_root/libavutil/version.h"
+    grep -q '^#define FF_API_INIT_PACKET 0$' \
+        "$header_root/libavcodec/version_major.h"
+    grep -q '^#define FF_API_OLD_CHANNEL_LAYOUT 0$' \
+        "$header_root/libavutil/version.h"
+}
+
 # Restore only patch-owned files from their pinned source revisions. This makes
 # reruns deterministic even when the patch content itself has evolved.
 for source_file in \
@@ -102,6 +117,24 @@ apply_named_patch "$IJKPLAYER_ROOT" \
     --exclude=android/contrib/ffmpeg-arm64/libavcodec/aarch64/h264dsp_init_aarch64.c
 apply_named_patch "$IJKPLAYER_ROOT" "$PATCH_DIR/0006-support-16k-page-alignment.patch"
 apply_named_patch "$IJKPLAYER_ROOT" "$PATCH_DIR/0007-port-ffmpeg-6.1.1-apis.patch"
+if ! grep -Fq 'AVPacket pkt1 = {0}, *pkt = &pkt1;' \
+    "$IJKPLAYER_ROOT/ijkmedia/ijkplayer/ff_ffplay.c"; then
+    echo "FFmpeg 6 read_thread packet must be initialized before av_read_frame." >&2
+    exit 1
+fi
+if ! grep -Fq 'av_packet_move_ref(&pkt1->pkt, pkt);' \
+    "$IJKPLAYER_ROOT/ijkmedia/ijkplayer/ff_ffplay.c" ||
+   ! grep -Fq 'av_packet_move_ref(pkt, &pkt1->pkt);' \
+    "$IJKPLAYER_ROOT/ijkmedia/ijkplayer/ff_ffplay.c"; then
+    echo "FFmpeg 6 packet queues must transfer packet ownership with move_ref." >&2
+    exit 1
+fi
+if [ "$(grep -R -F 'AVPacket pkt = {0};' \
+    "$IJKPLAYER_ROOT/ijkmedia/ijkplayer" |
+    wc -l)" -lt 3 ]; then
+    echo "FFmpeg 6 packet consumers must initialize stack packets before queue transfer." >&2
+    exit 1
+fi
 
 cd "$IJKPLAYER_ROOT/android/contrib"
 ./compile-ffmpeg.sh clean
@@ -111,17 +144,32 @@ prepare_ffmpeg()
 {
     local abi="$1"
     local ffmpeg_root="$IJKPLAYER_ROOT/android/contrib/ffmpeg-$abi"
+    local upstream_remote="sagetv-official-ffmpeg"
     if [ ! -d "$ffmpeg_root/.git" ]; then
         git clone https://github.com/FFmpeg/FFmpeg.git "$ffmpeg_root"
     fi
-    git -C "$ffmpeg_root" fetch --force origin \
+    if git -C "$ffmpeg_root" remote get-url "$upstream_remote" >/dev/null 2>&1; then
+        git -C "$ffmpeg_root" remote set-url "$upstream_remote" \
+            https://github.com/FFmpeg/FFmpeg.git
+    else
+        git -C "$ffmpeg_root" remote add "$upstream_remote" \
+            https://github.com/FFmpeg/FFmpeg.git
+    fi
+    git -C "$ffmpeg_root" fetch --force "$upstream_remote" \
         "refs/tags/n6.1.1:refs/tags/n6.1.1"
     test "$(git -C "$ffmpeg_root" rev-parse refs/tags/n6.1.1)" = "$FFMPEG_TAG_OBJECT"
     test "$(git -C "$ffmpeg_root" rev-parse refs/tags/n6.1.1^{})" = "$FFMPEG_COMMIT"
+    # The contrib checkout is generated build state. Discard leftovers from the
+    # legacy Bilibili FFmpeg tree before switching it to the pinned official tag.
+    git -C "$ffmpeg_root" reset --hard HEAD
+    git -C "$ffmpeg_root" clean -fd
     git -C "$ffmpeg_root" checkout --detach "$FFMPEG_COMMIT"
     git -C "$ffmpeg_root" reset --hard "$FFMPEG_COMMIT"
     apply_named_patch "$ffmpeg_root" \
         "$FFMPEG_PATCH_DIR/0001-add-ijk-application-protocol-hooks.patch"
+    # These public-structure feature flags must be identical while compiling
+    # FFmpeg and IJK. Changing only the installed headers creates an ABI mismatch.
+    disable_legacy_ffmpeg_abi "$ffmpeg_root"
     grep -q 'if (sti->index_entries)' "$ffmpeg_root/libavformat/seek.c"
     for protocol in \
         ijkmediadatasource \
@@ -194,16 +242,8 @@ build_ffmpeg()
         grep "libijkffmpeg.so" "$log_file" | grep -q -- "$flag"
     done
 
-    local ffmpeg_root="$IJKPLAYER_ROOT/android/contrib/ffmpeg-$abi"
     local include_root="$IJKPLAYER_ROOT/android/contrib/build/ffmpeg-$abi/output/include"
-    for header_root in "$ffmpeg_root" "$include_root"; do
-        sed -i -E \
-            's/^#define FF_API_INIT_PACKET.*/#define FF_API_INIT_PACKET 0/' \
-            "$header_root/libavcodec/version_major.h"
-        sed -i -E \
-            's/^#define FF_API_OLD_CHANNEL_LAYOUT.*/#define FF_API_OLD_CHANNEL_LAYOUT 0/' \
-            "$header_root/libavutil/version.h"
-    done
+    disable_legacy_ffmpeg_abi "$include_root"
 }
 
 build_ffmpeg armv7a

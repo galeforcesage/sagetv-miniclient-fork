@@ -18,7 +18,11 @@ export IJKPLAYER_SOURCE_DIR="$HOME/sagetv-native-build/ijkplayer"
 hooks to official FFmpeg, ports IJK directly to FFmpeg 6 APIs, and applies
 16 KB maximum/common page-size linker settings to FFmpeg, IJK, and SDL.
 Deprecated packet, channel-layout, frame-position, FIFO, and stream-side-data
-interfaces are rejected during the IJK build. The Sage PUSH/PULL
+interfaces are disabled before FFmpeg is compiled and rejected during the IJK
+build. This ordering keeps FFmpeg and IJK on the same public-structure ABI; the
+generated headers must never be rewritten only after `libijkffmpeg.so` is
+built. Stack `AVPacket` instances passed to FFmpeg 6 APIs that unref their input
+must also be zero-initialized before first use. The Sage PUSH/PULL
 `IMediaDataSource`, push seek/flush behavior, and existing IJK MediaCodec
 pipeline are retained.
 
