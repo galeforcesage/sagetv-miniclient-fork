@@ -2425,10 +2425,7 @@ public class MiniClientConnection implements SageTVInputCallback
                         {
                             caps.append(",PLAYBACK_SURFACES_V1");
                         }
-                        if (partyClient.supportsRequiredGuarantees()
-                                && client.properties().getBoolean(
-                                        PrefStore.Keys.cap_party_player_adapter_v1,
-                                        false))
+                        if (partyClient.supportsRequiredGuarantees())
                         {
                             caps.append(",PARTY_V1,PARTY_JOIN_CODE_V1,PARTY_MONOTONIC_V1")
                                     .append(",PARTY_SCHEDULED_V1,PARTY_HEARTBEAT_V1")

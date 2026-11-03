@@ -399,13 +399,6 @@ public interface PrefStore
         String cap_playback_surfaces_v1 = "cap_playback_surfaces_v1";
 
         /**
-         * Experimental gate for the replacement Party Mode v1 player adapter.
-         * Default false. Enable only for physical acceptance testing; the
-         * required Party capability bundle is not advertised while this is off.
-         */
-        String cap_party_player_adapter_v1 = "cap_party_player_adapter_v1";
-
-        /**
          * When the audio/display OUTPUT sink changes mid-session (HDMI plugged
          * into a phone, a TV/AVR attached to a Shield powering on/off, the
          * surround-sound setting flipping), re-advertise honest surface caps and
