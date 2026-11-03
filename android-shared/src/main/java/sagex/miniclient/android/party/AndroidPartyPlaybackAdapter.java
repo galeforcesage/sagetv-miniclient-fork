@@ -53,26 +53,10 @@ public final class AndroidPartyPlaybackAdapter implements PartyPlaybackAdapter
     }
 
     @Override
-    public void setCanonicalPosition(long positionMs)
-    {
-        BaseMediaPlayerImpl<?, ?> player = player();
-        if (player != null) player.setPartyCanonicalPosition(positionMs);
-    }
-
-    @Override
     public void setPartyHold(boolean hold)
     {
         BaseMediaPlayerImpl<?, ?> player = player();
         if (player != null) player.setPartyHold(hold);
-    }
-
-    @Override
-    public void applyPlaybackState(PlaybackState state)
-    {
-        BaseMediaPlayerImpl<?, ?> player = player();
-        if (player == null) return;
-        if (state == PlaybackState.PLAYING) player.play();
-        else if (state == PlaybackState.PAUSED) player.pause();
     }
 
     @Override
@@ -90,20 +74,6 @@ public final class AndroidPartyPlaybackAdapter implements PartyPlaybackAdapter
     }
 
     @Override
-    public boolean supportsTemporaryRate()
-    {
-        BaseMediaPlayerImpl<?, ?> player = player();
-        return player != null && player.supportsPartyTemporaryRate();
-    }
-
-    @Override
-    public boolean setTemporaryRate(double rate, long durationMs)
-    {
-        BaseMediaPlayerImpl<?, ?> player = player();
-        return player != null && player.setPartyTemporaryRate(rate, durationMs);
-    }
-
-    @Override
     public void reconnectControlTransport()
     {
         if (client.getCurrentConnection() != null)
@@ -113,66 +83,10 @@ public final class AndroidPartyPlaybackAdapter implements PartyPlaybackAdapter
     }
 
     @Override
-    public void reconnectMediaTransport()
-    {
-        if (client.getCurrentConnection() != null)
-        {
-            client.getCurrentConnection().requestPartyMediaReconnect();
-        }
-    }
-
-    @Override
     public void localStop()
     {
         BaseMediaPlayerImpl<?, ?> player = player();
         if (player != null) player.localPartyStop();
-    }
-
-    @Override
-    public long playbackGeneration()
-    {
-        BaseMediaPlayerImpl<?, ?> player = player();
-        return player == null ? 0 : player.getPartyPlaybackGeneration();
-    }
-
-    @Override
-    public long playbackCommandGeneration()
-    {
-        BaseMediaPlayerImpl<?, ?> player = player();
-        return player == null ? 0 : player.getPartyPlaybackCommandGeneration();
-    }
-
-    @Override
-    public void restoreAfterCreateFailure(long generation, boolean wasPlaying)
-    {
-        BaseMediaPlayerImpl<?, ?> player = player();
-        if (player != null) player.restoreAfterPartyCreateFailure(generation, wasPlaying);
-    }
-
-    @Override
-    public String deliveryMode()
-    {
-        BaseMediaPlayerImpl<?, ?> player = player();
-        return player == null ? "" : player.getPartyDeliveryMode();
-    }
-
-    @Override
-    public boolean bindMediaAdmission(String handle)
-    {
-        BaseMediaPlayerImpl<?, ?> player = player();
-        return player != null && player.bindPartyAdmission(handle);
-    }
-
-    @Override
-    public void clearMediaAdmission()
-    {
-    }
-
-    @Override
-    public void resetReadiness()
-    {
-        BaseMediaPlayerImpl<?, ?> player = player();
-        if (player != null) player.resetPartyReadiness();
     }
 
     @Override

@@ -250,28 +250,6 @@ public class SimplePullDataSource implements ISageTVDataSource {
         return bytes;
     }
 
-    /**
-     * Binds the currently-open MediaServer producer to a Party admission grant.
-     * The command must use this exact socket and is serialized with READ/SIZE
-     * traffic so protocol replies cannot interleave.
-     */
-    public synchronized boolean bindPartyAdmission(String handle) {
-        if (!opened || handle == null || !handle.matches("[A-Za-z0-9]{32}")) {
-            return false;
-        }
-        try {
-            String reply = sendStringCommandWithReply("PARTY_BIND " + handle);
-            boolean accepted = "OK".equals(reply);
-            if (!accepted) {
-                log.warn("MediaServer rejected PARTY_BIND");
-            }
-            return accepted;
-        } catch (IOException e) {
-            log.warn("MediaServer PARTY_BIND failed: {}", e.toString());
-            return false;
-        }
-    }
-
     int readBuffer(byte[] buffer, int offset, int len) throws IOException {
         int total = 0;
         int read = 0;
@@ -305,9 +283,8 @@ public class SimplePullDataSource implements ISageTVDataSource {
             buf[total++] = b;
         }
         String val = new String(buf, 0, total);
-        String loggedCommand = cmd.startsWith("PARTY_BIND ") ? "PARTY_BIND [REDACTED]" : cmd;
         log.debug("Send Command: {}, Got Bytes {} Back with data [{}]",
-                loggedCommand, total, val);
+                cmd, total, val);
         return val;
     }
 }

@@ -207,6 +207,12 @@
             android:summary="@string/summary_push_seek_dvr_clamp_preference"
             android:title="@string/title_push_seek_dvr_clamp_preference"/>
 
+        <CheckBoxPreference
+            android:defaultValue="false"
+            android:key="cap_party_player_adapter_v1"
+            android:summary="@string/summary_party_adapter_preference"
+            android:title="@string/title_party_adapter_preference"/>
+
         <!--
         <CheckBoxPreference
             android:defaultValue="false"

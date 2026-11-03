@@ -790,7 +790,7 @@ public class MiniClientConnection implements SageTVInputCallback
         this.playbackContextStore.setServerBaseUrl(serverBaseUrl());
         PartyPlaybackAdapter partyAdapter = client.options().createPartyPlaybackAdapter(client);
         this.partyClient = new PartyClient(client, this, partyAdapter,
-                client.getPartyRecoveryState(), log);
+                client.getPartyResumeState(), log);
     }
 
     public MenuHint getMenuHint() {
@@ -1219,11 +1219,6 @@ public class MiniClientConnection implements SageTVInputCallback
         {
             log.logError("forceMediaReconnect failed", t);
         }
-    }
-
-    public void requestPartyMediaReconnect()
-    {
-        forceMediaReconnect();
     }
 
     public void requestPartyControlReconnect()
@@ -2430,12 +2425,14 @@ public class MiniClientConnection implements SageTVInputCallback
                         {
                             caps.append(",PLAYBACK_SURFACES_V1");
                         }
-                        if (partyClient.supportsRequiredGuarantees())
+                        if (partyClient.supportsRequiredGuarantees()
+                                && client.properties().getBoolean(
+                                        PrefStore.Keys.cap_party_player_adapter_v1,
+                                        false))
                         {
                             caps.append(",PARTY_V1,PARTY_JOIN_CODE_V1,PARTY_MONOTONIC_V1")
-                                    .append(",PARTY_POSITION_V1,PARTY_SCHEDULED_V1")
-                                    .append(",PARTY_SEEK_V1,PARTY_LOCAL_STOP_V1")
-                                    .append(",PARTY_START_POSITION_V1,PARTY_PREPARE_V1")
+                                    .append(",PARTY_SCHEDULED_V1,PARTY_HEARTBEAT_V1")
+                                    .append(",PARTY_PLAYER_ADAPTER_V1,PARTY_LOCAL_STOP_V1")
                                     .append(",PARTY_GROWING_MEDIA_V1");
                             partyClient.start();
                             partyClient.onCapabilitiesNegotiated();

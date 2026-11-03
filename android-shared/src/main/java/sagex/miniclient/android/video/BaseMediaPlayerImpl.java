@@ -684,24 +684,11 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
         }
     }
 
-    public void setPartyCanonicalPosition(long positionMs)
-    {
-        if (positionMs < 0) return;
-        if (trickplayController != null)
-        {
-            trickplayController.installAuthoritativePosition(positionMs);
-        }
-        lastMediaTime = positionMs;
-        lastCanonicalMediaSample = new CanonicalMediaSample(
-                android.os.SystemClock.elapsedRealtime(), positionMs);
-    }
-
     public boolean executePartyCommand(PartyPlaybackAdapter.ScheduledCommand command)
     {
         if (!playerReady || player == null || command == null) return false;
         if (command.targetPositionMs >= 0
-                && !seekForParty(command.targetPositionMs,
-                        command.seekAccuracy)) {
+                && !seekForParty(command.targetPositionMs)) {
             return false;
         }
         if (command.targetState == PartyPlaybackAdapter.PlaybackState.PLAYING)
@@ -715,8 +702,7 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
         return true;
     }
 
-    protected boolean seekForParty(long positionMs,
-                                   PartyPlaybackAdapter.SeekAccuracy accuracy)
+    protected boolean seekForParty(long positionMs)
     {
         seek(positionMs);
         return true;
@@ -728,16 +714,6 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
         {
             trickplayController.cancelPendingAction();
         }
-    }
-
-    public boolean supportsPartyTemporaryRate()
-    {
-        return false;
-    }
-
-    public boolean setPartyTemporaryRate(double rate, long durationMs)
-    {
-        return false;
     }
 
     protected final void setPartyBuffering(boolean buffering)
@@ -773,16 +749,6 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
         stop();
     }
 
-    public String getPartyDeliveryMode()
-    {
-        return pushMode ? "push" : (httpls ? "hls" : "pull");
-    }
-
-    public boolean bindPartyAdmission(String handle)
-    {
-        return false;
-    }
-
     public long getPartyPlaybackGeneration()
     {
         return partyPlaybackGeneration;
@@ -791,15 +757,6 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
     public long getPartyPlaybackCommandGeneration()
     {
         return partyPlaybackCommandGeneration;
-    }
-
-    public void restoreAfterPartyCreateFailure(long generation, boolean wasPlaying)
-    {
-        if (generation == partyPlaybackGeneration && wasPlaying
-                && playerReady && player != null && state == PAUSE_STATE)
-        {
-            play();
-        }
     }
 
     @Override

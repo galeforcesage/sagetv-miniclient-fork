@@ -120,9 +120,4 @@ public class IJKPullMediaSource implements IMediaDataSource, HasClose, Cancellab
         return new InterruptedIOException("IJK pull data source canceled");
     }
 
-    public boolean bindPartyAdmission(String handle) {
-        ISageTVDataSource ds = dataSource;
-        return ds instanceof BufferedPullDataSource
-                && ((BufferedPullDataSource) ds).bindPartyAdmission(handle);
-    }
 }

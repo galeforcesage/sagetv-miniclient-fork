@@ -26,7 +26,7 @@ import sagex.miniclient.logging.ILogger;
 import sagex.miniclient.ngcontext.NgPlaybackContextStore;
 import sagex.miniclient.prefs.PrefStore;
 import sagex.miniclient.net.ConnectionAttemptCoordinator;
-import sagex.miniclient.party.PartyRecoveryState;
+import sagex.miniclient.party.PartyResumeState;
 
 /**
  * MiniClient is the central access point to all things MiniClient.
@@ -44,7 +44,7 @@ public class MiniClient
     Thread connectionThread = null;
     private String MACAddress;
     private MiniClientConnection currentConnection;
-    private final PartyRecoveryState partyRecoveryState = new PartyRecoveryState();
+    private final PartyResumeState partyResumeState = new PartyResumeState();
     private sagex.miniclient.uibridge.UIRenderer<?> UIRenderer;
     private SageTVLocatorService locatorService;
     private String cryptoFormats;
@@ -195,9 +195,9 @@ public class MiniClient
         return connectionAttempts.isOwner(attemptId);
     }
 
-    public PartyRecoveryState getPartyRecoveryState()
+    public PartyResumeState getPartyResumeState()
     {
-        return partyRecoveryState;
+        return partyResumeState;
     }
 
     public boolean isConnected()

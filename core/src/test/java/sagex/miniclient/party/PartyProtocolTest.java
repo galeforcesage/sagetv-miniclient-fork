@@ -68,6 +68,14 @@ public class PartyProtocolTest {
     }
 
     @Test
+    public void goldenContractMarksRemovedRecoveryRequestUnknown() throws Exception {
+        assertEquals("MEDIA_ADMISSION",
+                golden().getJSONObject("removedRequest").getString("type"));
+        assertEquals("UNKNOWN_TYPE",
+                golden().getJSONObject("removedError").getString("code"));
+    }
+
+    @Test
     public void rejectsInvalidSchemaAndExcessNesting() {
         expectProtocolFailure(
                 () -> PartyProtocol.validateEnvelope(new JSONObject()

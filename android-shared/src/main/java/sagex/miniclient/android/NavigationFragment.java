@@ -420,7 +420,8 @@ public class NavigationFragment extends DialogFragment
         navParty.setVisibility(View.VISIBLE);
         if (state != null && state.joined)
         {
-            navParty.setText(state.locallyStopped ? "Party: Rejoin" : "Party: " + state.status);
+            navParty.setText(state.locallyStopped
+                    ? "Party: Prepare again" : "Party: " + state.status);
         }
         else if (state != null && "INVITED".equals(state.status))
         {
@@ -534,7 +535,7 @@ public class NavigationFragment extends DialogFragment
     {
         final java.util.ArrayList<String> actions = new java.util.ArrayList<String>();
         if (!state.host && !state.ready && !state.locallyStopped) actions.add("Join & Prepare");
-        if (state.locallyStopped) actions.add("Rejoin");
+        if (state.locallyStopped) actions.add("Prepare again");
         if (state.host)
         {
             actions.add("Show join code");
@@ -552,9 +553,9 @@ public class NavigationFragment extends DialogFragment
                             {
                                 String action = actions.get(which);
                                 if ("Join & Prepare".equals(action)) confirmPrepare(party);
-                                else if ("Rejoin".equals(action))
+                                else if ("Prepare again".equals(action))
                                 {
-                                    party.rejoin();
+                                    party.prepare();
                                     dismiss();
                                 }
                                 else if ("Show join code".equals(action)) showJoinCode(party);

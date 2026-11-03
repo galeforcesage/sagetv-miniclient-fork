@@ -497,13 +497,6 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     }
 
     @Override
-    public boolean bindPartyAdmission(String handle)
-    {
-        return !pushMode && dataSource instanceof IJKPullMediaSource
-                && ((IJKPullMediaSource) dataSource).bindPartyAdmission(handle);
-    }
-
-    @Override
     public void stop()
     {
         if(mediaSession != null)

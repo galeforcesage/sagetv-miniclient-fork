@@ -111,16 +111,6 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             setPartyBuffering(true);
         }
     };
-    private final Runnable partyRateReset = new Runnable()
-    {
-        @Override public void run()
-        {
-            if (player != null)
-            {
-                player.setPlaybackParameters(new PlaybackParameters(1.0f));
-            }
-        }
-    };
     // FREEZEDIAG: periodic buffer/ring-fill sampler (started on STATE_READY,
     // stopped on release). Reveals the true cushion trajectory + server
     // refill rate instead of only threshold snapshots.
@@ -573,13 +563,6 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     protected long getDurationMillis()
     {
         return currentDuration;
-    }
-
-    @Override
-    public boolean bindPartyAdmission(String handle)
-    {
-        return !pushMode && dataSource instanceof Exo2PullDataSource
-                && ((Exo2PullDataSource) dataSource).bindPartyAdmission(handle);
     }
 
     @Override
@@ -2335,8 +2318,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     }
 
     @Override
-    protected boolean seekForParty(final long positionMs,
-                                   final sagex.miniclient.party.PartyPlaybackAdapter.SeekAccuracy accuracy)
+    protected boolean seekForParty(final long positionMs)
     {
         if (player == null || pushMode) return false;
         context.runOnUiThread(new Runnable()
@@ -2344,38 +2326,8 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             @Override public void run()
             {
                 if (player == null) return;
-                player.setSeekParameters(accuracy
-                        == sagex.miniclient.party.PartyPlaybackAdapter.SeekAccuracy.EXACT
-                        ? SeekParameters.EXACT : SeekParameters.CLOSEST_SYNC);
+                player.setSeekParameters(SeekParameters.EXACT);
                 seek(positionMs);
-            }
-        });
-        return true;
-    }
-
-    @Override
-    public boolean supportsPartyTemporaryRate()
-    {
-        return !pushMode;
-    }
-
-    @Override
-    public boolean setPartyTemporaryRate(final double rate, final long durationMs)
-    {
-        if (!supportsPartyTemporaryRate() || player == null
-                || rate < 0.98 || rate > 1.02 || durationMs <= 0) {
-            return false;
-        }
-        partyHandler.removeCallbacks(partyRateReset);
-        context.runOnUiThread(new Runnable()
-        {
-            @Override public void run()
-            {
-                if (player != null)
-                {
-                    player.setPlaybackParameters(new PlaybackParameters((float) rate));
-                    partyHandler.postDelayed(partyRateReset, durationMs);
-                }
             }
         });
         return true;
@@ -2387,11 +2339,6 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
         super.cancelPartyScheduledAction();
         partyHandler.removeCallbacks(partyBufferingStart);
         partyBufferingStartedAtMs = -1;
-        partyHandler.removeCallbacks(partyRateReset);
-        if (player != null)
-        {
-            context.runOnUiThread(partyRateReset);
-        }
     }
 
     /**
