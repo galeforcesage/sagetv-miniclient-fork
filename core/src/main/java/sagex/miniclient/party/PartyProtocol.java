@@ -14,6 +14,10 @@ import java.util.regex.Pattern;
 
 public final class PartyProtocol {
     public static final String PROPERTY_NAME = "PARTY_V1";
+    public static final String REQUIRED_CAPABILITIES =
+            "PARTY_V1,PARTY_JOIN_CODE_V1,PARTY_MONOTONIC_V1,"
+                    + "PARTY_SCHEDULED_V1,PARTY_HEARTBEAT_V1,"
+                    + "PARTY_PLAYER_ADAPTER_V1,PARTY_LOCAL_STOP_V1";
     public static final int SCHEMA_VERSION = 1;
     public static final int MAX_JSON_BYTES = 8192;
     public static final int MAX_RECEIVE_DEPTH = 5;
@@ -23,6 +27,11 @@ public final class PartyProtocol {
     private static final Pattern IDENTIFIER =
             Pattern.compile("[A-Za-z0-9_.:-]{1,128}");
     private static final Pattern JOIN_CODE = Pattern.compile("[0-9]{3}");
+    private static final String[] IDENTIFIER_FIELDS = {
+            "requestId", "serverEpoch", "sessionHandle", "sessionToken",
+            "partyId", "participantId", "recoveryToken", "probeId",
+            "preparationId", "originParticipantId", "hostParticipantId"
+    };
 
     private PartyProtocol() {
     }
@@ -145,8 +154,13 @@ public final class PartyProtocol {
             throw new PartyProtocolException("Party JSON exceeds 8192 UTF-8 bytes");
         }
         if (envelope.has("requestSeq")) requirePositiveSequence(envelope);
-        if (envelope.has("requestId")) {
-            requireIdentifier(envelope.optString("requestId", null), "requestId");
+        for (String field : IDENTIFIER_FIELDS) {
+            if (envelope.has(field) && !envelope.isNull(field)) {
+                requireIdentifier(envelope.optString(field, null), field);
+            }
+        }
+        if (envelope.has("joinCode") && !envelope.isNull("joinCode")) {
+            requireJoinCode(envelope.optString("joinCode", null));
         }
     }
 

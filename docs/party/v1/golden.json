@@ -192,6 +192,15 @@
     "targetRate": 1,
     "executeAtServerMonoMs": 100500
   },
+  "readyAck": {
+    "schemaVersion": 1,
+    "type": "READY_ACK",
+    "requestId": "ready-repeat-1",
+    "serverMonoMs": 100300,
+    "partyId": "party",
+    "stateVersion": 0,
+    "commandSeq": 0
+  },
   "action": {
     "schemaVersion": 1,
     "type": "ACTION",
@@ -281,20 +290,5 @@
     "type": "HOST_CHANGED",
     "partyId": "party",
     "hostParticipantId": "guest"
-  },
-  "removedRequest": {
-    "schemaVersion": 1,
-    "type": "MEDIA_ADMISSION",
-    "requestId": "old-1",
-    "requestSeq": 16,
-    "serverEpoch": "epoch",
-    "sessionToken": "session",
-    "partyId": "party"
-  },
-  "removedError": {
-    "schemaVersion": 1,
-    "type": "ERROR",
-    "requestId": "old-1",
-    "code": "UNKNOWN_TYPE"
   }
 }

@@ -86,6 +86,12 @@ public class MediaSessionCallbackHandler extends MediaSessionCompat.Callback
     public void onSeekTo(long pos)
     {
         super.onSeekTo(pos);
+        if (client.getCurrentConnection() != null
+                && client.getCurrentConnection().getPartyClient()
+                .interceptSeek(pos))
+        {
+            return;
+        }
         player.seek(pos);
     }
 

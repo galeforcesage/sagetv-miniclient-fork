@@ -153,6 +153,7 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
     private boolean preparationLoaded;
     private boolean preparationPending;
     private boolean readyRequestPending;
+    private boolean readyTransitionSent;
     private boolean ready;
     private boolean locallyStopped;
     private boolean converging;
@@ -237,7 +238,15 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
     public void onTransportReconnected() {
         executor.execute(new Runnable() {
             @Override public void run() {
-                if (capabilitySessionNegotiated) sendHello();
+                if (partyId != null && !resumeRequired) {
+                    requireResumeAfterDisconnect();
+                }
+                if (inFlight != null) {
+                    inFlight.sends = 0;
+                    sendInFlight();
+                } else if (capabilitySessionNegotiated) {
+                    sendHello();
+                }
             }
         });
     }
@@ -328,7 +337,7 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
                     publishState();
                     return;
                 }
-                enqueueRequest("CREATE", createFields(startMode), false, null);
+                enqueueRequest("CREATE", createFields(startMode), true, null);
             }
         });
     }
@@ -372,10 +381,6 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         });
     }
 
-    public void rejoin() {
-        prepare();
-    }
-
     public void listClients() {
         executor.execute(new Runnable() {
             @Override public void run() {
@@ -387,7 +392,8 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
     public void invite(final String targetSessionHandle) {
         executor.execute(new Runnable() {
             @Override public void run() {
-                if (partyId == null || targetSessionHandle == null) return;
+                if (partyId == null || !isHost()
+                        || targetSessionHandle == null) return;
                 enqueueRequest("INVITE", new JSONObject()
                         .put("partyId", partyId)
                         .put("sessionHandle", targetSessionHandle), true, null);
@@ -398,7 +404,7 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
     public void retrieveJoinCode(final boolean rotate) {
         executor.execute(new Runnable() {
             @Override public void run() {
-                if (partyId == null) return;
+                if (partyId == null || !isHost()) return;
                 enqueueRequest("JOIN_CODE", new JSONObject()
                         .put("partyId", partyId)
                         .put("rotate", rotate), true, null);
@@ -429,7 +435,29 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
     }
 
     public void end() {
-        terminalMembershipRequest("END");
+        if (isHost()) terminalMembershipRequest("END");
+    }
+
+    public boolean interceptSeek(final long targetPositionMs) {
+        if (partyId == null) return false;
+        executor.execute(new Runnable() {
+            @Override public void run() {
+                if (ready && !locallyStopped && !converging) {
+                    sendAction("SEEK", Math.max(0, targetPositionMs));
+                }
+            }
+        });
+        return true;
+    }
+
+    public void comskip() {
+        executor.execute(new Runnable() {
+            @Override public void run() {
+                if (isHost() && ready && !locallyStopped && !converging) {
+                    sendAction("COMSKIP", null);
+                }
+            }
+        });
     }
 
     @Override
@@ -517,7 +545,7 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
                 .put("partyId", resumeState.getPartyId())
                 .put("participantId", resumeState.getParticipantId())
                 .put("recoveryToken", resumeState.getRecoveryToken()),
-                false, null);
+                true, null);
         status = "RESUMING";
         publishState();
     }
@@ -560,6 +588,7 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         preparationLoaded = false;
         preparationPending = false;
         readyRequestPending = false;
+        readyTransitionSent = false;
         currentDelivery = null;
         executedDirectives.clear();
         resetClock();
@@ -580,6 +609,7 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         converging = false;
         preparationLoaded = false;
         readyRequestPending = false;
+        readyTransitionSent = false;
         preparationPending = true;
         resetClock();
         setPlaybackHold(true);
@@ -656,7 +686,8 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
     }
 
     private void evaluateReadiness() {
-        if (!preparationLoaded || ready || readyRequestPending
+        if (!readinessTransitionOpen(preparationLoaded, ready,
+                readyRequestPending, readyTransitionSent)
                 || clockModel == null
                 || !clockModel.isConfident(adapter.elapsedRealtimeMs())) {
             return;
@@ -668,12 +699,31 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
             return;
         }
         readyRequestPending = true;
+        readyTransitionSent = true;
         status = "READYING";
         enqueueRequest("READY", new JSONObject()
                 .put("partyId", partyId)
                 .put("stateVersion", stateVersion)
                 .put("bufferAheadMs", Math.max(0, observation.bufferAheadMs)),
                 true, null);
+        publishState();
+    }
+
+    private void handleReadyAck(JSONObject ack) {
+        if (!partyIdEquals(ack)) return;
+        long incomingVersion = ack.optLong("stateVersion", stateVersion);
+        if (isStaleStateVersion(stateVersion, incomingVersion)) return;
+        stateVersion = incomingVersion;
+        commandSeq = Math.max(commandSeq,
+                ack.optLong("commandSeq", commandSeq));
+        readyRequestPending = false;
+        readyTransitionSent = true;
+        ready = true;
+        converging = false;
+        PartyPlaybackAdapter.Observation observation = adapter.observe();
+        status = observation == null ? "READY" : wireState(observation.state);
+        errorCode = null;
+        sendHeartbeat(observation, null, true);
         publishState();
     }
 
@@ -830,6 +880,27 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         return incoming < current;
     }
 
+    static boolean readinessTransitionOpen(boolean preparationLoaded,
+                                           boolean ready,
+                                           boolean readyRequestPending,
+                                           boolean readyTransitionSent) {
+        return preparationLoaded && !ready && !readyRequestPending
+                && !readyTransitionSent;
+    }
+
+    static boolean completesRequest(String pendingType, String pendingRequestId,
+                                    String incomingType, String incomingRequestId) {
+        if (pendingRequestId != null
+                && pendingRequestId.equals(incomingRequestId)) {
+            return true;
+        }
+        return incomingRequestId == null
+                && (("JOIN_CODE".equals(pendingType)
+                && "JOIN_CODE".equals(incomingType))
+                || ("ACTION".equals(pendingType)
+                && "COMMAND".equals(incomingType)));
+    }
+
     private void handleServerEnvelope(JSONObject envelope, long receivedMonoMs) {
         String type = envelope.optString("type", "");
         String requestId = envelope.optString("requestId", null);
@@ -852,6 +923,11 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
             publishState();
         } else if ("PREPARATION_RESULT".equals(type)) {
             handlePreparationResult(envelope);
+        } else if ("READY_ACK".equals(type)
+                && inFlight != null
+                && "READY".equals(inFlight.type)
+                && inFlight.requestId.equals(requestId)) {
+            handleReadyAck(envelope);
         } else if ("CORRECTION".equals(type)) {
             handleDirective(envelope, true);
         } else if ("COMMAND".equals(type)) {
@@ -895,7 +971,8 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
             clearMembership(type);
         }
 
-        if (inFlight != null && inFlight.requestId.equals(requestId)) {
+        if (inFlight != null && completesRequest(
+                inFlight.type, inFlight.requestId, type, requestId)) {
             PendingRequest completed = inFlight;
             clearInFlight();
             if (completed.handler != null) completed.handler.onReply(envelope);
@@ -956,18 +1033,33 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
     private void beginReconnect() {
         executor.execute(new Runnable() {
             @Override public void run() {
-                if (partyId == null) return;
-                resumeState.markDisconnected(adapter.elapsedRealtimeMs());
-                resumeRequired = true;
-                ready = false;
-                converging = false;
-                cancelScheduledDirective();
-                setPlaybackHold(true);
-                status = "RECONNECTING";
-                publishState();
+                if (partyId == null || resumeRequired) return;
+                requireResumeAfterDisconnect();
                 adapter.reconnectControlTransport();
             }
         });
+    }
+
+    private void requireResumeAfterDisconnect() {
+        resumeState.markDisconnected(adapter.elapsedRealtimeMs());
+        resumeRequired = true;
+        clearInFlight();
+        queue.clear();
+        requestSeq = 0;
+        serverEpoch = null;
+        sessionHandle = null;
+        sessionToken = null;
+        sessionTokenExpiresAtServerMonoMs = 0;
+        sessionAuthorized = false;
+        availability = Availability.UNKNOWN;
+        ready = false;
+        converging = false;
+        readyRequestPending = false;
+        readyTransitionSent = false;
+        cancelScheduledDirective();
+        setPlaybackHold(true);
+        status = "RECONNECTING";
+        publishState();
     }
 
     private void terminalMembershipRequest(final String type) {
@@ -976,7 +1068,7 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
                 if (partyId == null) return;
                 enqueueRequest(type,
                         new JSONObject().put("partyId", partyId),
-                        false, null);
+                        true, null);
             }
         });
     }
@@ -1000,6 +1092,7 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         preparationLoaded = false;
         preparationPending = false;
         readyRequestPending = false;
+        readyTransitionSent = false;
         executedDirectives.clear();
         mediaWindow.clear();
         resetClock();
@@ -1010,21 +1103,10 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
     private void enqueueRequest(String type, JSONObject fields,
                                 boolean retryAllowed, ReplyHandler handler) {
         if (!supportsRequiredGuarantees() || queue.size() >= 64) return;
-        JSONObject envelope = new JSONObject()
-                .put("schemaVersion", PartyProtocol.SCHEMA_VERSION)
-                .put("type", type)
-                .put("requestId", requestId())
-                .put("requestSeq", ++requestSeq);
-        if (!"HELLO".equals(type)) {
-            if (serverEpoch == null || sessionToken == null) return;
-            envelope.put("serverEpoch", serverEpoch)
-                    .put("sessionToken", sessionToken);
-        }
-        if (fields != null) {
-            for (String key : fields.keySet()) {
-                envelope.put(key, fields.get(key));
-            }
-        }
+        if (!"HELLO".equals(type)
+                && (serverEpoch == null || sessionToken == null)) return;
+        JSONObject envelope = requestEnvelope(type, requestId(), ++requestSeq,
+                serverEpoch, sessionToken, fields);
         try {
             PartyProtocol.validateEnvelope(envelope);
         } catch (PartyProtocolException e) {
@@ -1035,9 +1117,29 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         }
         PendingRequest pending = new PendingRequest(
                 type, envelope.getString("requestId"), envelope.toString(),
-                retryAllowed && !"CREATE".equals(type), handler);
+                retryAllowed, handler);
         queue.add(pending);
         sendNext();
+    }
+
+    static JSONObject requestEnvelope(String type, String requestId,
+                                      long requestSeq, String serverEpoch,
+                                      String sessionToken, JSONObject fields) {
+        JSONObject envelope = new JSONObject()
+                .put("schemaVersion", PartyProtocol.SCHEMA_VERSION)
+                .put("type", type)
+                .put("requestId", requestId)
+                .put("requestSeq", requestSeq);
+        if (!"HELLO".equals(type)) {
+            envelope.put("serverEpoch", serverEpoch)
+                    .put("sessionToken", sessionToken);
+        }
+        if (fields != null) {
+            for (String key : fields.keySet()) {
+                envelope.put(key, fields.get(key));
+            }
+        }
+        return envelope;
     }
 
     private void sendNext() {
@@ -1125,12 +1227,17 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
     }
 
     private String actionFor(SageCommand command) {
+        PartyPlaybackAdapter.Observation observation = adapter.observe();
+        return sharedActionFor(command,
+                observation == null ? null : observation.state);
+    }
+
+    static String sharedActionFor(
+            SageCommand command, PartyPlaybackAdapter.PlaybackState state) {
         if (command == SageCommand.PLAY) return "PLAY";
         if (command == SageCommand.PAUSE) return "PAUSE";
         if (command == SageCommand.PLAY_PAUSE) {
-            PartyPlaybackAdapter.Observation observation = adapter.observe();
-            return observation != null
-                    && observation.state == PartyPlaybackAdapter.PlaybackState.PLAYING
+            return state == PartyPlaybackAdapter.PlaybackState.PLAYING
                     ? "PAUSE" : "PLAY";
         }
         if (command == SageCommand.FF) return "FF";

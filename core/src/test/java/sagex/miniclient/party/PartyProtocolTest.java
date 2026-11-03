@@ -5,6 +5,7 @@ import org.junit.Test;
 
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
@@ -51,6 +52,15 @@ public class PartyProtocolTest {
     }
 
     @Test
+    public void exactRequestRetryReusesIdenticalFraming() throws Exception {
+        JSONObject action = golden().getJSONObject("action");
+
+        assertArrayEquals(
+                PartyProtocol.encodeClientFrame(action, 0, 7),
+                PartyProtocol.encodeClientFrame(action, 0, 7));
+    }
+
+    @Test
     public void utf8LimitCountsBytesNotCharacters() {
         JSONObject envelope = new JSONObject()
                 .put("schemaVersion", 1)
@@ -68,11 +78,53 @@ public class PartyProtocolTest {
     }
 
     @Test
-    public void goldenContractMarksRemovedRecoveryRequestUnknown() throws Exception {
-        assertEquals("MEDIA_ADMISSION",
-                golden().getJSONObject("removedRequest").getString("type"));
-        assertEquals("UNKNOWN_TYPE",
-                golden().getJSONObject("removedError").getString("code"));
+    public void validatesOpaqueIdentifiersAndJoinCodes() {
+        expectProtocolFailure(() -> PartyProtocol.validateEnvelope(
+                new JSONObject()
+                        .put("schemaVersion", 1)
+                        .put("type", "JOIN")
+                        .put("requestId", "join 1")
+                        .put("requestSeq", 1)
+                        .put("joinCode", "042")));
+        expectProtocolFailure(() -> PartyProtocol.validateEnvelope(
+                new JSONObject()
+                        .put("schemaVersion", 1)
+                        .put("type", "JOIN_CODE")
+                        .put("joinCode", "42")));
+    }
+
+    @Test
+    public void duplicateReadyIsAnIdempotentAckWithoutDeadline() throws Exception {
+        JSONObject readyAck = golden().getJSONObject("readyAck");
+
+        assertEquals("READY_ACK", readyAck.getString("type"));
+        assertEquals(golden().getJSONObject("ready").getLong("stateVersion"),
+                readyAck.getLong("stateVersion"));
+        assertEquals(golden().getJSONObject("correction").getLong("commandSeq"),
+                readyAck.getLong("commandSeq"));
+        assertTrue(!readyAck.has("executeAtServerMonoMs"));
+    }
+
+    @Test
+    public void requiredCapabilitiesExcludeUntestedGrowingMedia() {
+        assertEquals(
+                "PARTY_V1,PARTY_JOIN_CODE_V1,PARTY_MONOTONIC_V1,"
+                        + "PARTY_SCHEDULED_V1,PARTY_HEARTBEAT_V1,"
+                        + "PARTY_PLAYER_ADAPTER_V1,PARTY_LOCAL_STOP_V1",
+                PartyProtocol.REQUIRED_CAPABILITIES);
+        assertTrue(!PartyProtocol.REQUIRED_CAPABILITIES.contains(
+                "PARTY_GROWING_MEDIA_V1"));
+    }
+
+    @Test
+    public void localStopAndHostTransferMatchCanonicalGolden() throws Exception {
+        JSONObject localStop = golden().getJSONObject("localStop");
+        JSONObject hostChanged = golden().getJSONObject("hostChanged");
+
+        assertEquals("HEARTBEAT", localStop.getString("type"));
+        assertEquals("STOPPED", localStop.getString("state"));
+        assertEquals("HOST_CHANGED", hostChanged.getString("type"));
+        assertEquals("guest", hostChanged.getString("hostParticipantId"));
     }
 
     @Test

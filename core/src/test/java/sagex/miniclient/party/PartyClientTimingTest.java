@@ -3,8 +3,11 @@ package sagex.miniclient.party;
 import org.json.JSONObject;
 import org.junit.Test;
 
+import sagex.miniclient.SageCommand;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class PartyClientTimingTest {
@@ -41,6 +44,74 @@ public class PartyClientTimingTest {
         assertTrue(PartyClient.isStaleStateVersion(7, 6));
         assertFalse(PartyClient.isStaleStateVersion(7, 7));
         assertFalse(PartyClient.isStaleStateVersion(7, 8));
+    }
+
+    @Test
+    public void readyIsSentOnlyOncePerPreparationTransition() {
+        assertTrue(PartyClient.readinessTransitionOpen(
+                true, false, false, false));
+        assertFalse(PartyClient.readinessTransitionOpen(
+                true, false, true, false));
+        assertFalse(PartyClient.readinessTransitionOpen(
+                true, false, false, true));
+        assertFalse(PartyClient.readinessTransitionOpen(
+                true, true, false, false));
+        assertFalse(PartyClient.readinessTransitionOpen(
+                false, false, false, false));
+    }
+
+    @Test
+    public void requestEnvelopeAuthorizesEverythingExceptHello() {
+        JSONObject hello = PartyClient.requestEnvelope(
+                "HELLO", "hello-1", 1, null, null, new JSONObject());
+        JSONObject action = PartyClient.requestEnvelope(
+                "ACTION", "action-1", 2, "epoch", "token",
+                new JSONObject().put("partyId", "party")
+                        .put("stateVersion", 3)
+                        .put("action", "PLAY"));
+
+        assertFalse(hello.has("serverEpoch"));
+        assertFalse(hello.has("sessionToken"));
+        assertEquals(1, hello.getLong("requestSeq"));
+        assertEquals("epoch", action.getString("serverEpoch"));
+        assertEquals("token", action.getString("sessionToken"));
+        assertEquals(2, action.getLong("requestSeq"));
+    }
+
+    @Test
+    public void joinCodeEventCompletesRotationWithoutPretendingToBeAReply() {
+        assertTrue(PartyClient.completesRequest(
+                "JOIN_CODE", "rotate-1", "JOIN_CODE", null));
+        assertTrue(PartyClient.completesRequest(
+                "ACTION", "action-1", "COMMAND", null));
+        assertFalse(PartyClient.completesRequest(
+                "PREPARE", "prepare-1", "PREPARATION_RESULT", null));
+    }
+
+    @Test
+    public void sharedControlsExcludeLocalOnlyCommands() {
+        assertEquals("PLAY", PartyClient.sharedActionFor(
+                SageCommand.PLAY, PartyPlaybackAdapter.PlaybackState.PAUSED));
+        assertEquals("PAUSE", PartyClient.sharedActionFor(
+                SageCommand.PLAY_PAUSE,
+                PartyPlaybackAdapter.PlaybackState.PLAYING));
+        assertEquals("FF", PartyClient.sharedActionFor(
+                SageCommand.FF, PartyPlaybackAdapter.PlaybackState.PLAYING));
+        assertEquals("REW", PartyClient.sharedActionFor(
+                SageCommand.REW, PartyPlaybackAdapter.PlaybackState.PLAYING));
+        assertEquals("FF2", PartyClient.sharedActionFor(
+                SageCommand.FF_2, PartyPlaybackAdapter.PlaybackState.PLAYING));
+        assertEquals("REW2", PartyClient.sharedActionFor(
+                SageCommand.REW_2, PartyPlaybackAdapter.PlaybackState.PLAYING));
+        assertEquals("PAUSE", PartyClient.sharedActionFor(
+                SageCommand.PAUSE,
+                PartyPlaybackAdapter.PlaybackState.BUFFERING));
+        assertNull(PartyClient.sharedActionFor(
+                SageCommand.VOLUME_UP,
+                PartyPlaybackAdapter.PlaybackState.PLAYING));
+        assertNull(PartyClient.sharedActionFor(
+                SageCommand.DVD_SUBTITLE_TOGGLE,
+                PartyPlaybackAdapter.PlaybackState.PLAYING));
     }
 
     @Test

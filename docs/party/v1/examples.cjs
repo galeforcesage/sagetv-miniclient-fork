@@ -150,6 +150,13 @@ test('zero paused buffer is valid for initial readiness', () => {
   assert.equal(golden.correction.kind, 'HARD');
 });
 
+test('duplicate readiness is an idempotent acknowledgement', () => {
+  assert.equal(golden.readyAck.type, 'READY_ACK');
+  assert.equal(golden.readyAck.stateVersion, golden.ready.stateVersion);
+  assert.equal(golden.readyAck.commandSeq, golden.correction.commandSeq);
+  assert.equal(golden.readyAck.executeAtServerMonoMs, undefined);
+});
+
 test('commands carry generation, target and future monotonic deadline', () => {
   assert.equal(golden.command.stateVersion, 1);
   assert.equal(golden.command.commandSeq, 1);
@@ -176,9 +183,4 @@ test('local Stop is a heartbeat state and preserves the room code', () => {
   assert.equal(golden.localStop.state, 'STOPPED');
   assert.equal(golden.joinCodeReply.joinCode, '042');
   assert.equal(golden.hostChanged.hostParticipantId, 'guest');
-});
-
-test('removed admission and recovery protocol fails explicitly', () => {
-  assert.equal(golden.removedRequest.type, 'MEDIA_ADMISSION');
-  assert.equal(golden.removedError.code, 'UNKNOWN_TYPE');
 });

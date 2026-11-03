@@ -2427,10 +2427,8 @@ public class MiniClientConnection implements SageTVInputCallback
                         }
                         if (partyClient.supportsRequiredGuarantees())
                         {
-                            caps.append(",PARTY_V1,PARTY_JOIN_CODE_V1,PARTY_MONOTONIC_V1")
-                                    .append(",PARTY_SCHEDULED_V1,PARTY_HEARTBEAT_V1")
-                                    .append(",PARTY_PLAYER_ADAPTER_V1,PARTY_LOCAL_STOP_V1")
-                                    .append(",PARTY_GROWING_MEDIA_V1");
+                            caps.append(",").append(
+                                    PartyProtocol.REQUIRED_CAPABILITIES);
                             partyClient.start();
                             partyClient.onCapabilitiesNegotiated();
                         }

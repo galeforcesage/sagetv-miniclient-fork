@@ -323,16 +323,22 @@ clientDeadline = executeAtServerMonoMs - serverMinusClientMs
 
 The server:
 
-1. resolves the canonical `MediaFile`;
-2. calls ordinary SageTV Watch;
+1. resolves the canonical `MediaFile` and returns `PREPARE_ACCEPTED`;
+2. calls ordinary SageTV Watch asynchronously;
 3. seeks to the current canonical position;
-4. holds the resulting player paused;
-5. returns `PREPARE_ACCEPTED`;
-6. later emits `PREPARATION_RESULT`.
+4. verifies the expected playback generation and holds that player paused;
+5. on successful load, stores the current menu as `StartPlaybackMenu` and enters
+   the standard `MediaPlayer OSD`, matching ordinary Watch Now presentation;
+6. emits `PREPARATION_RESULT`.
 
 `PREPARATION_RESULT.status` is `LOADED` or `FAILED`. A loaded result includes
 `playbackGeneration` and diagnostic `delivery` metadata. The metadata describes
 the normal playback route; it is not a second source API.
+
+Presentation occurs only for a verified `LOADED` preparation. A failed,
+cancelled or superseded preparation does not navigate. Entering the standard
+playback UI does not release the paused hold; only a canonical correction or
+scheduled command may begin playback.
 
 ### READY
 
@@ -351,8 +357,21 @@ Zero buffer is valid while paused. The server verifies that the ordinary player
 is actually loaded and returns a participant-specific `CORRECTION` for initial
 alignment.
 
-The client executes the correction and begins `HEARTBEAT` reporting. There is no
-`CORRECTION_RESULT` transaction.
+The client executes the correction and begins `HEARTBEAT` reporting. Corrections
+are one-way; subsequent heartbeats report the observed player state.
+
+`READY` is transition-scoped, not a polling message. If a client repeats it
+after becoming ready, active or late, the server returns an idempotent response
+without scheduling another correction:
+
+```json
+{
+  "type": "READY_ACK",
+  "partyId": "opaque",
+  "stateVersion": 0,
+  "commandSeq": 0
+}
+```
 
 ## 9. Shared controls and scheduled commands
 
@@ -502,35 +521,7 @@ The participant must PREPARE and READY again before receiving PLAY/SEEK.
 
 Server shutdown clears ephemeral Party state without stopping ordinary playback.
 
-## 13. Removed contract surface
-
-The replacement server rejects these old request types:
-
-```text
-STATUS
-POSITION
-SYNC
-SELECT_SURFACE
-RESTORE_SURFACE
-MEDIA_ADMISSION
-POLICY
-CORRECTION_RESULT
-REJOIN
-```
-
-Also removed:
-
-- Party-owned surface selection;
-- Party producer/admission handles and `PARTY_BIND`;
-- bitrate/transcode reservation in snapshots;
-- pause-on-buffer quorum;
-- `DEGRADED`, suspicion and multi-stage recovery states;
-- resource grace, identity grace and tombstone phases;
-- command-outcome quorum/spread transactions;
-- client-visible GPU/transcoder internals;
-- Party-owned Auto Comskip policy.
-
-## 14. Client adapter acceptance
+## 13. Client adapter acceptance
 
 Before advertising the required capabilities, each platform must prove:
 

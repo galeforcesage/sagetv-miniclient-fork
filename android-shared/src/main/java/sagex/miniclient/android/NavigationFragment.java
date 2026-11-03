@@ -541,6 +541,7 @@ public class NavigationFragment extends DialogFragment
             actions.add("Show join code");
             actions.add("Invite connected client");
             actions.add("Play Together");
+            actions.add("Commercial Skip");
             actions.add("End Party");
         }
         actions.add("Leave Party");
@@ -563,6 +564,11 @@ public class NavigationFragment extends DialogFragment
                                 else if ("Play Together".equals(action))
                                 {
                                     EventRouter.postCommand(client, SageCommand.PLAY);
+                                    dismiss();
+                                }
+                                else if ("Commercial Skip".equals(action))
+                                {
+                                    party.comskip();
                                     dismiss();
                                 }
                                 else if ("End Party".equals(action)) confirmEnd(party);
