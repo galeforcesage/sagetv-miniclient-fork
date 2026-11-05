@@ -117,6 +117,7 @@ apply_named_patch "$IJKPLAYER_ROOT" \
     --exclude=android/contrib/ffmpeg-arm64/libavcodec/aarch64/h264dsp_init_aarch64.c
 apply_named_patch "$IJKPLAYER_ROOT" "$PATCH_DIR/0006-support-16k-page-alignment.patch"
 apply_named_patch "$IJKPLAYER_ROOT" "$PATCH_DIR/0007-port-ffmpeg-6.1.1-apis.patch"
+apply_named_patch "$IJKPLAYER_ROOT" "$PATCH_DIR/0008-remove-first-frame-seek-loop.patch"
 if ! grep -Fq 'AVPacket pkt1 = {0}, *pkt = &pkt1;' \
     "$IJKPLAYER_ROOT/ijkmedia/ijkplayer/ff_ffplay.c"; then
     echo "FFmpeg 6 read_thread packet must be initialized before av_read_frame." >&2

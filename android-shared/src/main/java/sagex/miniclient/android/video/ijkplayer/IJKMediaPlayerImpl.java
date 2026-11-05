@@ -301,6 +301,24 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     }
 
     @Override
+    public long getDetailedBufferMediaTimeMillis(long lastServerTime)
+    {
+        try
+        {
+            long position = (player != null) ? player.getCurrentPosition() : -1;
+            if (position >= 0)
+            {
+                return lastServerTime > 0 ? lastServerTime + position : position;
+            }
+        }
+        catch (Throwable t)
+        {
+            // Fall through to the existing canonical/fallback path.
+        }
+        return getMediaTimeMillis(lastServerTime);
+    }
+
+    @Override
     protected long getBufferedPositionMillis()
     {
         // IJK exposes cache duration rather than an absolute buffered-head

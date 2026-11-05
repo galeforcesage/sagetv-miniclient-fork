@@ -87,6 +87,16 @@ public interface MiniPlayerPlugin extends Runnable
     long getMediaTimeMillis(long lastServerTime);
 
     /**
+     * Current player timeline position for a detailed PUSHBUFFER reply.
+     * Implementations with a directly observable player clock may override
+     * this so NG servers receive a fresh sample on every reply.
+     */
+    default long getDetailedBufferMediaTimeMillis(long lastServerTime)
+    {
+        return getMediaTimeMillis(lastServerTime);
+    }
+
+    /**
      * SEEK_EPOCH_V1: align the player's client-side seek epoch to the server's
      * {@code streamEpoch} from the NG playback context. Default no-op so
      * non-Android / non-trickplay implementations are unaffected. Callers gate

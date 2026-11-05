@@ -716,18 +716,14 @@ public class MediaCmd
                 {
                     if (playa != null)
                     {
-                        writeInt((int) getMediaTimeMillis(), retbuf, 4);
+                        writeInt((int) playa.getDetailedBufferMediaTimeMillis(
+                                this.getLastServerStartPosition()), retbuf, 4);
                         retbuf[8] = (byte) (playa.getState() & 0xFF);
                     }
                     else
                     {
                         writeInt(0, retbuf, 4);
                         retbuf[8] = 0;
-                    }
-
-                    if (playa != null)
-                    {
-                        retbuf[8] = (byte) (playa.getState() & 0xFF);
                     }
 
                     return 9;
