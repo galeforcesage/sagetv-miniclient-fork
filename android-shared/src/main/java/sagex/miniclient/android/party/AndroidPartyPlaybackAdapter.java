@@ -60,10 +60,15 @@ public final class AndroidPartyPlaybackAdapter implements PartyPlaybackAdapter
     }
 
     @Override
-    public boolean execute(ScheduledCommand command)
+    public void execute(ScheduledCommand command, ExecutionCallback callback)
     {
         BaseMediaPlayerImpl<?, ?> player = player();
-        return player != null && player.executePartyCommand(command);
+        if (player == null)
+        {
+            if (callback != null) callback.onComplete(false);
+            return;
+        }
+        player.executePartyCommand(command, callback);
     }
 
     @Override
@@ -90,7 +95,7 @@ public final class AndroidPartyPlaybackAdapter implements PartyPlaybackAdapter
     }
 
     @Override
-    public void start(LifecycleListener listener)
+    public synchronized void start(LifecycleListener listener)
     {
         this.listener = listener;
         connectivityManager = (ConnectivityManager)
@@ -141,7 +146,7 @@ public final class AndroidPartyPlaybackAdapter implements PartyPlaybackAdapter
     }
 
     @Override
-    public void stop()
+    public synchronized void stop()
     {
         if (connectivityManager != null && networkCallback != null)
         {

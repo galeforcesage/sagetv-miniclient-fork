@@ -1,5 +1,7 @@
 package sagex.miniclient.android.video.ijkplayer;
 
+import tv.danmaku.ijk.media.player.IMediaPlayer;
+
 final class IjkPartyTrackActivation
 {
     private IjkPartyTrackActivation()
@@ -16,5 +18,17 @@ final class IjkPartyTrackActivation
     {
         if (videoActive) return videoRenderingStarted;
         return audioActive && audioRenderingStarted;
+    }
+
+    static boolean isVideoRenderingEvent(int what)
+    {
+        return what == IMediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START
+                || what == IMediaPlayer.MEDIA_INFO_VIDEO_SEEK_RENDERING_START;
+    }
+
+    static boolean isAudioRenderingEvent(int what)
+    {
+        return what == IMediaPlayer.MEDIA_INFO_AUDIO_RENDERING_START
+                || what == IMediaPlayer.MEDIA_INFO_AUDIO_SEEK_RENDERING_START;
     }
 }

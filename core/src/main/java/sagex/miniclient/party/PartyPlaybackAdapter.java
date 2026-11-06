@@ -69,7 +69,11 @@ public interface PartyPlaybackAdapter {
         void onForegroundConfidenceLost();
         void onNetworkBoundary(NetworkBoundary boundary);
         void onPlaybackStateChanged();
-        void onReadinessInvalidated();
+        void onReadinessChanged(boolean activated);
+    }
+
+    interface ExecutionCallback {
+        void onComplete(boolean success);
     }
 
     boolean supportsRequiredGuarantees();
@@ -80,7 +84,7 @@ public interface PartyPlaybackAdapter {
 
     void setPartyHold(boolean hold);
 
-    boolean execute(ScheduledCommand command);
+    void execute(ScheduledCommand command, ExecutionCallback callback);
 
     void cancelScheduledAction();
 
@@ -100,7 +104,10 @@ public interface PartyPlaybackAdapter {
                     false, false, 1000);
         }
         @Override public void setPartyHold(boolean hold) { }
-        @Override public boolean execute(ScheduledCommand command) { return false; }
+        @Override public void execute(ScheduledCommand command,
+                                      ExecutionCallback callback) {
+            if (callback != null) callback.onComplete(false);
+        }
         @Override public void cancelScheduledAction() { }
         @Override public void reconnectControlTransport() { }
         @Override public void localStop() { }

@@ -106,13 +106,23 @@ public class PartyProtocolTest {
     }
 
     @Test
-    public void requiredCapabilitiesExcludeUntestedGrowingMedia() {
+    public void readyEchoesLoadedPlaybackGeneration() throws Exception {
+        JSONObject preparation = golden().getJSONObject("preparationResult");
+        JSONObject ready = golden().getJSONObject("ready");
+
+        assertEquals(preparation.getLong("playbackGeneration"),
+                ready.getLong("playbackGeneration"));
+    }
+
+    @Test
+    public void requiredCapabilitiesIncludeGrowingMedia() {
         assertEquals(
                 "PARTY_V1,PARTY_JOIN_CODE_V1,PARTY_MONOTONIC_V1,"
                         + "PARTY_SCHEDULED_V1,PARTY_HEARTBEAT_V1,"
-                        + "PARTY_PLAYER_ADAPTER_V1,PARTY_LOCAL_STOP_V1",
+                        + "PARTY_PLAYER_ADAPTER_V1,PARTY_LOCAL_STOP_V1,"
+                        + "PARTY_GROWING_MEDIA_V1",
                 PartyProtocol.REQUIRED_CAPABILITIES);
-        assertTrue(!PartyProtocol.REQUIRED_CAPABILITIES.contains(
+        assertTrue(PartyProtocol.REQUIRED_CAPABILITIES.contains(
                 "PARTY_GROWING_MEDIA_V1"));
     }
 

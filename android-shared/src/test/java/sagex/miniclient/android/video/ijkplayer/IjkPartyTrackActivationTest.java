@@ -2,6 +2,8 @@ package sagex.miniclient.android.video.ijkplayer;
 
 import org.junit.Test;
 
+import tv.danmaku.ijk.media.player.IMediaPlayer;
+
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -68,5 +70,14 @@ public class IjkPartyTrackActivationTest
     {
         assertFalse(IjkPartyTrackActivation.hasRendered(
                 false, false, true, true));
+    }
+
+    @Test
+    public void seekRenderingEventsReactivateTheirTracks()
+    {
+        assertTrue(IjkPartyTrackActivation.isVideoRenderingEvent(
+                IMediaPlayer.MEDIA_INFO_VIDEO_SEEK_RENDERING_START));
+        assertTrue(IjkPartyTrackActivation.isAudioRenderingEvent(
+                IMediaPlayer.MEDIA_INFO_AUDIO_SEEK_RENDERING_START));
     }
 }

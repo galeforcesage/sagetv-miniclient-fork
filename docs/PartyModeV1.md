@@ -335,6 +335,13 @@ The server:
 `playbackGeneration` and diagnostic `delivery` metadata. The metadata describes
 the normal playback route; it is not a second source API.
 
+`CREATED`, `JOINED`, and `PREPARE_ACCEPTED` do not establish readiness. The
+client remains `PREPARING` and sends no ordinary heartbeat until a loaded
+preparation has completed clock calibration, sent `READY`, and received either
+the initial `CORRECTION` or an idempotent `READY_ACK`. A transient
+`NOT_PREPARED` received while `PREPARING` does not fail the room. A failed
+preparation remains fatal and exposes both its server `code` and `watchCode`.
+
 Presentation occurs only for a verified `LOADED` preparation. A failed,
 cancelled or superseded preparation does not navigate. Entering the standard
 playback UI does not release the paused hold; only a canonical correction or
@@ -349,11 +356,13 @@ After preparation and confident clock calibration:
   "type": "READY",
   "partyId": "opaque",
   "stateVersion": 0,
+  "playbackGeneration": 7,
   "bufferAheadMs": 0
 }
 ```
 
-Zero buffer is valid while paused. The server verifies that the ordinary player
+`playbackGeneration` echoes the verified `LOADED` preparation generation. Zero
+buffer is valid while paused. The server verifies that the ordinary player
 is actually loaded and returns a participant-specific `CORRECTION` for initial
 alignment.
 
@@ -459,6 +468,10 @@ stably paused:
   "state": "PLAYING"
 }
 ```
+
+Heartbeat cadence is a liveness guarantee, not an ACK-dependent request cadence.
+If a `HEARTBEAT_ACK` is lost, the client replaces the unacknowledged heartbeat
+with a fresh request and current sample when the next interval is due.
 
 Allowed states:
 

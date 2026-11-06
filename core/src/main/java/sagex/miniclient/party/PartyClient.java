@@ -6,6 +6,7 @@ import org.json.JSONObject;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -14,6 +15,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import sagex.miniclient.MiniClient;
 import sagex.miniclient.MiniClientConnection;
@@ -30,6 +32,7 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         public final boolean host;
         public final boolean locallyStopped;
         public final boolean ready;
+        public final boolean playbackHeld;
         public final boolean controlsEnabled;
         public final boolean prepareSupported;
         public final boolean currentPositionSupported;
@@ -40,6 +43,7 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         public final boolean joinCodeExpired;
         public final String status;
         public final String errorCode;
+        public final int preparationWatchCode;
         public final JSONObject snapshot;
         public final List<String> connectedSessionHandles;
         public final String invitedPartyId;
@@ -57,6 +61,7 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
             host = source.isHost();
             locallyStopped = source.locallyStopped;
             ready = source.ready;
+            playbackHeld = source.playbackHeld;
             controlsEnabled = source.ready && !source.locallyStopped
                     && !source.converging;
             prepareSupported = source.prepareSupported;
@@ -68,6 +73,7 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
             joinCodeExpired = source.isJoinCodeExpired();
             status = source.status;
             errorCode = source.errorCode;
+            preparationWatchCode = source.preparationWatchCode;
             snapshot = source.snapshot == null ? null
                     : new JSONObject(source.snapshot.toString());
             connectedSessionHandles =
@@ -125,11 +131,13 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
     private final PartyMediaWindow mediaWindow = new PartyMediaWindow();
     private final List<String> connectedSessionHandles =
             new ArrayList<String>();
+    private final AtomicReference<State> publishedState;
 
     private Availability availability = Availability.UNKNOWN;
     private PendingRequest inFlight;
     private ScheduledFuture<?> requestTimeout;
     private ScheduledFuture<?> scheduledDirective;
+    private long directiveExecutionGeneration;
     private ScheduledFuture<?> periodic;
     private long requestSeq;
     private String serverEpoch;
@@ -152,13 +160,18 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
     private boolean prepareSupported;
     private boolean preparationLoaded;
     private boolean preparationPending;
+    private long preparationPlaybackGeneration = -1;
+    private int preparationWatchCode = -1;
     private boolean readyRequestPending;
     private boolean readyTransitionSent;
     private boolean ready;
     private boolean locallyStopped;
     private boolean converging;
     private boolean playbackHeld;
-    private boolean started;
+    private boolean heartbeatStarted;
+    private PartyPlaybackAdapter.PlaybackState expectedPlaybackState =
+            PartyPlaybackAdapter.PlaybackState.UNAVAILABLE;
+    private volatile boolean started;
     private boolean capabilitySessionNegotiated;
     private boolean sessionAuthorized;
     private boolean resumeRequired;
@@ -183,6 +196,7 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
                 return thread;
             }
         });
+        publishedState = new AtomicReference<State>(new State(this));
     }
 
     public boolean supportsRequiredGuarantees() {
@@ -190,11 +204,11 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
     }
 
     public State getState() {
-        return new State(this);
+        return publishedState.get();
     }
 
     public boolean hasActivePlayback() {
-        if (!sessionAuthorized || !capabilitySessionNegotiated
+        if (getState().availability != Availability.AVAILABLE
                 || !connection.ownsFreshPlayback(connection.getMediaCmd())) {
             return false;
         }
@@ -204,7 +218,7 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
                 && observation.state != PartyPlaybackAdapter.PlaybackState.UNAVAILABLE;
     }
 
-    public void start() {
+    public synchronized void start() {
         if (!supportsRequiredGuarantees() || started) return;
         started = true;
         adapter.start(this);
@@ -226,24 +240,29 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         });
     }
 
-    public void close() {
+    public synchronized void close() {
         if (!started) return;
-        resumeState.markDisconnected(adapter.elapsedRealtimeMs());
-        cancelScheduledDirective();
-        adapter.stop();
-        if (periodic != null) periodic.cancel(false);
-        executor.shutdownNow();
+        started = false;
+        executor.execute(new Runnable() {
+            @Override public void run() {
+                resumeState.markDisconnected(adapter.elapsedRealtimeMs());
+                cancelScheduledDirective();
+                adapter.stop();
+                if (periodic != null) periodic.cancel(false);
+                executor.shutdown();
+            }
+        });
     }
 
     public void onTransportReconnected() {
         executor.execute(new Runnable() {
             @Override public void run() {
-                if (partyId != null && !resumeRequired) {
-                    requireResumeAfterDisconnect();
-                }
                 if (inFlight != null) {
                     inFlight.sends = 0;
                     sendInFlight();
+                } else if (partyId != null && !resumeRequired) {
+                    requireResumeAfterDisconnect();
+                    sendHello();
                 } else if (capabilitySessionNegotiated) {
                     sendHello();
                 }
@@ -311,7 +330,8 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
     }
 
     public boolean intercept(SageCommand command) {
-        if (command == null || partyId == null) return false;
+        State current = getState();
+        if (command == null || !current.joined) return false;
         if (command == SageCommand.STOP) {
             localStop();
             return true;
@@ -328,22 +348,21 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         return true;
     }
 
-    public void createCurrent(final String startMode) {
+    public boolean createCurrent(final String startMode) {
+        if (!hasActivePlayback()) return false;
         executor.execute(new Runnable() {
             @Override public void run() {
-                if (!hasActivePlayback()) {
-                    errorCode = "NO_CURRENT_MEDIA";
-                    status = "ERROR";
-                    publishState();
-                    return;
-                }
+                status = "CREATING";
+                errorCode = null;
+                publishState();
                 enqueueRequest("CREATE", createFields(startMode), true, null);
             }
         });
+        return true;
     }
 
-    public void create(final String startMode) {
-        createCurrent(startMode);
+    public boolean create(final String startMode) {
+        return createCurrent(startMode);
     }
 
     static JSONObject createFields(String startMode) {
@@ -435,11 +454,19 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
     }
 
     public void end() {
-        if (isHost()) terminalMembershipRequest("END");
+        executor.execute(new Runnable() {
+            @Override public void run() {
+                if (partyId != null && isHost()) {
+                    enqueueRequest("END",
+                            new JSONObject().put("partyId", partyId),
+                            true, null);
+                }
+            }
+        });
     }
 
     public boolean interceptSeek(final long targetPositionMs) {
-        if (partyId == null) return false;
+        if (!getState().joined) return false;
         executor.execute(new Runnable() {
             @Override public void run() {
                 if (ready && !locallyStopped && !converging) {
@@ -475,11 +502,15 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         executor.execute(new Runnable() {
             @Override public void run() {
                 if (partyId == null || locallyStopped) return;
+                if (!heartbeatStarted) return;
                 PartyPlaybackAdapter.Observation observation = adapter.observe();
                 if (observation != null
                         && observation.state == PartyPlaybackAdapter.PlaybackState.BUFFERING) {
-                    status = "BUFFERING";
-                    sendHeartbeat(observation, "BUFFERING", true);
+                    String observedState = heartbeatState(
+                            observation.state, expectedPlaybackState,
+                            playbackHeld);
+                    status = observedState;
+                    sendHeartbeat(observation, observedState, true);
                 }
                 publishState();
             }
@@ -487,16 +518,29 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
     }
 
     @Override
-    public void onReadinessInvalidated() {
+    public void onReadinessChanged(final boolean activated) {
         executor.execute(new Runnable() {
             @Override public void run() {
-                if (partyId != null && !locallyStopped) publishState();
+                if (partyId == null || locallyStopped) return;
+                if (activated) {
+                    if (!ready) evaluateReadiness();
+                } else {
+                    ready = false;
+                    readyRequestPending = false;
+                    readyTransitionSent = false;
+                    converging = false;
+                    cancelScheduledDirective();
+                    setPlaybackHold(true);
+                    if (preparationLoaded) status = "ACTIVATING";
+                    errorCode = null;
+                }
+                publishState();
             }
         });
     }
 
     public boolean isPlaybackHeld() {
-        return playbackHeld;
+        return getState().playbackHeld;
     }
 
     private void sendHello() {
@@ -587,8 +631,12 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         converging = false;
         preparationLoaded = false;
         preparationPending = false;
+        preparationPlaybackGeneration = -1;
+        preparationWatchCode = -1;
         readyRequestPending = false;
         readyTransitionSent = false;
+        heartbeatStarted = false;
+        expectedPlaybackState = PartyPlaybackAdapter.PlaybackState.UNAVAILABLE;
         currentDelivery = null;
         executedDirectives.clear();
         resetClock();
@@ -608,8 +656,12 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         ready = false;
         converging = false;
         preparationLoaded = false;
+        preparationPlaybackGeneration = -1;
+        preparationWatchCode = -1;
         readyRequestPending = false;
         readyTransitionSent = false;
+        heartbeatStarted = false;
+        expectedPlaybackState = PartyPlaybackAdapter.PlaybackState.UNAVAILABLE;
         preparationPending = true;
         resetClock();
         setPlaybackHold(true);
@@ -622,8 +674,9 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
     private void handlePreparationResult(JSONObject result) {
         if (!partyIdEquals(result)) return;
         preparationPending = false;
+        preparationWatchCode = result.optInt("watchCode", -1);
         if (!"LOADED".equals(result.optString("status"))
-                || result.optInt("watchCode", -1) != 0) {
+                || preparationWatchCode != 0) {
             preparationLoaded = false;
             setPlaybackHold(false);
             errorCode = result.optString("code", "PREPARATION_FAILED");
@@ -631,6 +684,17 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
             publishState();
             return;
         }
+        preparationPlaybackGeneration =
+                result.optLong("playbackGeneration", -1);
+        if (preparationPlaybackGeneration < 0) {
+            preparationLoaded = false;
+            setPlaybackHold(false);
+            errorCode = "INVALID_PREPARATION_GENERATION";
+            status = "PREPARATION_FAILED";
+            publishState();
+            return;
+        }
+        preparationWatchCode = -1;
         preparationLoaded = true;
         currentDelivery = result.optJSONObject("delivery");
         adapter.setPartyHold(true);
@@ -693,7 +757,11 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
             return;
         }
         PartyPlaybackAdapter.Observation observation = adapter.observe();
-        if (observation == null || !observation.prepared) return;
+        if (!isActivationReady(observation)) {
+            status = "ACTIVATING";
+            publishState();
+            return;
+        }
         if (observation.state == PartyPlaybackAdapter.PlaybackState.PLAYING) {
             adapter.setPartyHold(true);
             return;
@@ -701,10 +769,9 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         readyRequestPending = true;
         readyTransitionSent = true;
         status = "READYING";
-        enqueueRequest("READY", new JSONObject()
-                .put("partyId", partyId)
-                .put("stateVersion", stateVersion)
-                .put("bufferAheadMs", Math.max(0, observation.bufferAheadMs)),
+        enqueueRequest("READY", readyFields(
+                partyId, stateVersion, preparationPlaybackGeneration,
+                observation.bufferAheadMs),
                 true, null);
         publishState();
     }
@@ -718,9 +785,18 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
                 ack.optLong("commandSeq", commandSeq));
         readyRequestPending = false;
         readyTransitionSent = true;
+        PartyPlaybackAdapter.Observation observation = adapter.observe();
+        if (!isActivationReady(observation)) {
+            ready = false;
+            readyTransitionSent = false;
+            setPlaybackHold(true);
+            status = "ACTIVATING";
+            publishState();
+            return;
+        }
         ready = true;
         converging = false;
-        PartyPlaybackAdapter.Observation observation = adapter.observe();
+        heartbeatStarted = true;
         status = observation == null ? "READY" : wireState(observation.state);
         errorCode = null;
         sendHeartbeat(observation, null, true);
@@ -767,23 +843,44 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
             publishState();
             return;
         }
-        stateVersion = incomingStateVersion;
-        commandSeq = Math.max(commandSeq, incomingCommandSeq);
-        readyRequestPending = false;
-        ready = true;
-        converging = true;
-        status = "CONVERGING";
-        cancelScheduledDirective();
         final PartyPlaybackAdapter.PlaybackState targetState =
                 playbackState(directive.optString("targetState", ""));
         if (targetState != PartyPlaybackAdapter.PlaybackState.PLAYING
                 && targetState != PartyPlaybackAdapter.PlaybackState.PAUSED) {
-            converging = false;
             errorCode = "INVALID_SERVER_MESSAGE";
             status = "ERROR";
             publishState();
             return;
         }
+        expectedPlaybackState = targetState;
+        if (!isActivationReady(adapter.observe())) {
+            executedDirectives.remove(key);
+            ready = false;
+            converging = false;
+            status = "ACTIVATING";
+            errorCode = "NOT_READY";
+            if (!correction) {
+                sendCommandAck(new PartyPlaybackAdapter.ScheduledCommand(
+                        incomingCommandSeq, incomingStateVersion,
+                        directive.optString("cause", "COMMAND"),
+                        mediaWindow.clampTarget(
+                                directive.optLong("targetPositionMs", 0)),
+                        targetState,
+                        directive.optDouble("targetRate", 1.0),
+                        adapter.elapsedRealtimeMs()), false);
+            }
+            publishState();
+            return;
+        }
+        stateVersion = incomingStateVersion;
+        commandSeq = Math.max(commandSeq, incomingCommandSeq);
+        heartbeatStarted = true;
+        readyRequestPending = false;
+        ready = true;
+        converging = true;
+        status = "CONVERGING";
+        cancelScheduledDirective();
+        final long executionGeneration = directiveExecutionGeneration;
         long clientDeadline = clockModel.clientDeadline(
                 directive.optLong("executeAtServerMonoMs"));
         final PartyPlaybackAdapter.ScheduledCommand command =
@@ -801,21 +898,47 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         scheduledDirective = executor.schedule(new Runnable() {
             @Override public void run() {
                 if (command.stateVersion < stateVersion || locallyStopped) return;
-                if (command.targetState == PartyPlaybackAdapter.PlaybackState.PLAYING) {
-                    setPlaybackHold(false);
-                } else {
-                    setPlaybackHold(true);
-                }
-                boolean success = adapter.execute(command);
-                converging = false;
-                ready = success;
-                status = success ? command.targetState.name() : "ERROR";
-                errorCode = success ? null : "COMMAND_FAILED";
-                if (!correction) sendCommandAck(command, success);
-                sendHeartbeat(adapter.observe(), null, true);
-                publishState();
+                scheduledDirective = null;
+                adapter.execute(command,
+                        new PartyPlaybackAdapter.ExecutionCallback() {
+                    @Override public void onComplete(final boolean success) {
+                        executor.execute(new Runnable() {
+                            @Override public void run() {
+                                completeDirective(command, correction, success,
+                                        executionGeneration);
+                            }
+                        });
+                    }
+                });
             }
         }, delay, TimeUnit.MILLISECONDS);
+        publishState();
+    }
+
+    private void completeDirective(PartyPlaybackAdapter.ScheduledCommand command,
+                                   boolean correction, boolean success,
+                                   long executionGeneration) {
+        if (!correction) sendCommandAck(command, success);
+        if (executionGeneration != directiveExecutionGeneration
+                || command.stateVersion < stateVersion || locallyStopped) {
+            return;
+        }
+        converging = false;
+        PartyPlaybackAdapter.Observation observation = adapter.observe();
+        ready = success && isActivationReady(observation);
+        if (success) {
+            playbackHeld = command.targetState
+                    == PartyPlaybackAdapter.PlaybackState.PAUSED;
+        }
+        if (success && !ready) {
+            readyRequestPending = false;
+            readyTransitionSent = false;
+            status = "ACTIVATING";
+        } else {
+            status = success ? command.targetState.name() : "ERROR";
+        }
+        errorCode = success ? null : "COMMAND_FAILED";
+        sendHeartbeat(observation, null, true);
         publishState();
     }
 
@@ -842,22 +965,22 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
 
     private void sendHeartbeat(PartyPlaybackAdapter.Observation observation,
                                String forcedState, boolean immediate) {
-        if (partyId == null || !sessionAuthorized
-                || hasPendingRequest("HEARTBEAT")) {
-            return;
-        }
+        if (partyId == null || !sessionAuthorized) return;
+        if (!canSendHeartbeat(heartbeatStarted, forcedState)) return;
         if (observation == null) observation = adapter.observe();
         if (observation == null) return;
+        String heartbeatState = forcedState == null
+                ? heartbeatState(observation.state, expectedPlaybackState,
+                        playbackHeld)
+                : forcedState;
         long interval = heartbeatIntervalMs(
-                forcedState == null ? wireState(observation.state) : forcedState,
-                converging);
+                heartbeatState, converging);
         if (!immediate
                 && observation.sampleMonoMs - lastHeartbeatAt < interval) {
             return;
         }
+        discardPendingHeartbeats();
         lastHeartbeatAt = observation.sampleMonoMs;
-        String heartbeatState = forcedState == null
-                ? wireState(observation.state) : forcedState;
         enqueueRequest("HEARTBEAT", new JSONObject()
                 .put("partyId", partyId)
                 .put("stateVersion", stateVersion)
@@ -870,10 +993,32 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
                 .put("state", heartbeatState), true, null);
     }
 
+    private void discardPendingHeartbeats() {
+        if (inFlight != null && "HEARTBEAT".equals(inFlight.type)) {
+            clearInFlight();
+        }
+        Iterator<PendingRequest> iterator = queue.iterator();
+        while (iterator.hasNext()) {
+            if ("HEARTBEAT".equals(iterator.next().type)) iterator.remove();
+        }
+    }
+
     static long heartbeatIntervalMs(String state, boolean converging) {
         return !converging && "PAUSED".equals(state)
                 ? HEARTBEAT_PAUSED_INTERVAL_MS
                 : HEARTBEAT_ACTIVE_INTERVAL_MS;
+    }
+
+    static String heartbeatState(
+            PartyPlaybackAdapter.PlaybackState observedState,
+            PartyPlaybackAdapter.PlaybackState expectedState,
+            boolean playbackHeld) {
+        if (playbackHeld
+                && expectedState == PartyPlaybackAdapter.PlaybackState.PAUSED
+                && observedState == PartyPlaybackAdapter.PlaybackState.BUFFERING) {
+            return "PAUSED";
+        }
+        return wireState(observedState);
     }
 
     static boolean isStaleStateVersion(long current, long incoming) {
@@ -886,6 +1031,26 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
                                            boolean readyTransitionSent) {
         return preparationLoaded && !ready && !readyRequestPending
                 && !readyTransitionSent;
+    }
+
+    static JSONObject readyFields(String partyId, long stateVersion,
+                                  long playbackGeneration, long bufferAheadMs) {
+        return new JSONObject()
+                .put("partyId", partyId)
+                .put("stateVersion", stateVersion)
+                .put("playbackGeneration", playbackGeneration)
+                .put("bufferAheadMs", Math.max(0, bufferAheadMs));
+    }
+
+    static boolean canSendHeartbeat(boolean heartbeatStarted, String forcedState) {
+        return heartbeatStarted || "STOPPED".equals(forcedState);
+    }
+
+    static boolean isTransientNotPrepared(String errorCode,
+                                          boolean preparationPending,
+                                          String status) {
+        return "NOT_PREPARED".equals(errorCode)
+                && (preparationPending || "PREPARING".equals(status));
     }
 
     static boolean completesRequest(String pendingType, String pendingRequestId,
@@ -983,6 +1148,12 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
 
     private void handleError(JSONObject envelope) {
         errorCode = envelope.optString("code", "UNKNOWN");
+        if (isTransientNotPrepared(errorCode, preparationPending, status)) {
+            errorCode = null;
+            status = "PREPARING";
+            publishState();
+            return;
+        }
         if ("NOT_AVAILABLE".equals(errorCode)) {
             availability = Availability.UNAVAILABLE;
             status = "NOT_AVAILABLE";
@@ -1022,9 +1193,11 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
             if (clockSamples < CLOCK_CALIBRATION_SAMPLE_COUNT) requestClock();
             else evaluateReadiness();
         }
+        if (!heartbeatStarted) return;
         PartyPlaybackAdapter.Observation observation = adapter.observe();
         if (observation == null) return;
-        String observedState = wireState(observation.state);
+        String observedState = heartbeatState(
+                observation.state, expectedPlaybackState, playbackHeld);
         if ("BUFFERING".equals(observedState)) status = "BUFFERING";
         else if (!converging && ready) status = observedState;
         sendHeartbeat(observation, observedState, false);
@@ -1091,8 +1264,12 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         converging = false;
         preparationLoaded = false;
         preparationPending = false;
+        preparationPlaybackGeneration = -1;
+        preparationWatchCode = -1;
         readyRequestPending = false;
         readyTransitionSent = false;
+        heartbeatStarted = false;
+        expectedPlaybackState = PartyPlaybackAdapter.PlaybackState.UNAVAILABLE;
         executedDirectives.clear();
         mediaWindow.clear();
         resetClock();
@@ -1150,9 +1327,21 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
 
     private void sendInFlight() {
         if (inFlight == null) return;
-        inFlight.sends++;
-        connection.postPartyMessage(inFlight.serialized);
         if (requestTimeout != null) requestTimeout.cancel(false);
+        MiniClientConnection.PartyMessageSendResult result =
+                connection.postPartyMessage(inFlight.serialized);
+        if (result == MiniClientConnection.PartyMessageSendResult.DEFERRED) {
+            requestTimeout = null;
+            return;
+        }
+        if (result == MiniClientConnection.PartyMessageSendResult.FAILED) {
+            requestTimeout = null;
+            errorCode = "TRANSPORT_FAILED";
+            requireResumeAfterDisconnect();
+            adapter.reconnectControlTransport();
+            return;
+        }
+        inFlight.sends++;
         requestTimeout = executor.schedule(new Runnable() {
             @Override public void run() {
                 if (inFlight == null) return;
@@ -1160,10 +1349,8 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
                     sendInFlight();
                 } else {
                     errorCode = "REQUEST_TIMEOUT";
-                    status = "RECONNECTING";
-                    clearInFlight();
-                    sendNext();
-                    publishState();
+                    requireResumeAfterDisconnect();
+                    adapter.reconnectControlTransport();
                 }
             }
         }, REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS);
@@ -1184,6 +1371,7 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
     }
 
     private void cancelScheduledDirective() {
+        directiveExecutionGeneration++;
         if (scheduledDirective != null) scheduledDirective.cancel(false);
         scheduledDirective = null;
         adapter.cancelScheduledAction();
@@ -1267,10 +1455,16 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
 
     private void publishState() {
         State state = new State(this);
+        publishedState.set(state);
         log.logInfo("Party state availability=" + state.availability
                 + " status=" + state.status
                 + " joined=" + state.joined
                 + (state.errorCode == null ? "" : " error=" + state.errorCode));
         client.eventbus().post(new PartyStateChanged(state));
+    }
+
+    static boolean isActivationReady(PartyPlaybackAdapter.Observation observation) {
+        return observation != null && observation.prepared
+                && observation.activated;
     }
 }

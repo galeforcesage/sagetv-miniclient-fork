@@ -648,8 +648,13 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
                 Math.max(0, getDurationMillis()),
                 playbackState,
                 playerReady && player != null,
-                playerReady && player != null && rendered >= 0,
+                playerReady && player != null && isPartyPlaybackActivated(),
                 50);
+    }
+
+    protected boolean isPartyPlaybackActivated()
+    {
+        return getRenderedPositionMillis() >= 0;
     }
 
     private static final class CanonicalMediaSample
@@ -666,17 +671,17 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
 
     public void resetPartyReadiness()
     {
-        notifyPartyReadinessInvalidated();
+        notifyPartyReadinessChanged();
     }
 
-    protected final void notifyPartyReadinessInvalidated()
+    protected final void notifyPartyReadinessChanged()
     {
         try
         {
             if (context.getClient().getCurrentConnection() != null)
             {
                 context.getClient().getCurrentConnection().getPartyClient()
-                        .onReadinessInvalidated();
+                        .onReadinessChanged(isPartyPlaybackActivated());
             }
         }
         catch (Throwable ignored)
@@ -684,28 +689,71 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
         }
     }
 
-    public boolean executePartyCommand(PartyPlaybackAdapter.ScheduledCommand command)
+    public void executePartyCommand(final PartyPlaybackAdapter.ScheduledCommand command,
+            PartyPlaybackAdapter.ExecutionCallback callback)
     {
-        if (!playerReady || player == null || command == null) return false;
-        if (command.targetPositionMs >= 0
-                && !seekForParty(command.targetPositionMs)) {
-            return false;
-        }
-        if (command.targetState == PartyPlaybackAdapter.PlaybackState.PLAYING)
+        PartyCommandExecutor.execute(new PartyCommandExecutor.Steps()
         {
-            play();
-        }
-        else if (command.targetState == PartyPlaybackAdapter.PlaybackState.PAUSED)
+            @Override
+            public boolean seek()
+            {
+                return playerReady && player != null && command != null
+                        && isPartyTargetState(command.targetState)
+                        && (command.targetPositionMs < 0
+                        || seekForParty(command.targetPositionMs));
+            }
+
+            @Override
+            public void applyState()
+            {
+                if (command.targetState == PartyPlaybackAdapter.PlaybackState.PLAYING)
+                {
+                    play();
+                }
+                else if (command.targetState == PartyPlaybackAdapter.PlaybackState.PAUSED)
+                {
+                    pause();
+                }
+            }
+
+            @Override
+            public void applyHold()
+            {
+                setPartyHold(command.targetState
+                        == PartyPlaybackAdapter.PlaybackState.PAUSED);
+            }
+        }, callback, new PartyCommandExecutor.FailureHandler()
         {
-            pause();
-        }
-        return true;
+            @Override
+            public void onFailure(Throwable failure)
+            {
+                log.error("Party command execution failed", failure);
+            }
+        });
+    }
+
+    private static boolean isPartyTargetState(
+            PartyPlaybackAdapter.PlaybackState targetState)
+    {
+        return targetState == PartyPlaybackAdapter.PlaybackState.PLAYING
+                || targetState == PartyPlaybackAdapter.PlaybackState.PAUSED;
     }
 
     protected boolean seekForParty(long positionMs)
     {
+        if (!shouldSeekLocallyForParty(pushMode))
+        {
+            if (trickplayController == null) return false;
+            trickplayController.installAuthoritativePosition(positionMs);
+            return true;
+        }
         seek(positionMs);
         return true;
+    }
+
+    protected static boolean shouldSeekLocallyForParty(boolean pushMode)
+    {
+        return !pushMode;
     }
 
     public void cancelPartyScheduledAction()
@@ -730,8 +778,13 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
 
     public void setPartyHold(boolean hold)
     {
-        partyHold = hold;
+        setPartyHoldState(hold);
         applyPartyHold(hold);
+    }
+
+    protected final void setPartyHoldState(boolean hold)
+    {
+        partyHold = hold;
     }
 
     protected boolean isPartyHold()

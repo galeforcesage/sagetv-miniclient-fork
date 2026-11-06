@@ -63,4 +63,20 @@ final class SeekCoalescePolicy
         long regression = lastPlayerPosMs - positionMs;
         return regression > minRegressionMs && regression < maxRegressionMs;
     }
+
+    static boolean isForwardTimestampDiscontinuity(
+            long lastPlayerPosMs, long positionMs,
+            long elapsedSinceLastSampleMs,
+            boolean seekArmed, boolean seekCommitted,
+            long minJumpMs, long minExcessOverElapsedMs)
+    {
+        if (seekArmed || seekCommitted || lastPlayerPosMs <= 0
+                || positionMs <= lastPlayerPosMs) {
+            return false;
+        }
+        long forwardDeltaMs = positionMs - lastPlayerPosMs;
+        long elapsedMs = Math.max(0, elapsedSinceLastSampleMs);
+        return forwardDeltaMs >= minJumpMs
+                && forwardDeltaMs - elapsedMs >= minExcessOverElapsedMs;
+    }
 }

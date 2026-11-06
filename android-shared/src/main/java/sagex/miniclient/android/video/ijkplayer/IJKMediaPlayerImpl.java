@@ -308,6 +308,13 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
             long position = (player != null) ? player.getCurrentPosition() : -1;
             if (position >= 0)
             {
+                if (trickplayController != null
+                        && trickplayController.isNativeAvailable())
+                {
+                    trickplayController.setServerStartTime(lastServerTime);
+                    trickplayController.onPlayerPosition(position);
+                    return trickplayController.getReportedTime();
+                }
                 return lastServerTime > 0 ? lastServerTime + position : position;
             }
         }
@@ -954,12 +961,14 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                             stallStartedAtMs = -1;
                         }
                     }
-                    if (what == IMediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START
-                        || what == IMediaPlayer.MEDIA_INFO_AUDIO_RENDERING_START)
+                    boolean videoRenderingEvent =
+                            IjkPartyTrackActivation.isVideoRenderingEvent(what);
+                    boolean audioRenderingEvent =
+                            IjkPartyTrackActivation.isAudioRenderingEvent(what);
+                    if (videoRenderingEvent || audioRenderingEvent)
                     {
                         log.info("IJK {} rendering started at playerPositionMs={}",
-                                what == IMediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START
-                                        ? "video" : "audio",
+                                videoRenderingEvent ? "video" : "audio",
                                 player != null ? player.getCurrentPosition() : -1);
                         if (isPartyHold())
                         {
@@ -972,14 +981,12 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                             }
                         }
                         firstFrameRendered = true;
-                        if (what == IMediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START
-                                && !videoRenderingStarted)
+                        if (videoRenderingEvent && !videoRenderingStarted)
                         {
                             videoRenderingStarted = true;
                             resetPartyReadiness();
                         }
-                        if (what == IMediaPlayer.MEDIA_INFO_AUDIO_RENDERING_START
-                                && !audioRenderingStarted)
+                        if (audioRenderingEvent && !audioRenderingStarted)
                         {
                             audioRenderingStarted = true;
                             resetPartyReadiness();

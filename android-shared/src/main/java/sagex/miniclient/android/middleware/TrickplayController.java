@@ -121,6 +121,8 @@ public class TrickplayController
      */
     private static final long MONOTONIC_GUARD_MIN_REGRESSION_MS = 250;
     private static final long MONOTONIC_GUARD_MAX_REGRESSION_MS = 30_000;
+    private static final long FORWARD_DISCONTINUITY_MIN_JUMP_MS = 30_000;
+    private static final long FORWARD_DISCONTINUITY_MIN_EXCESS_MS = 10_000;
 
     /**
      * Native push-mode ring buffer capacity, in bytes.
@@ -148,6 +150,7 @@ public class TrickplayController
 
     // Latest player position observation (from onPlayerPosition).
     private long lastPlayerPosMs = 0;
+    private long lastPlayerSampleMonoMs;
 
     // Server-supplied start time (push mode only). -1 = unknown.
     private long serverStartTimeMs = -1;
@@ -297,6 +300,7 @@ public class TrickplayController
 
         // Reset clock state for the new playback session.
         lastPlayerPosMs = 0;
+        lastPlayerSampleMonoMs = 0;
         serverStartTimeMs = -1;
         seekTargetMs = -1;
         seekArmed = false;
@@ -413,6 +417,7 @@ public class TrickplayController
             // in-flight position sample tagged with the prior epoch is
             // discarded rather than applied to the new content.
             epoch++;
+            lastPlayerSampleMonoMs = 0;
             // Note: we do NOT clear seekTargetMs / seekArmed / seekCommitted.
             // A typical sequence is beginSeek() → flush() → push new data
             // → onPlayerPosition() converges → mapping established.
@@ -552,6 +557,7 @@ public class TrickplayController
                 mappingValid = true;
                 authoritativeResetPending = false;
                 authoritativeResetDeadlineMs = 0;
+                lastPlayerSampleMonoMs = now;
                 log.debug("Authoritative Party reset accepted: target={}, pos={}, baseOffset={}",
                         authoritativePositionMs, positionMs, baseOffsetMs);
                 return;
@@ -571,7 +577,24 @@ public class TrickplayController
                 return;
             }
 
+            long elapsedSinceLastSampleMs = lastPlayerSampleMonoMs <= 0
+                    ? 0 : now - lastPlayerSampleMonoMs;
+            if (pushMode && lastPlayerSampleMonoMs > 0
+                    && SeekCoalescePolicy.isForwardTimestampDiscontinuity(
+                    lastPlayerPosMs, positionMs, elapsedSinceLastSampleMs,
+                    seekArmed, seekCommitted,
+                    FORWARD_DISCONTINUITY_MIN_JUMP_MS,
+                    FORWARD_DISCONTINUITY_MIN_EXCESS_MS))
+            {
+                long logicalPositionMs = mappedPosition(lastPlayerPosMs);
+                baseOffsetMs = logicalPositionMs - positionMs;
+                mappingValid = true;
+                log.warn("Player timestamp discontinuity rebased: previous={}, current={}, logical={}, baseOffset={}",
+                        lastPlayerPosMs, positionMs, logicalPositionMs, baseOffsetMs);
+            }
+
             lastPlayerPosMs = positionMs;
+            lastPlayerSampleMonoMs = now;
 
             if (seekCommitted && positionMs > 0)
             {
@@ -652,6 +675,13 @@ public class TrickplayController
         // Pre-mapping, no baseline set: pull-direct's playerPos IS already
         // timeline time.
         return lastPlayerPosMs;
+    }
+
+    private long mappedPosition(long playerPositionMs)
+    {
+        if (mappingValid) return playerPositionMs + baseOffsetMs;
+        if (serverStartTimeMs >= 0) return serverStartTimeMs + playerPositionMs;
+        return playerPositionMs;
     }
 
     /**

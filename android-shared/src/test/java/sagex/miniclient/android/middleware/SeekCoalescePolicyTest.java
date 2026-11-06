@@ -158,6 +158,30 @@ public class SeekCoalescePolicyTest
     }
 
     @Test
+    public void majorForwardPtsResetIsDetectedWithoutSeek()
+    {
+        assertTrue(SeekCoalescePolicy.isForwardTimestampDiscontinuity(
+                77_715L, 299_810L, 1_000L,
+                false, false, 30_000L, 10_000L));
+    }
+
+    @Test
+    public void normalForwardProgressIsNotTimestampDiscontinuity()
+    {
+        assertFalse(SeekCoalescePolicy.isForwardTimestampDiscontinuity(
+                77_715L, 78_715L, 1_000L,
+                false, false, 30_000L, 10_000L));
+    }
+
+    @Test
+    public void explicitSeekOwnsLargeForwardJump()
+    {
+        assertFalse(SeekCoalescePolicy.isForwardTimestampDiscontinuity(
+                77_715L, 299_810L, 1_000L,
+                true, false, 30_000L, 10_000L));
+    }
+
+    @Test
     public void backwardSample_beforeAnyPriorPosition_isNeverDropped()
     {
         // lastPlayerPosMs <= 0 means no baseline yet (fresh session) -> nothing to guard.

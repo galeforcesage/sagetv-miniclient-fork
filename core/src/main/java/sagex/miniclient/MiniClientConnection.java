@@ -4673,10 +4673,18 @@ public class MiniClientConnection implements SageTVInputCallback
         }
     }
 
-    public void postPartyMessage(String json)
+    public enum PartyMessageSendResult
     {
-        if (performingReconnect || eventChannel == null || json == null)
-            return;
+        SENT,
+        DEFERRED,
+        FAILED
+    }
+
+    public PartyMessageSendResult postPartyMessage(String json)
+    {
+        if (json == null) return PartyMessageSendResult.FAILED;
+        if (performingReconnect || eventChannel == null)
+            return PartyMessageSendResult.DEFERRED;
         try
         {
             org.json.JSONObject envelope = PartyProtocol.parseEnvelope(json);
@@ -4700,14 +4708,18 @@ public class MiniClientConnection implements SageTVInputCallback
                 }
                 eventChannel.flush();
             }
+            return PartyMessageSendResult.SENT;
         }
         catch (PartyProtocolException e)
         {
             log.logError("Rejected outbound PARTY_V1 envelope: " + e.getMessage(), e);
+            return PartyMessageSendResult.FAILED;
         }
         catch (Exception e)
         {
             log.logError("Failed to post PARTY_V1 envelope", e);
+            eventChannelError();
+            return PartyMessageSendResult.FAILED;
         }
     }
 

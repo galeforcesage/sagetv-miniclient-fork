@@ -1,0 +1,67 @@
+package sagex.miniclient.android.video;
+
+import org.junit.Test;
+
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
+import sagex.miniclient.party.PartyPlaybackAdapter;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+
+public class PartyCommandExecutorTest
+{
+    @Test
+    public void acknowledgementWaitsForOrderedUiExecution()
+    {
+        final ArrayDeque<Runnable> uiQueue = new ArrayDeque<Runnable>();
+        final List<String> events = new ArrayList<String>();
+        uiQueue.add(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                PartyCommandExecutor.execute(new PartyCommandExecutor.Steps()
+                {
+                    @Override public boolean seek()
+                    {
+                        events.add("seek");
+                        return true;
+                    }
+
+                    @Override public void applyState()
+                    {
+                        events.add("state");
+                    }
+
+                    @Override public void applyHold()
+                    {
+                        events.add("hold");
+                    }
+                }, new PartyPlaybackAdapter.ExecutionCallback()
+                {
+                    @Override public void onComplete(boolean success)
+                    {
+                        assertTrue(success);
+                        events.add("ack");
+                    }
+                }, null);
+            }
+        });
+
+        assertTrue(events.isEmpty());
+        uiQueue.remove().run();
+        assertEquals(Arrays.asList("seek", "state", "hold", "ack"), events);
+    }
+
+    @Test
+    public void pushModeUsesServerOwnedPartySeek()
+    {
+        assertFalse(BaseMediaPlayerImpl.shouldSeekLocallyForParty(true));
+        assertTrue(BaseMediaPlayerImpl.shouldSeekLocallyForParty(false));
+    }
+}

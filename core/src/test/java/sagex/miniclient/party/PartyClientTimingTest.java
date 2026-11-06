@@ -40,6 +40,19 @@ public class PartyClientTimingTest {
     }
 
     @Test
+    public void expectedPausedReprimeDoesNotReportBuffering() {
+        assertEquals("PAUSED", PartyClient.heartbeatState(
+                PartyPlaybackAdapter.PlaybackState.BUFFERING,
+                PartyPlaybackAdapter.PlaybackState.PAUSED, true));
+        assertEquals("BUFFERING", PartyClient.heartbeatState(
+                PartyPlaybackAdapter.PlaybackState.BUFFERING,
+                PartyPlaybackAdapter.PlaybackState.PLAYING, true));
+        assertEquals("BUFFERING", PartyClient.heartbeatState(
+                PartyPlaybackAdapter.PlaybackState.BUFFERING,
+                PartyPlaybackAdapter.PlaybackState.PAUSED, false));
+    }
+
+    @Test
     public void staleStateVersionsAreIgnored() {
         assertTrue(PartyClient.isStaleStateVersion(7, 6));
         assertFalse(PartyClient.isStaleStateVersion(7, 7));
@@ -58,6 +71,47 @@ public class PartyClientTimingTest {
                 true, true, false, false));
         assertFalse(PartyClient.readinessTransitionOpen(
                 false, false, false, false));
+    }
+
+    @Test
+    public void readyEchoesCurrentStateAndPreparationGeneration() {
+        JSONObject fields = PartyClient.readyFields(
+                "party-1", 12, 34, -1);
+
+        assertEquals("party-1", fields.getString("partyId"));
+        assertEquals(12, fields.getLong("stateVersion"));
+        assertEquals(34, fields.getLong("playbackGeneration"));
+        assertEquals(0, fields.getLong("bufferAheadMs"));
+    }
+
+    @Test
+    public void heartbeatStartsOnlyAfterReadinessHandshake() {
+        assertFalse(PartyClient.canSendHeartbeat(false, null));
+        assertFalse(PartyClient.canSendHeartbeat(false, "PAUSED"));
+        assertTrue(PartyClient.canSendHeartbeat(true, "PAUSED"));
+        assertTrue(PartyClient.canSendHeartbeat(false, "STOPPED"));
+    }
+
+    @Test
+    public void notPreparedIsTransientOnlyDuringPreparation() {
+        assertTrue(PartyClient.isTransientNotPrepared(
+                "NOT_PREPARED", true, "PREPARING"));
+        assertTrue(PartyClient.isTransientNotPrepared(
+                "NOT_PREPARED", false, "PREPARING"));
+        assertFalse(PartyClient.isTransientNotPrepared(
+                "NOT_PREPARED", false, "READYING"));
+        assertFalse(PartyClient.isTransientNotPrepared(
+                "NOT_READY", true, "PREPARING"));
+    }
+
+    @Test
+    public void readinessRequiresPreparedAndActivatedPlayback() {
+        assertTrue(PartyClient.isActivationReady(new PartyPlaybackAdapter.Observation(
+                1, 2, 3, 4, PartyPlaybackAdapter.PlaybackState.PAUSED,
+                true, true, 50)));
+        assertFalse(PartyClient.isActivationReady(new PartyPlaybackAdapter.Observation(
+                1, 2, 3, 4, PartyPlaybackAdapter.PlaybackState.PAUSED,
+                true, false, 50)));
     }
 
     @Test

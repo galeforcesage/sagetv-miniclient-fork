@@ -378,6 +378,23 @@ public class NavigationFragment extends DialogFragment
                         Toast.makeText(getActivity(), R.string.party_no_media,
                                 Toast.LENGTH_LONG).show();
                     }
+                    else if (state != null
+                            && ("ERROR".equals(state.status)
+                                    || "PREPARATION_FAILED".equals(state.status))
+                            && state.errorCode != null)
+                    {
+                        String detail = state.preparationWatchCode >= 0
+                                ? state.errorCode + " (watchCode="
+                                        + state.preparationWatchCode + ")"
+                                : state.errorCode;
+                        if (!detail.equals(lastPartyError))
+                        {
+                            lastPartyError = detail;
+                            Toast.makeText(getActivity(),
+                                    getString(R.string.party_error, detail),
+                                    Toast.LENGTH_LONG).show();
+                        }
+                    }
                     else if (state == null || state.errorCode == null)
                     {
                         lastPartyError = null;
@@ -486,14 +503,14 @@ public class NavigationFragment extends DialogFragment
                                 String action = actions.get(which);
                                 if (action.startsWith("Start Party"))
                                 {
-                                    if (!party.hasActivePlayback())
+                                    if (!party.createCurrent(
+                                            action.endsWith("Current Position")
+                                                    ? "CURRENT_POSITION"
+                                                    : "BEGINNING"))
                                     {
                                         Toast.makeText(getActivity(), R.string.party_no_media,
                                                 Toast.LENGTH_LONG).show();
-                                        return;
                                     }
-                                    party.createCurrent(action.endsWith("Current Position")
-                                            ? "CURRENT_POSITION" : "BEGINNING");
                                 }
                                 else
                                 {

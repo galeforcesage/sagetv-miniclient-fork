@@ -53,6 +53,8 @@ import sagex.miniclient.android.media.CodecCapabilityDetector;
 import sagex.miniclient.android.ui.AndroidUIController;
 import sagex.miniclient.android.util.Logger;
 import sagex.miniclient.android.video.BaseMediaPlayerImpl;
+import sagex.miniclient.android.video.PartyCommandExecutor;
+import sagex.miniclient.party.PartyPlaybackAdapter;
 import sagex.miniclient.android.video.MediaSessionCallbackHandler;
 import sagex.miniclient.android.video.PlaybackTelemetry;
 import sagex.miniclient.android.middleware.TrickplayController;
@@ -94,6 +96,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     private long freezeDiagBufferingStartMs = -1;
     private static final long PARTY_BUFFERING_CONFIRM_MS = 1_000;
     private long partyBufferingStartedAtMs = -1;
+    private volatile boolean partyFirstFrameRendered;
     private final Handler partyHandler = new Handler(android.os.Looper.getMainLooper());
     private final Runnable partyBufferingStart = new Runnable()
     {
@@ -1666,6 +1669,16 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             }
 
             @Override
+            public void onRenderedFirstFrame()
+            {
+                if (!partyFirstFrameRendered)
+                {
+                    partyFirstFrameRendered = true;
+                    notifyPartyReadinessChanged();
+                }
+            }
+
+            @Override
             public void onIsLoadingChanged(boolean isLoading)
             {
                 if (VerboseLogging.FREEZE_DIAG)
@@ -2317,20 +2330,106 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
         mediaSession.setMetadata(metaDataBuilder.build());
     }
 
-    @Override
-    protected boolean seekForParty(final long positionMs)
+    protected static boolean shouldSeekLocallyForParty(boolean pushMode)
     {
-        if (player == null || pushMode) return false;
+        return BaseMediaPlayerImpl.shouldSeekLocallyForParty(pushMode);
+    }
+
+    @Override
+    public void executePartyCommand(
+            final PartyPlaybackAdapter.ScheduledCommand command,
+            final PartyPlaybackAdapter.ExecutionCallback callback)
+    {
+        if (!playerReady || player == null || command == null)
+        {
+            if (callback != null) callback.onComplete(false);
+            return;
+        }
         context.runOnUiThread(new Runnable()
         {
-            @Override public void run()
+            @Override
+            public void run()
             {
-                if (player == null) return;
-                player.setSeekParameters(SeekParameters.EXACT);
-                seek(positionMs);
+                PartyCommandExecutor.execute(new PartyCommandExecutor.Steps()
+                {
+                    @Override
+                    public boolean seek()
+                    {
+                        if (!playerReady || player == null) return false;
+                        if (command.targetPositionMs < 0) return true;
+                        if (shouldSeekLocallyForParty(pushMode))
+                        {
+                            partyFirstFrameRendered = false;
+                            player.setSeekParameters(SeekParameters.EXACT);
+                            player.seekTo(command.targetPositionMs);
+                        }
+                        else
+                        {
+                            if (trickplayController == null) return false;
+                            trickplayController.installAuthoritativePosition(
+                                    command.targetPositionMs);
+                        }
+                        return true;
+                    }
+
+                    @Override
+                    public void applyState()
+                    {
+                        if (command.targetState
+                                == PartyPlaybackAdapter.PlaybackState.PLAYING)
+                        {
+                            Exo2MediaPlayerImpl.super.play();
+                            ExoStart();
+                        }
+                        else if (command.targetState
+                                == PartyPlaybackAdapter.PlaybackState.PAUSED)
+                        {
+                            Exo2MediaPlayerImpl.super.pause();
+                            ExoPause();
+                        }
+                    }
+
+                    @Override
+                    public void applyHold()
+                    {
+                        boolean hold = command.targetState
+                                == PartyPlaybackAdapter.PlaybackState.PAUSED;
+                        setPartyHoldState(hold);
+                        player.setVolume(hold ? 0.0f : 1.0f);
+                    }
+                }, callback, new PartyCommandExecutor.FailureHandler()
+                {
+                    @Override
+                    public void onFailure(Throwable failure)
+                    {
+                        log.logError("Exo Party command execution failed", failure);
+                    }
+                });
             }
         });
-        return true;
+    }
+
+    @Override
+    public void resetPartyReadiness()
+    {
+        partyFirstFrameRendered = false;
+        super.resetPartyReadiness();
+    }
+
+    @Override
+    protected boolean isPartyPlaybackActivated()
+    {
+        if (partyFirstFrameRendered) return true;
+        ExoPlayer current = player;
+        if (!playerReady || current == null) return false;
+        boolean audioSelected = false;
+        for (Tracks.Group group : current.getCurrentTracks().getGroups())
+        {
+            if (!group.isSelected()) continue;
+            if (group.getType() == C.TRACK_TYPE_VIDEO) return false;
+            if (group.getType() == C.TRACK_TYPE_AUDIO) audioSelected = true;
+        }
+        return audioSelected;
     }
 
     @Override

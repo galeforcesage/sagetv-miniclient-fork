@@ -5,6 +5,7 @@
     <string name="party_no_media">Start playback before creating a Party.</string>
     <string name="party_join_code">Enter three-digit Party code</string>
     <string name="party_local_stop">Stopped locally. Prepare again to resume Party playback.</string>
+    <string name="party_error">Party error: %1$s</string>
 
     <string name="app_name">SageTV MiniClient</string>
 
