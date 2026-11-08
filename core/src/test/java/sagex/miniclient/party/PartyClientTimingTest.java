@@ -91,6 +91,16 @@ public class PartyClientTimingTest {
     }
 
     @Test
+    public void partyScopedCountersResetForNewMembership() {
+        assertEquals(0, PartyClient.membershipScopedCounter(
+                null, "new-party", 4));
+        assertEquals(0, PartyClient.membershipScopedCounter(
+                "old-party", "new-party", 4));
+        assertEquals(4, PartyClient.membershipScopedCounter(
+                "same-party", "same-party", 4));
+    }
+
+    @Test
     public void readyIsSentOnlyOncePerPreparationTransition() {
         assertTrue(PartyClient.readinessTransitionOpen(
                 true, false, false, false, false, false, false));

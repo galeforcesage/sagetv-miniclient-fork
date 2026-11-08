@@ -692,6 +692,10 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
             publishState();
             return;
         }
+        stateVersion = membershipScopedCounter(
+                partyId, newPartyId, stateVersion);
+        commandSeq = membershipScopedCounter(
+                partyId, newPartyId, commandSeq);
         partyId = newPartyId;
         participantId = newParticipantId;
         recoveryToken = newRecoveryToken;
@@ -1939,7 +1943,10 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         recoveryToken = null;
         snapshot = null;
         currentDelivery = null;
+        stateVersion = 0;
+        commandSeq = 0;
         joinCode = null;
+        joinCodeExpiresAtServerMonoMs = 0;
         invitedPartyId = null;
         invitedMediaFileId = null;
         connectedSessionHandles.clear();
@@ -1955,6 +1962,7 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         lastHeartbeatState = null;
         preparationLoaded = false;
         preparationPending = false;
+        preparationId = null;
         preparationPlaybackGeneration = -1;
         preparationWatchCode = -1;
         readyRequestPending = false;
@@ -1965,10 +1973,21 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         mediaWindow.clear();
         resetClock();
         lastClockModelAtMs = -1;
+        pendingClockDirective = null;
+        pendingClockCorrection = false;
         pendingAction = null;
+        pendingActionGeneration = 0;
         clockBarrierRetryRequestId = null;
         status = terminalStatus;
         publishState();
+    }
+
+    static long membershipScopedCounter(String currentPartyId,
+                                        String incomingPartyId,
+                                        long currentValue) {
+        return currentPartyId != null
+                && currentPartyId.equals(incomingPartyId)
+                ? currentValue : 0;
     }
 
     private PendingRequest enqueueRequest(String type, JSONObject fields,
