@@ -937,7 +937,8 @@ public class MediaCmd
      */
     private void classifyPullTimeline(String effectiveDeliveryHint)
     {
-        if (effectiveDeliveryHint != null && effectiveDeliveryHint.startsWith("pull-xcode:"))
+        if (LocalEnhancementContract.pullXcodeSetupValue(
+                effectiveDeliveryHint) != null)
         {
             pullTimeline = PullTimeline.REBASED_XCODE;
             long originMs = (pendingSeekTargetMs >= 0) ? pendingSeekTargetMs : 0;

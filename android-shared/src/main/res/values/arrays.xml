@@ -2,14 +2,16 @@
 <resources>
     <string-array name="entries_quality_hint_preference">
         <item>Auto (recommended)</item>
-        <item>Always - force 4K</item>
-        <item>Never - save bandwidth</item>
+        <item>Always - server upscale</item>
+        <item>AI only - no standard fallback</item>
+        <item>Never - source resolution</item>
     </string-array>
 
     <string-array name="entryvalues_quality_hint_preference">
         <item>auto</item>
-        <item>quality</item>
-        <item>savings</item>
+        <item>always</item>
+        <item>ai_only</item>
+        <item>never</item>
     </string-array>
 
     <string-array name="entries_list_loglevels_preference">

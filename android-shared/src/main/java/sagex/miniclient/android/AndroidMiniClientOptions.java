@@ -26,6 +26,7 @@ import java.util.Set;
 import java.util.TreeSet;
 
 import sagex.miniclient.IBus;
+import sagex.miniclient.LocalEnhancementContract;
 import sagex.miniclient.MiniClient;
 import sagex.miniclient.MiniClientConnection;
 import sagex.miniclient.MiniClientOptions;
@@ -67,6 +68,14 @@ public class AndroidMiniClientOptions implements MiniClientOptions {
         this.isTOUCH = !isTV;
         this.advancedAspects=true;
         this.context = ctx;
+        String enhancementPolicy = prefs.getString(
+                PrefStore.Keys.quality_hint_mode, "auto");
+        String normalizedPolicy =
+                LocalEnhancementContract.normalizePolicy(enhancementPolicy);
+        if (!normalizedPolicy.equals(enhancementPolicy))
+        {
+            prefs.setString(PrefStore.Keys.quality_hint_mode, normalizedPolicy);
+        }
     }
 
     @Override
@@ -464,6 +473,19 @@ public class AndroidMiniClientOptions implements MiniClientOptions {
             return "BUDGET_PHONE";
 
         return "UNKNOWN";
+    }
+
+    @Override
+    public String getLocalEnhancementCapability(String sinkResolution)
+    {
+        return LocalEnhancementContract.classifyAndroidCapability(
+                getDeviceClass(), sinkResolution);
+    }
+
+    @Override
+    public String getLocalEnhancementStatus(String capability)
+    {
+        return LocalEnhancementContract.availableStatus(capability);
     }
 
     @Override

@@ -373,8 +373,8 @@ public interface PrefStore
          *                             sink is a pure MEASUREMENT and is now always
          *                             reported when measurable, so there is no
          *                             report/suppress gate. The user's Auto /
-         *                             Always / Never enhancement preference moved
-         *                             to {@link #quality_hint_mode}. Key retained
+         *                             enhancement policy moved to
+         *                             {@link #quality_hint_mode}. Key retained
          *                             only so any persisted value is ignored
          *                             cleanly; not read anywhere.
          */
@@ -458,24 +458,18 @@ public interface PrefStore
         String auto_move_to_tv = "auto_move_to_tv";
 
         /**
-         * NG 4K contract: local-enhancement policy advertised via
-         * {@code LOCAL_ENHANCEMENT}. DEPRECATED as a user pref: the single
-         * Never/Auto/Always control ({@link #quality_hint_mode}) now drives the
-         * advertised preference (Always -> {@code pref=server}, else
-         * {@code pref=auto}), and status is always {@code none} because this fork
-         * runs no upscaler. Key retained only so any persisted value is ignored
-         * cleanly; not read anywhere.
+         * Legacy local-enhancement preference key. The canonical user policy now
+         * lives in {@link #quality_hint_mode}; this key remains ignored.
          */
         @Deprecated
         String local_enhancement_mode = "local_enhancement_mode";
 
         /**
-         * NG 4K contract §2.5 + §7.3: coarse quality/bandwidth hint advertised
-         * via {@code QUALITY_HINT}, and the home of the user's Auto / Always /
-         * Never enhancement preference (the sink itself is a measurement and no
-         * longer carries intent). Values: {@code auto} (server decides),
-         * {@code quality} (prefer enhancement), {@code savings} (prefer bandwidth,
-         * e.g. metered/battery). Advisory today. Default {@code auto}.
+         * SageTV-NG enhancement policy advertised through
+         * {@code LOCAL_ENHANCEMENT.pref}. Values: {@code auto},
+         * {@code always}, {@code ai_only}, and {@code never}. Older persisted
+         * {@code quality}/{@code savings} values are migrated by the platform.
+         * {@code QUALITY_HINT} remains an advisory projection of this policy.
          */
         String quality_hint_mode = "quality_hint_mode";
     }

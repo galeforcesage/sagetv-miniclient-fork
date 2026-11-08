@@ -296,12 +296,6 @@ public class MiniClientConnection implements SageTVInputCallback
     // is ever assumed.
     public static volatile boolean displaySinkV1Negotiated = false;
 
-    // DEBUG force-4K sink reported when quality_hint_mode="quality" (the "Always"
-    // setting). Manual escape hatch for a large external display the client failed
-    // to auto-detect: forces the server to clamp enhancement to 2160p. See the
-    // DISPLAY_SINK_RESOLUTION GetProperty branch.
-    private static final String FORCE_4K_SINK_RESOLUTION = "3840x2160";
-
     // Playback Surface capability model (Protocol 2.1): negotiated flag. Set TRUE
     // only when the server queries PLAYBACK_SURFACES in the NG round. Legacy
     // servers never query it, so it stays FALSE and the server keeps its legacy
@@ -1281,46 +1275,11 @@ public class MiniClientConnection implements SageTVInputCallback
         return !isLegacyServerCompat();
     }
 
-    /**
-     * Normalizes the user's Never/Auto/Always 4K-enhancement control (persisted
-     * in {@code quality_hint_mode}) to the canonical {@code QUALITY_HINT} wire
-     * value. Never -> {@code savings}, Always -> {@code quality}, everything else
-     * (including unset) -> {@code auto}.
-     */
-    private static String normalizeQualityHint(String raw)
+    private String effectiveEnhancementPolicy()
     {
-        String hint = (raw == null) ? "" : raw.trim().toLowerCase();
-        if ("quality".equals(hint) || "savings".equals(hint)) return hint;
-        return "auto";
-    }
-
-    /**
-     * The effective 4K-enhancement hint to put ON THE WIRE for the current
-     * session, computed at send time only. This NEVER mutates the user's stored
-     * {@code quality_hint_mode} checkbox (Auto/Never/Always) &mdash; it just
-     * derives what we advertise right now.
-     *
-     * <p>Policy: on a mobile/phone-flavor client whose sole output is its small
-     * built-in panel (no external HDMI/cast display attached &mdash; see
-     * {@link UIRenderer#isLocalOnlyMobilePanel()}), the user's <b>Auto</b> is
-     * collapsed to the hard opt-out <b>savings</b> ("Never"), because sub-panel
-     * upscaling costs bandwidth/thermal with no perceptual benefit on a phone
-     * screen. <b>Never</b> and <b>Always</b> are passed through untouched, and the
-     * user can still force enhancement with Always. When an external display is
-     * attached the honest sink is that big panel, so true Auto is restored. Online
-     * TV/box clients and legacy/non-Android renderers are unaffected (the bridge
-     * returns {@code false}). Re-evaluated on every server query, so an HDMI
-     * hot-plug flips the policy within one renegotiation.</p>
-     */
-    private String effectiveQualityHint()
-    {
-        String raw = normalizeQualityHint(client.properties()
-                .getString(PrefStore.Keys.quality_hint_mode, "auto"));
-        if ("auto".equals(raw) && uiRenderer != null && uiRenderer.isLocalOnlyMobilePanel())
-        {
-            return "savings";
-        }
-        return raw;
+        return LocalEnhancementContract.normalizePolicy(client.properties()
+                .getString(PrefStore.Keys.quality_hint_mode,
+                        LocalEnhancementContract.POLICY_AUTO));
     }
 
     private String buildVideoConstraintCsv(List<String> codecs, String deviceClass, boolean exoPath)
@@ -2527,43 +2486,14 @@ public class MiniClientConnection implements SageTVInputCallback
                     }
                     else if ("DISPLAY_SINK_RESOLUTION".equals(propName))
                     {
-                        // NG Server Video Enhancement (4K upscale) contract §2.1
-                        // + §7.3. Normally the sink is a MEASUREMENT: report the
-                        // TRUE physical resolution of the display we render on
-                        // (never fabricated), on every device class, because the
-                        // value is itself the upscale ceiling — the server clamps
-                        // the target to min(tier, this). Empty means UNKNOWN
-                        // (fail-closed), read by the server as an abstention.
-                        // EXCEPTION: the user's "Always" setting is a deliberate
-                        // DEBUG force-4K override (see the if-block below) for
-                        // undetected external displays — it reports 3840x2160 so
-                        // the server targets 2160p. Auto/Never stay honest.
+                        // The sink is always an honest physical measurement.
+                        // Enhancement policy belongs only in LOCAL_ENHANCEMENT.
                         if (client.properties().getBoolean(PrefStore.Keys.cap_display_sink_v1, true)
                                 && uiRenderer != null)
                         {
-                            // DEBUG force-4K escape hatch: the "Always" setting
-                            // (quality_hint_mode=quality) is a manual override for
-                            // when a large external display IS attached but the
-                            // client could not auto-detect it (or read it wrong).
-                            // In that mode we report a synthetic 3840x2160 sink so
-                            // the server's panel clamp targets 2160p instead of the
-                            // built-in phone panel. Auto/Never always report the
-                            // honest measured panel (a pure measurement).
-                            String sinkHint = effectiveQualityHint();
-                            String honestSink = uiRenderer.getDisplaySinkResolution();
-                            if (honestSink == null) honestSink = "";
-                            if ("quality".equals(sinkHint))
-                            {
-                                propVal = FORCE_4K_SINK_RESOLUTION;
-                                log.logInfo("DISPLAY_SINK_RESOLUTION -> '" + propVal
-                                        + "' (Always/force-4K debug override; honest sink='"
-                                        + honestSink + "')");
-                            }
-                            else
-                            {
-                                propVal = honestSink;
-                                log.logInfo("DISPLAY_SINK_RESOLUTION -> '" + propVal + "'");
-                            }
+                            propVal = uiRenderer.getDisplaySinkResolution();
+                            if (propVal == null) propVal = "";
+                            log.logInfo("DISPLAY_SINK_RESOLUTION -> '" + propVal + "'");
                             displaySinkV1Negotiated = true;
                         }
                         else
@@ -2604,49 +2534,28 @@ public class MiniClientConnection implements SageTVInputCallback
                     }
                     else if ("LOCAL_ENHANCEMENT".equals(propName))
                     {
-                        // NG 4K contract §2.4 + §7.3. This fork runs no local
-                        // upscaler, so status is ALWAYS none (honest; we never send
-                        // status=active, which would tell the server to back off).
-                        // The single Never/Auto/Always control (quality_hint_mode)
-                        // drives the preference:
-                        //  * Always (quality) -> pref=server, an affirmative "please
-                        //    enhance server-side" request that pairs with the honest
-                        //    sink + per-codec ceilings we already send every session.
-                        //  * Never (savings) -> pref=local. This is the ONLY hard
-                        //    opt-out the server's EnhancementAdvisor actually honors:
-                        //    it does NOT read QUALITY_HINT (savings is invisible to
-                        //    the advise() decision), and on a 4K TV the honest sink
-                        //    we report is 3840x2160, which would otherwise clamp the
-                        //    server straight to ENHANCE_2160P — making Never
-                        //    byte-identical to Auto. pref=local trips the advisor's
-                        //    CLIENT_PREFERS_LOCAL verdict (a slight white lie for a
-                        //    fork with no local upscaler, but it is the documented
-                        //    lever that reliably returns tier=NONE and is not subject
-                        //    to the server's override-local flag).
-                        //  * Auto -> pref=auto, let the server decide from the sink
-                        //    and per-codec ceilings.
-                        String hint = effectiveQualityHint();
-                        String pref = "quality".equals(hint) ? "server"
-                                : "savings".equals(hint) ? "local"
-                                : "auto";
-                        propVal = "pref=" + pref + ";status=none";
+                        String policy = effectiveEnhancementPolicy();
+                        String sink = uiRenderer == null ? ""
+                                : uiRenderer.getDisplaySinkResolution();
+                        MiniClientOptions options = client.options();
+                        String capability = options == null
+                                ? LocalEnhancementContract.CAP_NONE
+                                : options.getLocalEnhancementCapability(sink);
+                        String status = options == null
+                                ? LocalEnhancementContract.STATUS_NONE
+                                : options.getLocalEnhancementStatus(capability);
+                        propVal = LocalEnhancementContract.build(
+                                policy, capability, status);
                         log.logInfo("LOCAL_ENHANCEMENT -> '" + propVal + "'");
                     }
                     else if ("QUALITY_HINT".equals(propName))
                     {
-                        // NG 4K contract §2.5 + §7.3: advisory quality/bandwidth
-                        // hint. auto -> server decides; quality -> user wants
-                        // enhancement even where the server might otherwise decline
-                        // (§7.2 override); savings -> user opts out for
-                        // bandwidth/metered/thermal reasons. NOTE: QUALITY_HINT is
-                        // advisory only — the server's EnhancementAdvisor does not
-                        // read it, so this is NOT the enforcement point. The hard
-                        // Never opt-out is carried by LOCAL_ENHANCEMENT pref=local
-                        // (above), which is the lever the advisor actually honors.
-                        // We still send the hint so a future server that consults it
-                        // gets the user's intent.
-                        String hint = effectiveQualityHint();
-                        propVal = hint;
+                        // Legacy advisory projection. The authoritative policy is
+                        // LOCAL_ENHANCEMENT.pref; this property preserves
+                        // compatibility with servers that still consult the older
+                        // quality/bandwidth hint.
+                        propVal = LocalEnhancementContract.qualityHint(
+                                effectiveEnhancementPolicy());
                         log.logInfo("QUALITY_HINT -> '" + propVal + "'");
                     }
                     else if ("SURFACE_CAPS_REVISION".equals(propName))
@@ -2931,8 +2840,8 @@ public class MiniClientConnection implements SageTVInputCallback
                                 // mutate this list based on the quality_hint_mode
                                 // (enhancement) setting — that was a server-steering
                                 // OVERRIDE, not an honest capability statement, and it
-                                // made the PS advertisement differ between Never and
-                                // Auto/Always for no capability reason.
+                                // made the PS advertisement differ between policies
+                                // for no capability reason.
                                 //
                                 // HEVC-in-PS avoidance is now handled coherently:
                                 // Exo honestly reports no PS support (per-player

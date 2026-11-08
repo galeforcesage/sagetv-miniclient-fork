@@ -175,6 +175,16 @@ public interface MiniClientOptions {
      */
     default String getDeviceClass() { return "UNKNOWN"; }
 
+    default String getLocalEnhancementCapability(String sinkResolution)
+    {
+        return LocalEnhancementContract.CAP_NONE;
+    }
+
+    default String getLocalEnhancementStatus(String capability)
+    {
+        return LocalEnhancementContract.STATUS_NONE;
+    }
+
     default PartyPlaybackAdapter createPartyPlaybackAdapter(MiniClient client)
     {
         return PartyPlaybackAdapter.UNSUPPORTED;
