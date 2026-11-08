@@ -20,6 +20,19 @@ public final class PartyCommandExecutor
     {
     }
 
+    public static boolean shouldPrimePausedFrame(boolean presentationPending,
+                                                 boolean partyHold,
+                                                 int amount)
+    {
+        return presentationPending && partyHold && amount > 0;
+    }
+
+    public static boolean shouldAcceptUnprimedFrame(
+            boolean presentationPending, boolean partyHold)
+    {
+        return presentationPending && !partyHold;
+    }
+
     public static void execute(Steps steps,
             PartyPlaybackAdapter.ExecutionCallback callback,
             FailureHandler failureHandler)

@@ -80,4 +80,43 @@ public class IjkPartyTrackActivationTest
         assertTrue(IjkPartyTrackActivation.isAudioRenderingEvent(
                 IMediaPlayer.MEDIA_INFO_AUDIO_SEEK_RENDERING_START));
     }
+
+    @Test
+    public void changedOutputClockReactivatesPushGeneration()
+    {
+        assertTrue(IjkPartyTrackActivation.hasPresentedAfterReset(64_075, 0));
+        assertTrue(IjkPartyTrackActivation.hasPresentedAfterReset(0, 33));
+        assertFalse(IjkPartyTrackActivation.hasPresentedAfterReset(100, 110));
+        assertFalse(IjkPartyTrackActivation.hasPresentedAfterReset(-1, 100));
+    }
+
+    @Test
+    public void decodedFrameAdvanceConfirmsNewVideoGeneration()
+    {
+        assertTrue(IjkPartyTrackActivation.hasDecodedFrameAfterReset(100, 101));
+        assertFalse(IjkPartyTrackActivation.hasDecodedFrameAfterReset(100, 100));
+        assertFalse(IjkPartyTrackActivation.hasDecodedFrameAfterReset(101, 100));
+        assertFalse(IjkPartyTrackActivation.hasDecodedFrameAfterReset(-1, 1));
+    }
+
+    @Test
+    public void pausedPresentationRequiresPostRepositionFrameStep()
+    {
+        assertFalse(IjkPartyTrackActivation.canAcceptPresentation(true, false));
+        assertTrue(IjkPartyTrackActivation.canAcceptPresentation(true, true));
+        assertTrue(IjkPartyTrackActivation.canAcceptPresentation(false, false));
+    }
+
+    @Test
+    public void pausedPrimeRetriesWhenBufferingFinishesAfterTimeout()
+    {
+        assertTrue(IjkPartyTrackActivation.shouldRetryPausedPrime(
+                true, true, false));
+        assertFalse(IjkPartyTrackActivation.shouldRetryPausedPrime(
+                true, true, true));
+        assertFalse(IjkPartyTrackActivation.shouldRetryPausedPrime(
+                false, true, false));
+        assertFalse(IjkPartyTrackActivation.shouldRetryPausedPrime(
+                true, false, false));
+    }
 }

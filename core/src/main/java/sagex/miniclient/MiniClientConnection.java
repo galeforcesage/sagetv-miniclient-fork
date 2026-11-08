@@ -1507,7 +1507,14 @@ public class MiniClientConnection implements SageTVInputCallback
         playbackAuthorityGeneration++;
         log.logInfo("PARTY playback authority invalidated generation="
                 + playbackAuthorityGeneration + " reason=" + reason);
-        partyClient.onTransportGenerationChanged(capabilitySessionChanged);
+        if (capabilitySessionChanged)
+        {
+            partyClient.onTransportGenerationChanged(true);
+        }
+        else
+        {
+            partyClient.onPlaybackGenerationChanged();
+        }
     }
 
     public void close() {

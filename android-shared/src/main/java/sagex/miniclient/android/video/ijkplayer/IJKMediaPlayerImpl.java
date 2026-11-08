@@ -15,6 +15,7 @@ import sagex.miniclient.android.ui.AndroidUIController;
 import sagex.miniclient.android.util.AudioUtil;
 import sagex.miniclient.android.video.BaseMediaPlayerImpl;
 import sagex.miniclient.android.video.MediaSessionCallbackHandler;
+import sagex.miniclient.android.video.PartyCommandExecutor;
 import sagex.miniclient.android.video.PlaybackTelemetry;
 import sagex.miniclient.android.middleware.TrickplayController;
 import sagex.miniclient.android.middleware.TransportIjkMediaSource;
@@ -58,12 +59,91 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     boolean firstFrameRendered = false;
     private volatile boolean audioRenderingStarted;
     private volatile boolean videoRenderingStarted;
+    private volatile long partyActivationProbePositionMs = -1;
+    private volatile long partyActivationProbeDecodedFrames = -1;
+    private volatile long lastPartyPresentedMonoMs = -1;
+    private volatile long lastPartyPresentedPositionMs = -1;
+    private volatile boolean partyPausedFrameStepArmed;
+    private volatile boolean partyPausedFramePrimeRequested;
+    private final Runnable partyActivationPoll = new Runnable()
+    {
+        @Override public void run()
+        {
+            IMediaPlayer current = player;
+            if (current == null || audioRenderingStarted || videoRenderingStarted)
+            {
+                return;
+            }
+            if (!IjkPartyTrackActivation.canAcceptPresentation(
+                    isPartyHold() && lastPartyPresentedMonoMs < 0,
+                    partyPausedFrameStepArmed))
+            {
+                return;
+            }
+            long positionMs;
+            try
+            {
+                positionMs = current.getCurrentPosition();
+            }
+            catch (Throwable ignored)
+            {
+                positionMs = -1;
+            }
+            if (current instanceof IjkMediaPlayer)
+            {
+                IjkMediaPlayer ijk = (IjkMediaPlayer) current;
+                boolean postResetFrame = firstFrameRendered
+                        || IjkPartyTrackActivation.hasDecodedFrameAfterReset(
+                                partyActivationProbeDecodedFrames,
+                                ijk.getVideoDecodedFrames());
+                if (!postResetFrame
+                        || !IjkPartyTrackActivation.hasPresentedAfterReset(
+                                partyActivationProbePositionMs, positionMs))
+                {
+                    partyHandler.postDelayed(this, 50);
+                    return;
+                }
+                audioRenderingStarted = isActiveTrack(
+                        ijk, IjkTrackInfo.MEDIA_TRACK_TYPE_AUDIO);
+                videoRenderingStarted = isActiveTrack(
+                        ijk, IjkTrackInfo.MEDIA_TRACK_TYPE_VIDEO);
+                recordPartyPresentedSample(positionMs);
+                partyActivationProbePositionMs = -1;
+                partyActivationProbeDecodedFrames = -1;
+                pauseAfterGenerationRebuildIfActivated();
+                notifyPartyReadinessChanged();
+                return;
+            }
+            partyHandler.postDelayed(this, 50);
+        }
+    };
     private volatile long partyBufferingProbePositionMs = -1;
     private volatile long partyBufferingProbeGeneration = -1;
     private volatile long partyBufferingProbeStartedAtMs = -1;
-    private static final long PARTY_BUFFERING_CONFIRM_MS = 1_000;
+    private static final long PARTY_BUFFERING_CONFIRM_MS = 250;
+    private static final long PARTY_PAUSED_FRAME_PRIME_TIMEOUT_MS = 1_000;
     private final android.os.Handler partyHandler =
             new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable partyPausedFramePrimeTimeout = new Runnable()
+    {
+        @Override public void run()
+        {
+            IMediaPlayer current = player;
+            if (current == null || !isPartyHold()
+                    || lastPartyPresentedMonoMs >= 0
+                    || !current.isPlaying())
+            {
+                return;
+            }
+            pauseAfterGenerationRebuild = false;
+            partyPausedFramePrimeRequested = false;
+            current.pause();
+            state = PAUSE_STATE;
+            updateMediaSessionPlaybackState(current.getCurrentPosition());
+            log.info("Party paused frame prime bounded after {}ms",
+                    PARTY_PAUSED_FRAME_PRIME_TIMEOUT_MS);
+        }
+    };
     private final Runnable partyBufferingStart = new Runnable()
     {
         @Override public void run()
@@ -126,6 +206,7 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     {
         super.cancelPartyScheduledAction();
         partyHandler.removeCallbacks(partyBufferingStart);
+        partyHandler.removeCallbacks(partyPausedFramePrimeTimeout);
         partyBufferingProbePositionMs = -1;
         partyBufferingProbeGeneration = -1;
         partyBufferingProbeStartedAtMs = -1;
@@ -174,6 +255,7 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
             return;
         }
         pauseAfterGenerationRebuild = false;
+        partyHandler.removeCallbacks(partyPausedFramePrimeTimeout);
         player.pause();
         state = PAUSE_STATE;
         updateMediaSessionPlaybackState(player.getCurrentPosition());
@@ -355,6 +437,23 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
         boolean activated = IjkPartyTrackActivation.hasRendered(
                 audioActive, videoActive,
                 audioRenderingStarted, videoRenderingStarted);
+        if (!activated && firstFrameRendered
+                && IjkPartyTrackActivation.hasPresentedAfterReset(
+                        partyActivationProbePositionMs,
+                        base.renderedPositionMs))
+        {
+            audioRenderingStarted = audioActive;
+            videoRenderingStarted = videoActive;
+            recordPartyPresentedSample(base.renderedPositionMs);
+            partyActivationProbePositionMs = -1;
+            activated = IjkPartyTrackActivation.hasRendered(
+                    audioActive, videoActive,
+                    audioRenderingStarted, videoRenderingStarted);
+            if (activated)
+            {
+                notifyPartyReadinessChanged();
+            }
+        }
         long bufferAheadMs = -1;
         if (activated)
         {
@@ -379,6 +478,26 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                 base.renderedPositionMs,
                 bufferAheadMs, base.durationMs,
                 base.state, prepared, activated, base.precisionMs);
+    }
+
+    @Override
+    protected PresentedMediaSample getPresentedMediaSample()
+    {
+        long positionMs = lastPartyPresentedPositionMs;
+        long sampleMonoMs = lastPartyPresentedMonoMs;
+        if (positionMs >= 0 && sampleMonoMs >= 0)
+        {
+            return new PresentedMediaSample(sampleMonoMs, positionMs);
+        }
+        return super.getPresentedMediaSample();
+    }
+
+    private void recordPartyPresentedSample(long positionMs)
+    {
+        if (positionMs < 0) return;
+        lastPartyPresentedPositionMs = positionMs;
+        lastPartyPresentedMonoMs = android.os.SystemClock.elapsedRealtime();
+        partyPausedFramePrimeRequested = false;
     }
 
     @Override
@@ -412,9 +531,110 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
 
     private void resetPartyActivation()
     {
+        try
+        {
+            partyActivationProbePositionMs =
+                    player == null ? -1 : player.getCurrentPosition();
+            partyActivationProbeDecodedFrames =
+                    player instanceof IjkMediaPlayer
+                            ? ((IjkMediaPlayer) player).getVideoDecodedFrames()
+                            : -1;
+        }
+        catch (Throwable ignored)
+        {
+            partyActivationProbePositionMs = -1;
+            partyActivationProbeDecodedFrames = -1;
+        }
         audioRenderingStarted = false;
         videoRenderingStarted = false;
+        lastPartyPresentedMonoMs = -1;
+        lastPartyPresentedPositionMs = -1;
+        partyPausedFrameStepArmed = false;
         resetPartyReadiness();
+        partyHandler.removeCallbacks(partyActivationPoll);
+        partyHandler.post(partyActivationPoll);
+    }
+
+    @Override
+    protected void beginPartyPresentationGeneration()
+    {
+        resetPartyActivation();
+    }
+
+    @Override
+    protected void markHeldPartyFrameRevealed()
+    {
+        IMediaPlayer current = player;
+        if (current == null) return;
+        try
+        {
+            long positionMs = lastPartyPresentedPositionMs >= 0
+                    ? lastPartyPresentedPositionMs
+                    : current.getCurrentPosition();
+            recordPartyPresentedSample(positionMs);
+        }
+        catch (Throwable ignored)
+        {
+        }
+    }
+
+    @Override
+    protected boolean applySoftCorrection(
+            final PartyPlaybackAdapter.ScheduledCommand command)
+    {
+        final IMediaPlayer current = player;
+        if (current == null || command == null)
+        {
+            return false;
+        }
+        if (command.targetState
+                == PartyPlaybackAdapter.PlaybackState.PAUSED)
+        {
+            resetPartyActivation();
+            frameStep(1);
+            return true;
+        }
+        if (command.targetState
+                != PartyPlaybackAdapter.PlaybackState.PLAYING)
+        {
+            return false;
+        }
+        PartyPlaybackAdapter.Observation observation = getPartyObservation();
+        final long driftMs = command.targetPositionMs - observation.positionMs;
+        final long durationMs = softCorrectionDurationMs(
+                command.targetPositionMs, observation.positionMs);
+        resetPartyActivation();
+        if (durationMs == 0) return true;
+        if (driftMs < 0)
+        {
+            current.pause();
+            partyHandler.postDelayed(new Runnable()
+            {
+                @Override public void run()
+                {
+                    if (player == current && !isPartyHold())
+                    {
+                        current.start();
+                    }
+                }
+            }, durationMs);
+        }
+        else
+        {
+            final android.view.SurfaceHolder holder = resolveInitialVideoHolder();
+            current.setDisplay(null);
+            partyHandler.postDelayed(new Runnable()
+            {
+                @Override public void run()
+                {
+                    if (player == current)
+                    {
+                        current.setDisplay(holder);
+                    }
+                }
+            }, durationMs);
+        }
+        return true;
     }
 
     @Override
@@ -590,6 +810,65 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     }
 
     @Override
+    public void frameStep(final int amount)
+    {
+        final IMediaPlayer current = player;
+        if (current == null
+                || !PartyCommandExecutor.shouldPrimePausedFrame(
+                        lastPartyPresentedMonoMs < 0, isPartyHold(), amount))
+        {
+            return;
+        }
+        partyPausedFramePrimeRequested = true;
+        context.runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                if (player != current || !isPartyHold()
+                        || lastPartyPresentedMonoMs >= 0)
+                {
+                    return;
+                }
+                partyPausedFrameStepArmed = true;
+                firstFrameRendered = false;
+                audioRenderingStarted = false;
+                videoRenderingStarted = false;
+                lastPartyPresentedMonoMs = -1;
+                lastPartyPresentedPositionMs = -1;
+                try
+                {
+                    partyActivationProbePositionMs =
+                            current.getCurrentPosition();
+                    partyActivationProbeDecodedFrames =
+                            current instanceof IjkMediaPlayer
+                                    ? ((IjkMediaPlayer) current)
+                                            .getVideoDecodedFrames()
+                                    : -1;
+                }
+                catch (Throwable ignored)
+                {
+                    partyActivationProbePositionMs = -1;
+                    partyActivationProbeDecodedFrames = -1;
+                }
+                resetPartyReadiness();
+                partyHandler.removeCallbacks(partyActivationPoll);
+                partyHandler.post(partyActivationPoll);
+                pauseAfterGenerationRebuild = true;
+                current.setVolume(0.0f, 0.0f);
+                log.info("Priming one Party frame while paused");
+                if (playerReady && !current.isPlaying())
+                {
+                    current.start();
+                }
+                partyHandler.removeCallbacks(partyPausedFramePrimeTimeout);
+                partyHandler.postDelayed(partyPausedFramePrimeTimeout,
+                        PARTY_PAUSED_FRAME_PRIME_TIMEOUT_MS);
+            }
+        });
+    }
+
+    @Override
     public void play()
     {
         super.play();
@@ -611,6 +890,11 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     @Override
     protected void applyPartyHold(boolean hold)
     {
+        if (!hold)
+        {
+            partyPausedFramePrimeRequested = false;
+            partyPausedFrameStepArmed = false;
+        }
         IMediaPlayer current = player;
         if (current != null)
         {
@@ -954,11 +1238,31 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                         partyBufferingProbeGeneration = -1;
                         partyBufferingProbeStartedAtMs = -1;
                         setPartyBuffering(false);
+                        if (isPartyHold()
+                                && lastPartyPresentedMonoMs < 0
+                                && partyPausedFrameStepArmed
+                                && mp.isPlaying())
+                        {
+                            partyHandler.removeCallbacks(
+                                    partyPausedFramePrimeTimeout);
+                            partyHandler.postDelayed(
+                                    partyPausedFramePrimeTimeout,
+                                    PARTY_PAUSED_FRAME_PRIME_TIMEOUT_MS);
+                        }
                         if (stallStartedAtMs >= 0)
                         {
                             stalledDurationMs +=
                                     SystemClock.elapsedRealtime() - stallStartedAtMs;
                             stallStartedAtMs = -1;
+                        }
+                        if (IjkPartyTrackActivation.shouldRetryPausedPrime(
+                                isPartyHold()
+                                        && lastPartyPresentedMonoMs < 0,
+                                partyPausedFrameStepArmed,
+                                mp.isPlaying()))
+                        {
+                            log.info("Retrying Party paused frame prime after buffering");
+                            frameStep(1);
                         }
                     }
                     boolean videoRenderingEvent =
@@ -981,21 +1285,40 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                             }
                         }
                         firstFrameRendered = true;
-                        if (videoRenderingEvent && !videoRenderingStarted)
+                        boolean acceptPresentation =
+                                IjkPartyTrackActivation.canAcceptPresentation(
+                                        isPartyHold()
+                                                && lastPartyPresentedMonoMs < 0,
+                                        partyPausedFrameStepArmed);
+                        if (acceptPresentation)
                         {
-                            videoRenderingStarted = true;
-                            resetPartyReadiness();
+                            recordPartyPresentedSample(
+                                    player != null
+                                            ? player.getCurrentPosition() : -1);
+                            boolean readinessChanged = false;
+                            if (videoRenderingEvent && !videoRenderingStarted)
+                            {
+                                videoRenderingStarted = true;
+                                readinessChanged = true;
+                            }
+                            if (audioRenderingEvent && !audioRenderingStarted)
+                            {
+                                audioRenderingStarted = true;
+                                readinessChanged = true;
+                            }
+                            if (trickplayController != null
+                                    && trickplayController.isNativeAvailable()
+                                    && player != null)
+                            {
+                                trickplayController.onPlayerPosition(
+                                        player.getCurrentPosition());
+                            }
+                            pauseAfterGenerationRebuildIfActivated();
+                            if (readinessChanged)
+                            {
+                                resetPartyReadiness();
+                            }
                         }
-                        if (audioRenderingEvent && !audioRenderingStarted)
-                        {
-                            audioRenderingStarted = true;
-                            resetPartyReadiness();
-                        }
-                        if (trickplayController != null && trickplayController.isNativeAvailable() && player != null)
-                        {
-                            trickplayController.onPlayerPosition(player.getCurrentPosition());
-                        }
-                        pauseAfterGenerationRebuildIfActivated();
                     }
 
                     // Attach the client EQ once audio is actually rendering: only then has
@@ -1274,6 +1597,7 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                 log.info("We Missed a Seek for {}: player.isPlaying {}; State: {}; playerReader: {}", timeInMS, player.isPlaying(), state, playerReady);
             }
         }
+
         else
         {
             // In push mode, don't call player.seekTo() — the data source is a pipe
@@ -1284,6 +1608,23 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
             resumeTimeOffset = -1;
             resumeMode = false;
             logTime = -1;
+        }
+    }
+
+    @Override
+    public void seekTransport(long timeInMS, boolean preserveMediaTimeline)
+    {
+        if (preserveMediaTimeline)
+        {
+            resetPartyActivation();
+        }
+        super.seekTransport(timeInMS, preserveMediaTimeline);
+        if (preserveMediaTimeline
+                && partyPausedFramePrimeRequested
+                && isPartyHold()
+                && lastPartyPresentedMonoMs < 0)
+        {
+            frameStep(1);
         }
     }
 

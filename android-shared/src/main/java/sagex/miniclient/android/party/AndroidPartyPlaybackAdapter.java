@@ -33,7 +33,7 @@ public final class AndroidPartyPlaybackAdapter implements PartyPlaybackAdapter
     @Override
     public boolean supportsRequiredGuarantees()
     {
-        return true;
+        return BaseMediaPlayerImpl.supportsPartyFrameCover();
     }
 
     @Override
@@ -60,6 +60,18 @@ public final class AndroidPartyPlaybackAdapter implements PartyPlaybackAdapter
     }
 
     @Override
+    public void coverCurrentFrame(ExecutionCallback callback)
+    {
+        BaseMediaPlayerImpl<?, ?> player = player();
+        if (player == null)
+        {
+            if (callback != null) callback.onComplete(false);
+            return;
+        }
+        player.coverCurrentPartyFrame(callback);
+    }
+
+    @Override
     public void execute(ScheduledCommand command, ExecutionCallback callback)
     {
         BaseMediaPlayerImpl<?, ?> player = player();
@@ -69,6 +81,18 @@ public final class AndroidPartyPlaybackAdapter implements PartyPlaybackAdapter
             return;
         }
         player.executePartyCommand(command, callback);
+    }
+
+    @Override
+    public void reveal(ScheduledCommand command, ExecutionCallback callback)
+    {
+        BaseMediaPlayerImpl<?, ?> player = player();
+        if (player == null)
+        {
+            if (callback != null) callback.onComplete(false);
+            return;
+        }
+        player.revealPartyBarrier(command, callback);
     }
 
     @Override

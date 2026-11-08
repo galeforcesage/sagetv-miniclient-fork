@@ -18,7 +18,8 @@ public final class PartyProtocol {
             "PARTY_V1,PARTY_JOIN_CODE_V1,PARTY_MONOTONIC_V1,"
                     + "PARTY_SCHEDULED_V1,PARTY_HEARTBEAT_V1,"
                     + "PARTY_PLAYER_ADAPTER_V1,PARTY_LOCAL_STOP_V1,"
-                    + "PARTY_GROWING_MEDIA_V1";
+                    + "PARTY_GROWING_MEDIA_V1,PARTY_PRESENTED_FRAME_V1,"
+                    + "PARTY_ARMED_REVEAL_V1,PARTY_INVITATION_V1";
     public static final int SCHEMA_VERSION = 1;
     public static final int MAX_JSON_BYTES = 8192;
     public static final int MAX_RECEIVE_DEPTH = 5;
@@ -31,7 +32,8 @@ public final class PartyProtocol {
     private static final String[] IDENTIFIER_FIELDS = {
             "requestId", "serverEpoch", "sessionHandle", "sessionToken",
             "partyId", "participantId", "recoveryToken", "probeId",
-            "preparationId", "originParticipantId", "hostParticipantId"
+            "preparationId", "originParticipantId", "hostParticipantId",
+            "directiveId"
     };
 
     private PartyProtocol() {

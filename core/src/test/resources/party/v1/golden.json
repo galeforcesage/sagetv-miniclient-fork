@@ -184,6 +184,7 @@
     "serverMonoMs": 100200,
     "partyId": "party",
     "participantId": "host",
+    "directiveId": "initial-alignment-1",
     "stateVersion": 0,
     "commandSeq": 0,
     "reason": "INITIAL_ALIGNMENT",
@@ -192,15 +193,6 @@
     "targetState": "PAUSED",
     "targetRate": 1,
     "executeAtServerMonoMs": 100500
-  },
-  "readyAck": {
-    "schemaVersion": 1,
-    "type": "READY_ACK",
-    "requestId": "ready-repeat-1",
-    "serverMonoMs": 100300,
-    "partyId": "party",
-    "stateVersion": 0,
-    "commandSeq": 0
   },
   "action": {
     "schemaVersion": 1,
@@ -217,6 +209,7 @@
     "schemaVersion": 1,
     "type": "COMMAND",
     "partyId": "party",
+    "directiveId": "play-1-host",
     "stateVersion": 1,
     "commandSeq": 1,
     "cause": "PLAY",
@@ -226,7 +219,7 @@
     "executeAtServerMonoMs": 100750,
     "originParticipantId": "host"
   },
-  "ackExecuted": {
+  "ackFailed": {
     "schemaVersion": 1,
     "type": "ACK",
     "requestId": "ack-1",
@@ -234,10 +227,28 @@
     "serverEpoch": "epoch",
     "sessionToken": "session",
     "partyId": "party",
+    "directiveId": "play-1-host",
     "stateVersion": 1,
     "commandSeq": 1,
     "stage": "EXECUTED",
-    "success": true
+    "success": false
+  },
+  "ackPresented": {
+    "schemaVersion": 1,
+    "type": "ACK",
+    "requestId": "ack-2",
+    "requestSeq": 14,
+    "serverEpoch": "epoch",
+    "sessionToken": "session",
+    "partyId": "party",
+    "directiveId": "play-1-host",
+    "stateVersion": 1,
+    "commandSeq": 1,
+    "stage": "PRESENTED",
+    "success": true,
+    "sampleMonoMs": 100900,
+    "positionMs": 150,
+    "state": "PLAYING"
   },
   "heartbeat": {
     "schemaVersion": 1,

@@ -80,6 +80,7 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
     private int partyStreamEpoch = Integer.MIN_VALUE;
     private volatile boolean partyHold;
     private volatile boolean partyBuffering;
+    private final PartyFrameCover partyFrameCover;
 
     // this is mainly for testing... when we force a different UI aspect than what we really have
     private boolean uiAspectChanged = true;
@@ -117,6 +118,7 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
     public BaseMediaPlayerImpl(AndroidUIController activity, boolean createPlayerOnUI, boolean waitForPlayer)
     {
         this.context = activity;
+        this.partyFrameCover = new PartyFrameCover(activity);
         this.createPlayerOnUI = createPlayerOnUI;
         this.waitForPlayer = waitForPlayer;
         state = NO_STATE;
@@ -592,10 +594,13 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
 
     public PartyPlaybackAdapter.Observation getPartyObservation()
     {
-        long rendered = getRenderedPositionMillis();
+        PresentedMediaSample presented = getPresentedMediaSample();
+        long rendered = presented.positionMs;
         long buffered = getBufferedPositionMillis();
         long bufferAhead = rendered >= 0 && buffered >= rendered ? buffered - rendered : -1;
-        long nowMonoMs = android.os.SystemClock.elapsedRealtime();
+        long nowMonoMs = presented.sampleMonoMs >= 0
+                ? presented.sampleMonoMs
+                : android.os.SystemClock.elapsedRealtime();
         CanonicalMediaSample canonical;
         if (rendered >= 0 && trickplayController != null
                 && trickplayController.isNativeAvailable())
@@ -657,6 +662,25 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
         return getRenderedPositionMillis() >= 0;
     }
 
+    protected PresentedMediaSample getPresentedMediaSample()
+    {
+        return new PresentedMediaSample(
+                android.os.SystemClock.elapsedRealtime(),
+                getRenderedPositionMillis());
+    }
+
+    protected static final class PresentedMediaSample
+    {
+        final long sampleMonoMs;
+        final long positionMs;
+
+        public PresentedMediaSample(long sampleMonoMs, long positionMs)
+        {
+            this.sampleMonoMs = sampleMonoMs;
+            this.positionMs = positionMs;
+        }
+    }
+
     private static final class CanonicalMediaSample
     {
         final long sampleMonoMs;
@@ -692,11 +716,21 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
     public void executePartyCommand(final PartyPlaybackAdapter.ScheduledCommand command,
             PartyPlaybackAdapter.ExecutionCallback callback)
     {
+        if (command != null)
+        {
+            beginPartyPresentationGeneration();
+        }
+        final PartyPlaybackAdapter.ExecutionCallback commandCallback = callback;
         PartyCommandExecutor.execute(new PartyCommandExecutor.Steps()
         {
             @Override
             public boolean seek()
             {
+                if (command.correctionKind
+                        == PartyPlaybackAdapter.CorrectionKind.SOFT)
+                {
+                    return applySoftCorrection(command);
+                }
                 return playerReady && player != null && command != null
                         && isPartyTargetState(command.targetState)
                         && (command.targetPositionMs < 0
@@ -706,7 +740,16 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
             @Override
             public void applyState()
             {
-                if (command.targetState == PartyPlaybackAdapter.PlaybackState.PLAYING)
+                if (command.correctionKind
+                        == PartyPlaybackAdapter.CorrectionKind.SOFT)
+                {
+                    return;
+                }
+                if (command.barrier)
+                {
+                    pause();
+                }
+                else if (command.targetState == PartyPlaybackAdapter.PlaybackState.PLAYING)
                 {
                     play();
                 }
@@ -719,10 +762,30 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
             @Override
             public void applyHold()
             {
-                setPartyHold(command.targetState
+                if (command.correctionKind
+                        == PartyPlaybackAdapter.CorrectionKind.SOFT)
+                {
+                    return;
+                }
+                setPartyHold(command.barrier || command.targetState
                         == PartyPlaybackAdapter.PlaybackState.PAUSED);
             }
-        }, callback, new PartyCommandExecutor.FailureHandler()
+        }, new PartyPlaybackAdapter.ExecutionCallback()
+        {
+            @Override
+            public void onComplete(boolean success)
+            {
+                if (success && command.barrier
+                        && shouldSeekLocallyForParty(pushMode))
+                {
+                    frameStep(1);
+                }
+                if (commandCallback != null)
+                {
+                    commandCallback.onComplete(success);
+                }
+            }
+        }, new PartyCommandExecutor.FailureHandler()
         {
             @Override
             public void onFailure(Throwable failure)
@@ -756,8 +819,28 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
         return !pushMode;
     }
 
+    protected boolean applySoftCorrection(
+            PartyPlaybackAdapter.ScheduledCommand command)
+    {
+        return false;
+    }
+
+    protected void beginPartyPresentationGeneration()
+    {
+        resetPartyReadiness();
+    }
+
+    public static long softCorrectionDurationMs(long targetPositionMs,
+                                                long presentedPositionMs)
+    {
+        long driftMs = targetPositionMs - presentedPositionMs;
+        long magnitudeMs = Math.abs(driftMs);
+        return magnitudeMs <= 67 ? 0 : Math.min(750, magnitudeMs);
+    }
+
     public void cancelPartyScheduledAction()
     {
+        partyFrameCover.cancel();
         if (trickplayController != null)
         {
             trickplayController.cancelPendingAction();
@@ -795,6 +878,58 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
     protected void applyPartyHold(boolean hold)
     {
         if (hold && playerReady && player != null && state == PLAY_STATE) pause();
+    }
+
+    public void coverCurrentPartyFrame(
+            PartyPlaybackAdapter.ExecutionCallback callback)
+    {
+        partyFrameCover.capture(callback);
+    }
+
+    public void revealPartyBarrier(
+            final PartyPlaybackAdapter.ScheduledCommand command,
+            final PartyPlaybackAdapter.ExecutionCallback callback)
+    {
+        if (command == null || !command.barrier)
+        {
+            if (callback != null) callback.onComplete(false);
+            return;
+        }
+        partyFrameCover.reveal(new PartyPlaybackAdapter.ExecutionCallback()
+        {
+            @Override
+            public void onComplete(boolean success)
+            {
+                if (!success)
+                {
+                    if (callback != null) callback.onComplete(false);
+                    return;
+                }
+                if (command.targetState
+                        == PartyPlaybackAdapter.PlaybackState.PLAYING)
+                {
+                    setPartyHold(false);
+                    play();
+                }
+                else
+                {
+                    pause();
+                    setPartyHold(true);
+                }
+                markHeldPartyFrameRevealed();
+                notifyPartyReadinessChanged();
+                if (callback != null) callback.onComplete(true);
+            }
+        });
+    }
+
+    protected void markHeldPartyFrameRevealed()
+    {
+    }
+
+    public static boolean supportsPartyFrameCover()
+    {
+        return PartyFrameCover.isSupported();
     }
 
     public void localPartyStop()
@@ -1010,6 +1145,37 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
         {
             trickplayController.beginSeek(timeInMS);
         }
+        notifyPartyPlaybackStateChanged();
+    }
+
+    @Override
+    public void prepareTransportSeek(boolean preserveMediaTimeline)
+    {
+        if (preserveMediaTimeline && trickplayController != null
+                && trickplayController.isNativeAvailable())
+        {
+            trickplayController.prepareAuthoritativeTransportReposition();
+        }
+    }
+
+    @Override
+    public void seekTransport(long timeInMS, boolean preserveMediaTimeline)
+    {
+        if (!preserveMediaTimeline)
+        {
+            seek(timeInMS);
+            return;
+        }
+        partyPlaybackCommandGeneration++;
+        resetPartyReadiness();
+        seekPending = true;
+        flushed = false;
+        if (trickplayController != null && trickplayController.isNativeAvailable())
+        {
+            trickplayController.armAuthoritativeTransportReposition();
+        }
+        log.debug("Ignoring push transport timeline target {} for active Party playback",
+                timeInMS);
         notifyPartyPlaybackStateChanged();
     }
 

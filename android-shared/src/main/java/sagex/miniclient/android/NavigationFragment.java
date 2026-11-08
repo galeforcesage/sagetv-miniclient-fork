@@ -69,7 +69,6 @@ public class NavigationFragment extends DialogFragment
     ImageView navSmartRemote;
     Button navParty;
     String lastPartyError;
-    String displayedPartyJoinCode;
     MediaMappingPreferences prefs;
 
     public NavigationFragment()
@@ -399,18 +398,6 @@ public class NavigationFragment extends DialogFragment
                     {
                         lastPartyError = null;
                     }
-                    if (state != null && state.host && state.joinCode != null)
-                    {
-                        if (!state.partyId.equals(displayedPartyJoinCode))
-                        {
-                            displayedPartyJoinCode = state.partyId;
-                            showCreatedJoinCode(state.joinCode);
-                        }
-                    }
-                    else if (state == null || !state.joined)
-                    {
-                        displayedPartyJoinCode = null;
-                    }
                 }
             });
         }
@@ -511,16 +498,26 @@ public class NavigationFragment extends DialogFragment
                                         Toast.makeText(getActivity(), R.string.party_no_media,
                                                 Toast.LENGTH_LONG).show();
                                     }
+                                    else
+                                    {
+                                        showPartyCodeWhenAvailable(
+                                                getActivity(), party,
+                                                "Party created", state.joinCode, 0);
+                                    }
                                 }
                                 else
                                 {
-                                    showJoinCodeDialog(party, state.invitedPartyId);
+                                    showJoinCodeDialog(party,
+                                            state.invitedPartyId,
+                                            state.invitedMediaFileId);
                                 }
                             }
                         }).show();
     }
 
-    private void showJoinCodeDialog(final PartyClient party, final String invitedPartyId)
+    private void showJoinCodeDialog(final PartyClient party,
+                                    final String invitedPartyId,
+                                    final Integer invitedMediaFileId)
     {
         final EditText input = new EditText(getActivity());
         input.setInputType(InputType.TYPE_CLASS_NUMBER);
@@ -535,7 +532,8 @@ public class NavigationFragment extends DialogFragment
                     {
                         try
                         {
-                            party.join(input.getText().toString(), invitedPartyId, null);
+                            party.join(input.getText().toString(),
+                                    invitedPartyId, invitedMediaFileId);
                             dismiss();
                         }
                         catch (PartyProtocolException e)
@@ -617,30 +615,66 @@ public class NavigationFragment extends DialogFragment
         if (state.joinCode == null)
         {
             party.retrieveJoinCode(false);
+            showPartyCodeWhenAvailable(
+                    getActivity(), party, "Party code", null, 0);
             Toast.makeText(getActivity(), "Retrieving Party code", Toast.LENGTH_SHORT).show();
             return;
         }
+        final String displayedCode = state.joinCode;
         new AlertDialog.Builder(getActivity())
                 .setTitle("Party code")
                 .setMessage(state.joinCodeExpired
-                        ? state.joinCode + "\nExpired - rotate to issue a new code."
-                        : state.joinCode)
+                        ? displayedCode + "\nExpired - rotate to issue a new code."
+                        : displayedCode)
                 .setPositiveButton(android.R.string.ok, null)
                 .setNeutralButton("Rotate", new DialogInterface.OnClickListener()
                 {
                     @Override public void onClick(DialogInterface dialog, int which)
                     {
                         party.retrieveJoinCode(true);
+                        showPartyCodeWhenAvailable(
+                                getActivity(), party,
+                                "Party code", displayedCode, 0);
                     }
                 }).show();
     }
 
-    private void showCreatedJoinCode(String joinCode)
+    private void showPartyCodeWhenAvailable(
+            final Activity activity,
+            final PartyClient party,
+            final String title,
+            final String previousJoinCode,
+            final int attempt)
     {
-        Activity activity = getActivity();
-        if (activity == null) return;
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
+        PartyClient.State state = party.getState();
+        if (state.host && state.joined && state.joinCode != null
+                && !state.joinCode.equals(previousJoinCode))
+        {
+            showPartyCode(activity, title, state.joinCode);
+            return;
+        }
+        if (attempt >= 100
+                || "ERROR".equals(state.status)
+                || "PREPARATION_FAILED".equals(state.status))
+        {
+            Toast.makeText(activity, "Party code unavailable", Toast.LENGTH_LONG).show();
+            return;
+        }
+        activity.getWindow().getDecorView().postDelayed(new Runnable()
+        {
+            @Override public void run()
+            {
+                showPartyCodeWhenAvailable(
+                        activity, party, title, previousJoinCode, attempt + 1);
+            }
+        }, 100);
+    }
+
+    private void showPartyCode(Activity activity, String title, String joinCode)
+    {
         new AlertDialog.Builder(activity)
-                .setTitle("Party created")
+                .setTitle(title)
                 .setMessage("Join code: " + joinCode)
                 .setPositiveButton(android.R.string.ok, null)
                 .show();

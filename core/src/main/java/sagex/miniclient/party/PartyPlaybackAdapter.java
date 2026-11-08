@@ -9,6 +9,10 @@ public interface PartyPlaybackAdapter {
         AVAILABLE, LOST, CAPABILITIES_CHANGED, LINK_PROPERTIES_CHANGED
     }
 
+    enum CorrectionKind {
+        NONE, SOFT, HARD
+    }
+
     final class Observation {
         public final long sampleMonoMs;
         public final long positionMs;
@@ -44,24 +48,55 @@ public interface PartyPlaybackAdapter {
     }
 
     final class ScheduledCommand {
+        public final String directiveId;
         public final long commandSeq;
         public final long stateVersion;
         public final String action;
+        public final CorrectionKind correctionKind;
         public final long targetPositionMs;
         public final PlaybackState targetState;
         public final double targetRate;
         public final long executeAtClientMonoMs;
+        public final boolean barrier;
+        public final String phase;
+        public final long visibleAtClientMonoMs;
+        public final long predictedPresentationLatencyMs;
+        public final long presentationUncertaintyMs;
 
-        public ScheduledCommand(long commandSeq, long stateVersion, String action,
+        public ScheduledCommand(String directiveId,
+                                long commandSeq, long stateVersion, String action,
+                                CorrectionKind correctionKind,
                                 long targetPositionMs, PlaybackState targetState,
                                 double targetRate, long executeAtClientMonoMs) {
+            this(directiveId, commandSeq, stateVersion, action, correctionKind,
+                    targetPositionMs, targetState, targetRate,
+                    executeAtClientMonoMs, false, "", -1, 0, 0);
+        }
+
+        public ScheduledCommand(String directiveId,
+                                long commandSeq, long stateVersion, String action,
+                                CorrectionKind correctionKind,
+                                long targetPositionMs, PlaybackState targetState,
+                                double targetRate, long executeAtClientMonoMs,
+                                boolean barrier, String phase,
+                                long visibleAtClientMonoMs,
+                                long predictedPresentationLatencyMs,
+                                long presentationUncertaintyMs) {
+            this.directiveId = directiveId;
             this.commandSeq = commandSeq;
             this.stateVersion = stateVersion;
             this.action = action;
+            this.correctionKind = correctionKind;
             this.targetPositionMs = targetPositionMs;
             this.targetState = targetState;
             this.targetRate = targetRate;
             this.executeAtClientMonoMs = executeAtClientMonoMs;
+            this.barrier = barrier;
+            this.phase = phase == null ? "" : phase;
+            this.visibleAtClientMonoMs = visibleAtClientMonoMs;
+            this.predictedPresentationLatencyMs =
+                    predictedPresentationLatencyMs;
+            this.presentationUncertaintyMs = presentationUncertaintyMs;
         }
     }
 
@@ -84,7 +119,11 @@ public interface PartyPlaybackAdapter {
 
     void setPartyHold(boolean hold);
 
+    void coverCurrentFrame(ExecutionCallback callback);
+
     void execute(ScheduledCommand command, ExecutionCallback callback);
+
+    void reveal(ScheduledCommand command, ExecutionCallback callback);
 
     void cancelScheduledAction();
 
@@ -104,8 +143,15 @@ public interface PartyPlaybackAdapter {
                     false, false, 1000);
         }
         @Override public void setPartyHold(boolean hold) { }
+        @Override public void coverCurrentFrame(ExecutionCallback callback) {
+            if (callback != null) callback.onComplete(false);
+        }
         @Override public void execute(ScheduledCommand command,
                                       ExecutionCallback callback) {
+            if (callback != null) callback.onComplete(false);
+        }
+        @Override public void reveal(ScheduledCommand command,
+                                     ExecutionCallback callback) {
             if (callback != null) callback.onComplete(false);
         }
         @Override public void cancelScheduledAction() { }

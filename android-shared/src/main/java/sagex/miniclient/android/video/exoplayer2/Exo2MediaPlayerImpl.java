@@ -83,6 +83,8 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     private long playbackStartPosition = -1;
     private int initialAudioTrackIndex = -1;
     private volatile long currentPlaybackPosition = 0;
+    private volatile long lastPresentedFramePositionMs = -1;
+    private volatile long lastPresentedFrameMonoMs = -1;
     private volatile long currentBufferedPosition = -1;
     private volatile long currentDuration = 0;
     private DefaultTrackSelector trackSelector;
@@ -94,9 +96,11 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     // FREEZEDIAG: elapsedRealtime() when the player last entered STATE_BUFFERING,
     // or -1 when not buffering. Used to measure rebuffer duration.
     private long freezeDiagBufferingStartMs = -1;
-    private static final long PARTY_BUFFERING_CONFIRM_MS = 1_000;
+    private static final long PARTY_BUFFERING_CONFIRM_MS = 250;
     private long partyBufferingStartedAtMs = -1;
     private volatile boolean partyFirstFrameRendered;
+    private volatile boolean partyPresentationPending;
+    private volatile boolean partyFrameStepActive;
     private final Handler partyHandler = new Handler(android.os.Looper.getMainLooper());
     private final Runnable partyBufferingStart = new Runnable()
     {
@@ -207,6 +211,18 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     public long getPlaybackPosition()
     {
         return this.currentPlaybackPosition;
+    }
+
+    @Override
+    protected PresentedMediaSample getPresentedMediaSample()
+    {
+        long framePositionMs = lastPresentedFramePositionMs;
+        long frameMonoMs = lastPresentedFrameMonoMs;
+        if (framePositionMs >= 0 && frameMonoMs >= 0)
+        {
+            return new PresentedMediaSample(frameMonoMs, framePositionMs);
+        }
+        return super.getPresentedMediaSample();
     }
 
     @Override
@@ -1058,6 +1074,8 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                     player.setMediaSource(source, true);
                     player.prepare();
                     player.setPlayWhenReady(resumeAfterRebuild[0]);
+                    primePausedPartyFrame(
+                            player, "post-rebuild generation");
                     matroskaPushRebuildPending = false;
                     log.logDebug("Push Matroska flush: rebuilt extractor for fresh stream generation");
                 }
@@ -1082,6 +1100,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                         // Self-synchronizing push containers can retain their
                         // extractor and only flush decoder/sample queues.
                         player.seekTo(0);
+                        primePausedPartyFrame(player, "post-flush generation");
                         if (VerboseLogging.DETAILED_PLAYER_LOGGING)
                             log.logDebug("Push flush: seekTo(0) to flush decoder queues");
                     }
@@ -1184,6 +1203,8 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     {
         initialAudioTrackIndex = -1;
         currentPlaybackPosition = 0;
+        lastPresentedFramePositionMs = -1;
+        lastPresentedFrameMonoMs = -1;
         currentBufferedPosition = -1;
         currentDuration = 0;
 
@@ -1327,6 +1348,61 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
         builder.setTrackSelector(trackSelector);
         player = builder.build();
+        player.setVideoFrameMetadataListener(
+                new com.google.android.exoplayer2.video.VideoFrameMetadataListener()
+                {
+                    @Override
+                    public void onVideoFrameAboutToBeRendered(
+                            long presentationTimeUs,
+                            long releaseTimeNs,
+                            Format format,
+                            android.media.MediaFormat mediaFormat)
+                    {
+                        final long framePositionMs =
+                                Math.max(0, presentationTimeUs / 1000L);
+                        final long frameMonoMs = releaseTimeNs > 0
+                                ? releaseTimeNs / 1_000_000L
+                                : android.os.SystemClock.elapsedRealtime();
+                        if (partyFrameStepActive)
+                        {
+                            partyFrameStepActive = false;
+                            final ExoPlayer current = player;
+                            context.runOnUiThread(new Runnable()
+                            {
+                                @Override
+                                public void run()
+                                {
+                                    if (player != current || current == null
+                                            || !isPartyHold())
+                                    {
+                                        return;
+                                    }
+                                    current.setPlayWhenReady(false);
+                                    lastPresentedFramePositionMs = framePositionMs;
+                                    lastPresentedFrameMonoMs = frameMonoMs;
+                                    log.logInfo("Party paused frame presented at "
+                                            + framePositionMs + "ms");
+                                    if (partyPresentationPending)
+                                    {
+                                        partyPresentationPending = false;
+                                        partyFirstFrameRendered = true;
+                                        notifyPartyReadinessChanged();
+                                    }
+                                }
+                            });
+                            return;
+                        }
+                        lastPresentedFramePositionMs = framePositionMs;
+                        lastPresentedFrameMonoMs = frameMonoMs;
+                        if (PartyCommandExecutor.shouldAcceptUnprimedFrame(
+                                partyPresentationPending, isPartyHold()))
+                        {
+                            partyPresentationPending = false;
+                            partyFirstFrameRendered = true;
+                            notifyPartyReadinessChanged();
+                        }
+                    }
+                });
         //player.addAnalyticsListener(new EventLogger(trackSelector));
 
         // ── Client EQ: own a STABLE, effect-capable audio session id ──
@@ -2345,6 +2421,7 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             if (callback != null) callback.onComplete(false);
             return;
         }
+        beginPartyPresentationGeneration();
         context.runOnUiThread(new Runnable()
         {
             @Override
@@ -2375,7 +2452,17 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                     @Override
                     public void applyState()
                     {
-                        if (command.targetState
+                        if (command.correctionKind
+                                == PartyPlaybackAdapter.CorrectionKind.SOFT)
+                        {
+                            return;
+                        }
+                        if (command.barrier)
+                        {
+                            Exo2MediaPlayerImpl.super.pause();
+                            ExoPause();
+                        }
+                        else if (command.targetState
                                 == PartyPlaybackAdapter.PlaybackState.PLAYING)
                         {
                             Exo2MediaPlayerImpl.super.play();
@@ -2392,12 +2479,29 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                     @Override
                     public void applyHold()
                     {
-                        boolean hold = command.targetState
+                        if (command.correctionKind
+                                == PartyPlaybackAdapter.CorrectionKind.SOFT)
+                        {
+                            return;
+                        }
+                        boolean hold = command.barrier || command.targetState
                                 == PartyPlaybackAdapter.PlaybackState.PAUSED;
                         setPartyHoldState(hold);
                         player.setVolume(hold ? 0.0f : 1.0f);
                     }
-                }, callback, new PartyCommandExecutor.FailureHandler()
+                }, new PartyPlaybackAdapter.ExecutionCallback()
+                {
+                    @Override
+                    public void onComplete(boolean success)
+                    {
+                        if (success && command.barrier
+                                && shouldSeekLocallyForParty(pushMode))
+                        {
+                            primePausedPartyFrame(player, "barrier PREPARE");
+                        }
+                        if (callback != null) callback.onComplete(success);
+                    }
+                }, new PartyCommandExecutor.FailureHandler()
                 {
                     @Override
                     public void onFailure(Throwable failure)
@@ -2413,7 +2517,104 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
     public void resetPartyReadiness()
     {
         partyFirstFrameRendered = false;
+        partyPresentationPending = true;
+        partyFrameStepActive = false;
+        lastPresentedFramePositionMs = -1;
+        lastPresentedFrameMonoMs = -1;
         super.resetPartyReadiness();
+    }
+
+    @Override
+    public void frameStep(final int amount)
+    {
+        final ExoPlayer current = player;
+        if (current == null
+                || !PartyCommandExecutor.shouldPrimePausedFrame(
+                        partyPresentationPending, isPartyHold(), amount))
+        {
+            return;
+        }
+        context.runOnUiThread(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                primePausedPartyFrame(current, "FRAME_STEP");
+            }
+        });
+    }
+
+    private void primePausedPartyFrame(ExoPlayer current, String trigger)
+    {
+        if (player != current || current == null || partyFrameStepActive
+                || !partyPresentationPending || !isPartyHold())
+        {
+            return;
+        }
+        partyFrameStepActive = true;
+        log.logInfo("Priming one Party frame while paused from " + trigger);
+        current.setVolume(0.0f);
+        current.setPlayWhenReady(true);
+    }
+
+    @Override
+    protected boolean applySoftCorrection(
+            final PartyPlaybackAdapter.ScheduledCommand command)
+    {
+        final ExoPlayer current = player;
+        if (current == null || command == null)
+        {
+            return false;
+        }
+        if (command.targetState
+                == PartyPlaybackAdapter.PlaybackState.PAUSED)
+        {
+            resetPartyReadiness();
+            primePausedPartyFrame(current, "paused SOFT correction");
+            return true;
+        }
+        if (command.targetState
+                != PartyPlaybackAdapter.PlaybackState.PLAYING)
+        {
+            return false;
+        }
+        PartyPlaybackAdapter.Observation observation = getPartyObservation();
+        final long driftMs = command.targetPositionMs - observation.positionMs;
+        final long durationMs = softCorrectionDurationMs(
+                command.targetPositionMs, observation.positionMs);
+        resetPartyReadiness();
+        if (durationMs == 0) return true;
+        if (driftMs < 0)
+        {
+            current.setPlayWhenReady(false);
+            partyHandler.postDelayed(new Runnable()
+            {
+                @Override public void run()
+                {
+                    if (player == current && !isPartyHold())
+                    {
+                        current.setPlayWhenReady(true);
+                    }
+                }
+            }, durationMs);
+        }
+        else
+        {
+            final android.view.Surface surface = currentVideoSurface;
+            if (surface == null) return false;
+            current.clearVideoSurface(surface);
+            partyHandler.postDelayed(new Runnable()
+            {
+                @Override public void run()
+                {
+                    if (player == current && surface.isValid())
+                    {
+                        current.setVideoSurface(surface);
+                    }
+                }
+            }, durationMs);
+        }
+        return true;
     }
 
     @Override
@@ -2430,6 +2631,21 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             if (group.getType() == C.TRACK_TYPE_AUDIO) audioSelected = true;
         }
         return audioSelected;
+    }
+
+    @Override
+    protected void markHeldPartyFrameRevealed()
+    {
+        ExoPlayer current = player;
+        if (current == null) return;
+        if (lastPresentedFramePositionMs < 0)
+        {
+            lastPresentedFramePositionMs = current.getCurrentPosition();
+        }
+        lastPresentedFrameMonoMs = android.os.SystemClock.elapsedRealtime();
+        partyPresentationPending = false;
+        partyFrameStepActive = false;
+        partyFirstFrameRendered = true;
     }
 
     @Override

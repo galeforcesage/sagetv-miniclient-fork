@@ -529,9 +529,12 @@ public class MediaCmd
             case MEDIACMD_FRAMESTEP:
                 // FRAME_STEP is advertised by common.profile. SageTV uses it
                 // while paused to keep push buffering active and waits for a
-                // four-byte result. Android already retains the paused frame,
-                // so acknowledge the legacy command without advancing it.
-                log.debug("Frame step was called: {}", readInt(0, cmddata));
+                // four-byte result. Players may use it to present the first
+                // post-flush frame while remaining logically paused.
+                int frameStepAmount = readInt(0, cmddata);
+                log.debug("Frame step was called: {}", frameStepAmount);
+                if (playa != null)
+                    playa.frameStep(frameStepAmount);
                 writeInt(1, retbuf, 0);
                 return 4;
             case MEDIACMD_FLUSH:
@@ -807,6 +810,11 @@ public class MediaCmd
 
                     if (pushMode)
                     {
+                        boolean preservePartyTimeline =
+                                myConn.getPartyClient() != null
+                                && myConn.getPartyClient().getState().joined;
+                        playa.prepareTransportSeek(preservePartyTimeline);
+
                         // Stash the authoritative target so the post-flush
                         // PUSHBUFFER handler can use it as the baseline (see
                         // pendingSeekTargetMs field doc).
@@ -833,6 +841,7 @@ public class MediaCmd
                         playa.flush();
                         this.setLastServerStartPosition(seekTime);
                         pendingSeekTargetMs = -1;
+                        playa.seekTransport(seekTime, preservePartyTimeline);
                     }
                     else
                     {
@@ -845,8 +854,8 @@ public class MediaCmd
                         // direct-pull in-place seeks: consumed only by that
                         // check, cleared either way at the next OPENURL.
                         pendingSeekTargetMs = seekTime;
+                        playa.seek(seekTime);
                     }
-                    playa.seek(seekTime);
                 }
 
                 return 0;

@@ -92,8 +92,6 @@ public class TrickplayController
      * of the correction observer, but do not let an unrelated later regression
      * replace a mapping that already landed.
      */
-    private static final long AUTHORITATIVE_RESET_WINDOW_MS = 8_000;
-
     /**
      * Pause-resume scrubber monotonicity guard.
      *
@@ -172,8 +170,9 @@ public class TrickplayController
     private boolean mappingValid = false;
     private long    baseOffsetMs = 0;
     private boolean authoritativeResetPending;
+    private boolean authoritativeSamplePending;
+    private boolean authoritativeTimelineActive;
     private long authoritativePositionMs;
-    private long authoritativeResetDeadlineMs;
 
     // Paused indicator (used only by isStable / getState).
     private boolean paused = false;
@@ -309,8 +308,8 @@ public class TrickplayController
         mappingValid = false;
         baseOffsetMs = 0;
         authoritativeResetPending = false;
+        authoritativeTimelineActive = false;
         authoritativePositionMs = 0;
-        authoritativeResetDeadlineMs = 0;
         paused = false;
         pendingPreReadySeek = false;
         burstStartedAtMs = 0;
@@ -404,14 +403,9 @@ public class TrickplayController
         // mapping if a reset is actually observed.
         synchronized (this)
         {
-            if (invalidatesMappingOnFlush(authoritativeResetPending))
+            if (invalidatesMappingOnFlush(authoritativeTimelineActive))
             {
                 mappingValid = false;
-            }
-            else
-            {
-                authoritativeResetDeadlineMs =
-                        SystemClock.elapsedRealtime() + AUTHORITATIVE_RESET_WINDOW_MS;
             }
             // A flush is a reposition boundary: start a new epoch so any
             // in-flight position sample tagged with the prior epoch is
@@ -471,6 +465,14 @@ public class TrickplayController
         boolean isPush;
         synchronized (this)
         {
+            authoritativeTimelineActive = false;
+            if (preservesAuthoritativePositionOnPushSeek(
+                    pushMode, authoritativeResetPending))
+            {
+                log.debug("Ignoring push transport seek target {} while Party target {} is authoritative",
+                        targetMs, authoritativePositionMs);
+                return;
+            }
             seekTargetMs = targetMs;
             seekArmed = true;
             // Note: we do NOT clear seekCommitted here. The in-flight gate
@@ -543,22 +545,17 @@ public class TrickplayController
         synchronized (this)
         {
             long now = SystemClock.elapsedRealtime();
-            if (authoritativeResetPending
-                    && authoritativeResetDeadlineMs > 0
-                    && now > authoritativeResetDeadlineMs)
-            {
-                authoritativeResetPending = false;
-                authoritativeResetDeadlineMs = 0;
-            }
-            if (authoritativeResetPending && positionMs < lastPlayerPosMs)
+            if (shouldAnchorAuthoritativePosition(authoritativeResetPending,
+                    authoritativeSamplePending, positionMs, lastPlayerPosMs))
             {
                 lastPlayerPosMs = positionMs;
-                baseOffsetMs = authoritativePositionMs - positionMs;
+                baseOffsetMs = authoritativeBaseOffset(
+                        authoritativePositionMs, positionMs);
                 mappingValid = true;
                 authoritativeResetPending = false;
-                authoritativeResetDeadlineMs = 0;
+                authoritativeSamplePending = false;
                 lastPlayerSampleMonoMs = now;
-                log.debug("Authoritative Party reset accepted: target={}, pos={}, baseOffset={}",
+                log.debug("Authoritative Party clock anchored: target={}, rawPos={}, baseOffset={}",
                         authoritativePositionMs, positionMs, baseOffsetMs);
                 return;
             }
@@ -633,18 +630,51 @@ public class TrickplayController
         committedTargetMs = -1;
         pendingPreReadySeek = false;
         authoritativePositionMs = positionMs;
-        authoritativeResetPending = true;
-        authoritativeResetDeadlineMs =
-                SystemClock.elapsedRealtime() + AUTHORITATIVE_RESET_WINDOW_MS;
-        baseOffsetMs = positionMs - lastPlayerPosMs;
+        authoritativeTimelineActive = true;
+        authoritativeResetPending = false;
+        authoritativeSamplePending = true;
         mappingValid = true;
-        log.debug("Authoritative Party position installed: target={}, playerPos={}, baseOffset={}",
-                positionMs, lastPlayerPosMs, baseOffsetMs);
+        log.debug("Authoritative Party position staged: target={}, playerPos={}",
+                positionMs, lastPlayerPosMs);
     }
 
     static boolean invalidatesMappingOnFlush(boolean authoritativeResetPending)
     {
         return !authoritativeResetPending;
+    }
+
+    static long authoritativeBaseOffset(long targetPositionMs, long rawPlayerPositionMs)
+    {
+        return targetPositionMs - rawPlayerPositionMs;
+    }
+
+    static boolean shouldAnchorAuthoritativePosition(boolean resetPending,
+            boolean samplePending, long playerPositionMs, long lastPlayerPositionMs)
+    {
+        return resetPending
+                && (samplePending || playerPositionMs < lastPlayerPositionMs);
+    }
+
+    public synchronized void prepareAuthoritativeTransportReposition()
+    {
+        if (!authoritativeTimelineActive) return;
+        log.debug("Preparing transport reposition for Party target {}",
+                authoritativePositionMs);
+    }
+
+    public synchronized void armAuthoritativeTransportReposition()
+    {
+        if (!authoritativeTimelineActive) return;
+        authoritativeResetPending = true;
+        authoritativeSamplePending = true;
+        log.debug("Awaiting post-reposition sample for Party target {}",
+                authoritativePositionMs);
+    }
+
+    static boolean preservesAuthoritativePositionOnPushSeek(
+            boolean pushMode, boolean authoritativeResetPending)
+    {
+        return pushMode && authoritativeResetPending;
     }
 
     /**
@@ -660,6 +690,10 @@ public class TrickplayController
         if (seekArmed || seekCommitted)
         {
             return seekTargetMs;
+        }
+        if (authoritativeSamplePending)
+        {
+            return authoritativePositionMs;
         }
 
         if (mappingValid)
@@ -718,6 +752,7 @@ public class TrickplayController
 
     public synchronized void setServerStartTime(long timeMs)
     {
+        if (authoritativeTimelineActive) return;
         this.serverStartTimeMs = timeMs;
     }
 

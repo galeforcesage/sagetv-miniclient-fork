@@ -120,7 +120,17 @@ public interface MiniPlayerPlugin extends Runnable
 
     void play();
 
+    default void frameStep(int amount) {
+    }
+
     void seek(long timeMS);
+
+    default void prepareTransportSeek(boolean preserveMediaTimeline) {
+    }
+
+    default void seekTransport(long timeMS, boolean preserveMediaTimeline) {
+        seek(timeMS);
+    }
 
     /**
      * Servers is telling us that there is no more data.  We can still play any buffered data

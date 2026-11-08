@@ -31,4 +31,31 @@ final class IjkPartyTrackActivation
         return what == IMediaPlayer.MEDIA_INFO_AUDIO_RENDERING_START
                 || what == IMediaPlayer.MEDIA_INFO_AUDIO_SEEK_RENDERING_START;
     }
+
+    static boolean hasPresentedAfterReset(long beforePositionMs,
+                                          long currentPositionMs)
+    {
+        return beforePositionMs >= 0
+                && currentPositionMs >= 0
+                && Math.abs(currentPositionMs - beforePositionMs) >= 16;
+    }
+
+    static boolean hasDecodedFrameAfterReset(long beforeFrames,
+                                             long currentFrames)
+    {
+        return beforeFrames >= 0 && currentFrames > beforeFrames;
+    }
+
+    static boolean canAcceptPresentation(boolean pausedPresentationPending,
+                                         boolean frameStepArmed)
+    {
+        return !pausedPresentationPending || frameStepArmed;
+    }
+
+    static boolean shouldRetryPausedPrime(boolean pausedPresentationPending,
+                                          boolean frameStepArmed,
+                                          boolean playing)
+    {
+        return pausedPresentationPending && frameStepArmed && !playing;
+    }
 }

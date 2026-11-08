@@ -193,15 +193,6 @@
     "targetRate": 1,
     "executeAtServerMonoMs": 100500
   },
-  "readyAck": {
-    "schemaVersion": 1,
-    "type": "READY_ACK",
-    "requestId": "ready-repeat-1",
-    "serverMonoMs": 100300,
-    "partyId": "party",
-    "stateVersion": 0,
-    "commandSeq": 0
-  },
   "action": {
     "schemaVersion": 1,
     "type": "ACTION",
@@ -226,7 +217,7 @@
     "executeAtServerMonoMs": 100750,
     "originParticipantId": "host"
   },
-  "ackExecuted": {
+  "ackFailed": {
     "schemaVersion": 1,
     "type": "ACK",
     "requestId": "ack-1",
@@ -237,7 +228,7 @@
     "stateVersion": 1,
     "commandSeq": 1,
     "stage": "EXECUTED",
-    "success": true
+    "success": false
   },
   "heartbeat": {
     "schemaVersion": 1,

@@ -64,4 +64,24 @@ public class PartyCommandExecutorTest
         assertFalse(BaseMediaPlayerImpl.shouldSeekLocallyForParty(true));
         assertTrue(BaseMediaPlayerImpl.shouldSeekLocallyForParty(false));
     }
+
+    @Test
+    public void pausedFramePrimeRequiresPendingPartyPresentation()
+    {
+        assertTrue(PartyCommandExecutor.shouldPrimePausedFrame(true, true, 1));
+        assertFalse(PartyCommandExecutor.shouldPrimePausedFrame(false, true, 1));
+        assertFalse(PartyCommandExecutor.shouldPrimePausedFrame(true, false, 1));
+        assertFalse(PartyCommandExecutor.shouldPrimePausedFrame(true, true, 0));
+    }
+
+    @Test
+    public void heldFrameCannotSettleBeforePausedPrime()
+    {
+        assertFalse(PartyCommandExecutor.shouldAcceptUnprimedFrame(
+                true, true));
+        assertTrue(PartyCommandExecutor.shouldAcceptUnprimedFrame(
+                true, false));
+        assertFalse(PartyCommandExecutor.shouldAcceptUnprimedFrame(
+                false, false));
+    }
 }

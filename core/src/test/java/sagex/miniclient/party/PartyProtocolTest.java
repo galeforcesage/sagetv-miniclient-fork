@@ -7,6 +7,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class PartyProtocolTest {
@@ -94,18 +95,6 @@ public class PartyProtocolTest {
     }
 
     @Test
-    public void duplicateReadyIsAnIdempotentAckWithoutDeadline() throws Exception {
-        JSONObject readyAck = golden().getJSONObject("readyAck");
-
-        assertEquals("READY_ACK", readyAck.getString("type"));
-        assertEquals(golden().getJSONObject("ready").getLong("stateVersion"),
-                readyAck.getLong("stateVersion"));
-        assertEquals(golden().getJSONObject("correction").getLong("commandSeq"),
-                readyAck.getLong("commandSeq"));
-        assertTrue(!readyAck.has("executeAtServerMonoMs"));
-    }
-
-    @Test
     public void readyEchoesLoadedPlaybackGeneration() throws Exception {
         JSONObject preparation = golden().getJSONObject("preparationResult");
         JSONObject ready = golden().getJSONObject("ready");
@@ -115,15 +104,40 @@ public class PartyProtocolTest {
     }
 
     @Test
-    public void requiredCapabilitiesIncludeGrowingMedia() {
+    public void participantDirectivesAndAcksEchoDirectiveId() throws Exception {
+        JSONObject correction = golden().getJSONObject("correction");
+        JSONObject command = golden().getJSONObject("command");
+        JSONObject failed = golden().getJSONObject("ackFailed");
+        JSONObject presented = golden().getJSONObject("ackPresented");
+
+        assertEquals("initial-alignment-1",
+                correction.getString("directiveId"));
+        assertEquals(command.getString("directiveId"),
+                failed.getString("directiveId"));
+        assertEquals(command.getString("directiveId"),
+                presented.getString("directiveId"));
+        assertEquals("EXECUTED", failed.getString("stage"));
+        assertFalse(failed.getBoolean("success"));
+        assertEquals("PRESENTED", presented.getString("stage"));
+    }
+
+    @Test
+    public void requiredCapabilitiesIncludeCompletePartyContract() {
         assertEquals(
                 "PARTY_V1,PARTY_JOIN_CODE_V1,PARTY_MONOTONIC_V1,"
                         + "PARTY_SCHEDULED_V1,PARTY_HEARTBEAT_V1,"
                         + "PARTY_PLAYER_ADAPTER_V1,PARTY_LOCAL_STOP_V1,"
-                        + "PARTY_GROWING_MEDIA_V1",
+                        + "PARTY_GROWING_MEDIA_V1,PARTY_PRESENTED_FRAME_V1,"
+                        + "PARTY_ARMED_REVEAL_V1,PARTY_INVITATION_V1",
                 PartyProtocol.REQUIRED_CAPABILITIES);
         assertTrue(PartyProtocol.REQUIRED_CAPABILITIES.contains(
                 "PARTY_GROWING_MEDIA_V1"));
+        assertTrue(PartyProtocol.REQUIRED_CAPABILITIES.contains(
+                "PARTY_PRESENTED_FRAME_V1"));
+        assertTrue(PartyProtocol.REQUIRED_CAPABILITIES.contains(
+                "PARTY_ARMED_REVEAL_V1"));
+        assertTrue(PartyProtocol.REQUIRED_CAPABILITIES.contains(
+                "PARTY_INVITATION_V1"));
     }
 
     @Test

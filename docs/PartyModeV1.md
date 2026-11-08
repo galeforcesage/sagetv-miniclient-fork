@@ -67,6 +67,9 @@ PARTY_SCHEDULED_V1
 PARTY_HEARTBEAT_V1
 PARTY_PLAYER_ADAPTER_V1
 PARTY_LOCAL_STOP_V1
+PARTY_PRESENTED_FRAME_V1
+PARTY_ARMED_REVEAL_V1
+PARTY_INVITATION_V1
 ```
 
 Growing recordings additionally require:
@@ -337,8 +340,8 @@ the normal playback route; it is not a second source API.
 
 `CREATED`, `JOINED`, and `PREPARE_ACCEPTED` do not establish readiness. The
 client remains `PREPARING` and sends no ordinary heartbeat until a loaded
-preparation has completed clock calibration, sent `READY`, and received either
-the initial `CORRECTION` or an idempotent `READY_ACK`. A transient
+preparation has completed clock calibration, sent `READY`, and settled the
+initial `CORRECTION` through accepted `PRESENTED`. A transient
 `NOT_PREPARED` received while `PREPARING` does not fail the room. A failed
 preparation remains fatal and exposes both its server `code` and `watchCode`.
 
@@ -366,21 +369,25 @@ buffer is valid while paused. The server verifies that the ordinary player
 is actually loaded and returns a participant-specific `CORRECTION` for initial
 alignment.
 
-The client executes the correction and begins `HEARTBEAT` reporting. Corrections
-are one-way; subsequent heartbeats report the observed player state.
+The client follows the directive lifecycle in section 9. It does not begin
+ordinary `HEARTBEAT` reporting until the initial correction reaches
+`ACK/PRESENTED`.
 
-`READY` is transition-scoped, not a polling message. If a client repeats it
-after becoming ready, active or late, the server returns an idempotent response
-without scheduling another correction:
+`READY` is transition-scoped, not a polling message. The client sends it
+exactly once for a verified preparation generation. Its meaningful server
+response is the participant-specific initial `CORRECTION`; the protocol does
+not define a successful duplicate-READY acknowledgement.
 
-```json
-{
-  "type": "READY_ACK",
-  "partyId": "opaque",
-  "stateVersion": 0,
-  "commandSeq": 0
-}
-```
+While joined, including while paused, the client performs a fresh five-sample
+clock exchange every 20 seconds. Before sending an `ACTION`, it confirms that
+the latest `CLOCK_MODEL` remains confident. If not, it retains only the latest
+user action, calibrates until confident, requests a fresh `SNAPSHOT`, and sends
+that action once with the snapshot's current `stateVersion`.
+
+`CLOCK_UNCERTAIN` is a recoverable scheduling barrier. For a rejected `ACTION`,
+the client recalibrates, fetches a fresh snapshot, and retries the retained
+action once. It does not enter `ERROR`, leave the Party, disconnect, or execute
+the rejected action locally.
 
 ## 9. Shared controls and scheduled commands
 
@@ -400,7 +407,7 @@ Supported actions:
 ```text
 PLAY
 PAUSE
-SEEK
+JUMP
 FF
 REW
 FF2
@@ -408,7 +415,7 @@ REW2
 COMSKIP
 ```
 
-`SEEK` additionally supplies `targetPositionMs`. `COMSKIP` is host-only and uses
+`JUMP` additionally supplies `targetPositionMs`. `COMSKIP` is host-only and uses
 the existing server-owned commercial markers. FF/REW deltas use existing SageTV
 skip settings.
 
@@ -418,6 +425,7 @@ Server event/reply:
 {
   "type": "COMMAND",
   "partyId": "opaque",
+  "directiveId": "participant-command-3",
   "stateVersion": 3,
   "commandSeq": 3,
   "cause": "PLAY",
@@ -429,33 +437,85 @@ Server event/reply:
 }
 ```
 
-The server freezes the ready recipient cohort at dispatch. A late/buffering
-participant never delays ready participants and does not receive PLAY/SEEK until
-it catches up. PAUSE reaches every connected prepared participant, including a
-buffering participant.
+`directiveId` is participant-specific and is mandatory on every `COMMAND` and
+`CORRECTION`. The server freezes the ready recipient cohort at dispatch. A
+late/buffering participant never delays ready participants and does not receive
+PLAY/JUMP until it catches up. PAUSE reaches every connected prepared
+participant, including a buffering participant.
 
-Command lead is bounded to 300..2500 ms from the worst ready participant p95 RTT.
+Command lead is bounded to 300..2500 ms from the worst ready participant p95
+RTT. `targetRate` is always 1.0.
 
-Client may report receipt or execution:
+Single-phase PLAY, initial alignment, SOFT correction, and PAUSE directives
+execute at the scheduled deadline. Successful dispatch produces no wire
+message because it does not establish visible playback. If dispatch fails, the
+client reports the meaningful failure:
 
 ```json
 {
   "type": "ACK",
   "partyId": "opaque",
+  "directiveId": "participant-command-3",
   "stateVersion": 3,
   "commandSeq": 3,
   "stage": "EXECUTED",
-  "success": true
+  "success": false
 }
 ```
 
-ACK diagnostics do not block later room control. A failed execution marks only
-that participant late.
+The client suppresses ordinary heartbeats until the first post-command frame is
+presented and reports:
+
+```json
+{
+  "type": "ACK",
+  "partyId": "opaque",
+  "directiveId": "participant-command-3",
+  "stateVersion": 3,
+  "commandSeq": 3,
+  "stage": "PRESENTED",
+  "success": true,
+  "sampleMonoMs": 500812,
+  "positionMs": 120062,
+  "state": "PLAYING"
+}
+```
+
+`sampleMonoMs` and `positionMs` have the same presentation semantics as a
+heartbeat. PAUSE reports the frame held visibly after the pause operation; it
+must not wait for playback position to advance. Failure and PRESENTED ACKs echo
+the directive's exact identifiers and are sent at most once. Each directive
+ACK is a request with a unique `requestId` and increasing `requestSeq`; the
+client processes the matching server `ACK` or `ERROR`. `ACK/PRESENTED` settles
+the directive only after the server accepts it.
+
+JUMP, FF, REW, FF2, REW2, COMSKIP, and HARD correction use the barrier
+lifecycle. Their initial directive has `phase=PREPARE`, `barrier=true`,
+`executeAtServerMonoMs`, `visibleAtServerMonoMs`,
+`predictedPresentationLatencyMs`, and `presentationUncertaintyMs`. The client:
+
+1. captures the currently visible video frame into a cover;
+2. repositions and decodes the target behind that cover;
+3. holds the target paused and sends `ACK/ARMED` with one frame-coherent
+   `sampleMonoMs`, `positionMs`, and `state`;
+4. remains covered until a matching `REVEAL`;
+5. removes the cover at the REVEAL deadline, enters the target play/pause state
+   without seeking again, and sends `ACK/PRESENTED` for the newly visible frame.
+
+`PRESENTED` before accepted `ARMED` is invalid. A stale REVEAL with different
+`stateVersion`, `commandSeq`, or `directiveId` must not affect playback.
+
+A client accepts only one settling directive at a time. A later directive does
+not cancel or replace the scheduled/executed directive; it is negatively
+acknowledged without changing the existing target or expected state. A failed
+execution marks only that participant late.
 
 ## 10. Heartbeats and correction
 
-Send every second while playing or converging and every five seconds while
-stably paused:
+Send every five seconds while stably playing and every fifteen seconds while
+stably paused. Do not send ordinary position heartbeats while a command is
+converging or waiting for post-command presentation. Send `BUFFERING` and the
+first recovered `PLAYING` sample immediately:
 
 ```json
 {
@@ -483,8 +543,29 @@ STOPPED
 ERROR
 ```
 
-`positionMs` is observed player media time, not downloaded bytes or transport
-position. `BUFFERING` is telemetry and affects only that participant.
+`positionMs` is the media position of the last frame delivered to the display,
+not downloaded bytes, decoder input, buffered head, transport position, or a
+seek target. `sampleMonoMs` is the client monotonic time associated with that
+frame's display release. For audio-only playback, use the audio presentation
+head.
+
+Heartbeat cadence is measured from request send time, not from
+`sampleMonoMs`. A paused participant therefore continues sending liveness
+heartbeats even though the same held frame legitimately retains the same
+presentation timestamp. Accepted `PRESENTED` already carries the current
+presentation sample, so the client does not immediately duplicate it in a
+heartbeat.
+
+The coordinator compares participants at one common server-monotonic instant by
+projecting each `PLAYING` presentation sample at rate 1.0. It does not compare
+heartbeats captured at different instants directly. `PAUSED` samples are not
+projected.
+
+`BUFFERING` marks presentation starvation and affects only that participant.
+While buffering, activating, or converging, the coordinator does not issue
+drift corrections. The first post-starvation frame is reported immediately.
+After a directive, `ACK/PRESENTED` ends the settling interval and ordinary
+sparse heartbeats resume.
 
 `HEARTBEAT_ACK` includes:
 
@@ -497,15 +578,27 @@ Correction policy:
 
 | Condition | Result |
 | --- | --- |
-| absolute drift below 100 ms | none |
-| 100–750 ms for three consecutive heartbeats | one hard correction |
-| above 750 ms or wrong play/pause state | immediate hard correction |
+| absolute drift at or below 67 ms | none |
+| drift above 67 ms through 750 ms for three post-activation samples | one soft correction |
+| drift above 750 ms, wrong play/pause state, or post-starvation drift | one hard correction |
 | BUFFERING or ERROR | mark participant late; do not correct |
 
-Hard corrections are rate-limited to one per participant per ten seconds.
+Only one correction may be in flight per participant, and another correction
+must not be issued while it is settling. A `CORRECTION` contains the same
+participant-specific `directiveId`, target position/state/rate/deadline fields
+as a command plus `reason` and `kind`:
 
-`CORRECTION` contains the same target position/state/rate/deadline fields as a
-command plus a reason. It never changes the canonical timeline generation.
+- `SOFT` is presentation-only. When ahead, hold the displayed progression for
+  the instructed drift interval. When behind, skip delivery of intermediate
+  video frames while the rate-1 player advances. It must not seek, reposition
+  the transport, or alter playback rate.
+- `HARD` performs a real canonical reposition using the barrier lifecycle.
+
+The no-seek rule applies only to `SOFT` correction. User JUMP, FF, REW,
+COMSKIP, and `HARD` correction continue to perform real timeline repositioning.
+SOFT uses the single-phase presentation lifecycle; HARD uses
+PREPARE/ARMED/REVEAL/PRESENTED. Neither changes the canonical timeline
+generation.
 
 ## 11. Local controls
 
@@ -522,7 +615,7 @@ Local Stop is not a shared Stop command. Report it as:
 }
 ```
 
-The participant must PREPARE and READY again before receiving PLAY/SEEK.
+The participant must PREPARE and READY again before receiving PLAY/JUMP.
 
 ## 12. Leave, end and expiry
 
@@ -546,5 +639,8 @@ Before advertising the required capabilities, each platform must prove:
 6. local Stop is intercepted and reported;
 7. one buffering participant does not pause or delay another;
 8. PAUSE works while a participant reports buffering;
-9. reconnect requires fresh preparation and clock calibration;
-10. captions/audio/subtitle changes remain local.
+9. barrier preparation preserves the old visible frame until matching REVEAL;
+10. REVEAL changes visibility/state without a second seek;
+11. invitation JOIN includes the paired `partyId` and `mediaFileId`;
+12. reconnect requires fresh clock calibration, preparation, and READY;
+13. captions/audio/subtitle changes remain local.
