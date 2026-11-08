@@ -424,6 +424,11 @@ public class UIActivityLifeCycleHandler<UIRenderType extends UIRenderer> impleme
         errorMessage.setText(message);
         errorCause.setText(cause);
         errorContainer.setVisibility(View.VISIBLE);
+        View errorClose = errorContainer.findViewById(R.id.errorClose);
+        if (errorClose != null)
+        {
+            errorClose.requestFocus();
+        }
     }
 
     public void onBackPressed()
@@ -485,7 +490,10 @@ public class UIActivityLifeCycleHandler<UIRenderType extends UIRenderer> impleme
                 if (connectingIsVisible)
                 {
                     errorContainer.setVisibility(View.GONE);
+                    pleaseWait.setFocusable(true);
+                    pleaseWait.setFocusableInTouchMode(true);
                     pleaseWait.setVisibility(View.VISIBLE);
+                    pleaseWait.requestFocus();
                 }
                 else
                 {
@@ -493,6 +501,11 @@ public class UIActivityLifeCycleHandler<UIRenderType extends UIRenderer> impleme
                     //YoYo.with(Techniques.FadeOutLeft).duration(700).playOn(pleaseWait);
                     errorContainer.setVisibility(View.GONE);
                     pleaseWait.setVisibility(View.GONE);
+                    pleaseWait.setFocusable(false);
+                    if (miniClientView != null)
+                    {
+                        miniClientView.requestFocus();
+                    }
                 }
             }
         });
