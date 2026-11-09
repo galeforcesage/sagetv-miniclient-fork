@@ -21,6 +21,17 @@ public class TrickplayControllerClockTest
     }
 
     @Test
+    public void pendingPartyTargetArmsOnServerFlush()
+    {
+        assertTrue(TrickplayController.shouldArmAuthoritativeResetOnFlush(
+                true, true));
+        assertFalse(TrickplayController.shouldArmAuthoritativeResetOnFlush(
+                true, false));
+        assertFalse(TrickplayController.shouldArmAuthoritativeResetOnFlush(
+                false, true));
+    }
+
+    @Test
     public void rawMpegClockIsAnchoredToPartyTarget()
     {
         long targetPositionMs = 88_812L;
@@ -39,6 +50,19 @@ public class TrickplayControllerClockTest
                 false, true, 64_075L, 64_053L));
         assertTrue(TrickplayController.shouldAnchorAuthoritativePosition(
                 true, true, 0L, 64_053L));
+    }
+
+    @Test
+    public void presentedSampleMappingDoesNotDependOnLatestLiveSample()
+    {
+        assertEquals(13_687L,
+                TrickplayController.reportedTimeForPlayerPosition(
+                        529L, false, -1L, false, 0L,
+                        true, 13_158L, -1L));
+        assertEquals(13_687L,
+                TrickplayController.reportedTimeForPlayerPosition(
+                        31_050L, false, -1L, true, 13_687L,
+                        true, -17_363L, -1L));
     }
 
     @Test

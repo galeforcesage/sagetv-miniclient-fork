@@ -1186,7 +1186,8 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
             readyRequestPending = false;
             converging = true;
             status = "ACTIVATING";
-            if (command.barrier && isActivationReady(observation)) {
+            if (command.barrier
+                    && isArmedObservationFor(command, observation)) {
                 sendArmedAck(command, observation);
             } else if (isPresentedObservationFor(command, observation)) {
                 sendPresentedAck(command, observation);
@@ -1259,7 +1260,11 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
             return;
         }
         if (observation == null) observation = adapter.observe();
-        if (observation == null) return;
+        if (observation == null
+                || (success
+                && !isArmedObservationFor(command, observation))) {
+            return;
+        }
         final boolean ackSuccess = success;
         final PartyPlaybackAdapter.ScheduledCommand pendingCommand = command;
         final long pendingGeneration = pendingPresentedDirectiveGeneration;
@@ -1874,6 +1879,17 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
             sendHello();
         }
         if (partyId == null || locallyStopped) return;
+        if (pendingPresentedDirective != null
+                && pendingPresentedDirectiveGeneration
+                == directiveExecutionGeneration
+                && directiveExecutionCompleted) {
+            PartyPlaybackAdapter.Observation observation = adapter.observe();
+            if (directiveStage == DirectiveStage.PREPARING) {
+                sendArmedAck(pendingPresentedDirective, observation);
+            } else if (directiveStage == DirectiveStage.PRESENTING) {
+                sendPresentedAck(pendingPresentedDirective, observation);
+            }
+        }
         if (clockRefreshDue(
                 lastClockModelAtMs, now, clockSamples,
                 hasPendingRequest("CLOCK") || hasPendingRequest("CLOCK_REPLY"))) {
@@ -2311,7 +2327,43 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
             PartyPlaybackAdapter.Observation observation) {
         return command != null
                 && isActivationReady(observation)
-                && observation.state == command.targetState;
+                && observation.state == command.targetState
+                && isPresentationPositionAligned(command, observation, false);
+    }
+
+    static boolean isArmedObservationFor(
+            PartyPlaybackAdapter.ScheduledCommand command,
+            PartyPlaybackAdapter.Observation observation) {
+        return command != null
+                && command.barrier
+                && isActivationReady(observation)
+                && observation.state
+                == PartyPlaybackAdapter.PlaybackState.PAUSED
+                && isPresentationPositionAligned(command, observation, true);
+    }
+
+    static boolean isPresentationPositionAligned(
+            PartyPlaybackAdapter.ScheduledCommand command,
+            PartyPlaybackAdapter.Observation observation,
+            boolean armed) {
+        if (command == null || observation == null) return false;
+        long referenceMonoMs = armed || command.visibleAtClientMonoMs < 0
+                ? command.executeAtClientMonoMs
+                : command.visibleAtClientMonoMs;
+        if (observation.sampleMonoMs < referenceMonoMs) return false;
+        long expectedPositionMs = command.targetPositionMs;
+        if (!armed
+                && command.targetState
+                == PartyPlaybackAdapter.PlaybackState.PLAYING) {
+            expectedPositionMs += Math.round(
+                    (observation.sampleMonoMs - referenceMonoMs)
+                            * command.targetRate);
+        }
+        long toleranceMs = Math.max(250L,
+                observation.precisionMs
+                        + command.presentationUncertaintyMs);
+        return Math.abs(observation.positionMs - expectedPositionMs)
+                <= toleranceMs;
     }
 
     static boolean isNonFatalTelemetryError(

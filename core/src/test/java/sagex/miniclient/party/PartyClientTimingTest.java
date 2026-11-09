@@ -269,21 +269,49 @@ public class PartyClientTimingTest {
     }
 
     @Test
-    public void presentedObservationMustMatchDirectiveTargetState() {
+    public void presentedObservationMustMatchDirectiveStateAndPosition() {
         PartyPlaybackAdapter.ScheduledCommand play =
                 command(PartyPlaybackAdapter.PlaybackState.PLAYING);
         assertTrue(PartyClient.isPresentedObservationFor(
-                play, observation(PartyPlaybackAdapter.PlaybackState.PLAYING,
-                        true)));
+                play, observation(2_100, 1_100,
+                        PartyPlaybackAdapter.PlaybackState.PLAYING, true)));
         assertFalse(PartyClient.isPresentedObservationFor(
-                play, observation(PartyPlaybackAdapter.PlaybackState.PAUSED,
-                        true)));
+                play, observation(2_100, 1_100,
+                        PartyPlaybackAdapter.PlaybackState.PAUSED, true)));
         assertFalse(PartyClient.isPresentedObservationFor(
-                play, observation(PartyPlaybackAdapter.PlaybackState.BUFFERING,
-                        true)));
+                play, observation(2_100, 1_100,
+                        PartyPlaybackAdapter.PlaybackState.BUFFERING, true)));
         assertFalse(PartyClient.isPresentedObservationFor(
-                play, observation(PartyPlaybackAdapter.PlaybackState.PLAYING,
-                        false)));
+                play, observation(2_100, 1_100,
+                        PartyPlaybackAdapter.PlaybackState.PLAYING, false)));
+        assertFalse(PartyClient.isPresentedObservationFor(
+                play, observation(2_100, 7_300,
+                        PartyPlaybackAdapter.PlaybackState.PLAYING, true)));
+        assertFalse(PartyClient.isPresentedObservationFor(
+                play, observation(1_900, 1_000,
+                        PartyPlaybackAdapter.PlaybackState.PLAYING, true)));
+    }
+
+    @Test
+    public void armedObservationMustBePausedAtBarrierTarget() {
+        PartyPlaybackAdapter.ScheduledCommand barrier =
+                new PartyPlaybackAdapter.ScheduledCommand(
+                        "barrier-1", 1, 1, "CORRECTION",
+                        PartyPlaybackAdapter.CorrectionKind.HARD,
+                        10_000,
+                        PartyPlaybackAdapter.PlaybackState.PLAYING,
+                        1.0, 2_000, true, "PREPARE",
+                        3_000, 500, 300);
+
+        assertTrue(PartyClient.isArmedObservationFor(
+                barrier, observation(2_500, 10_200,
+                        PartyPlaybackAdapter.PlaybackState.PAUSED, true)));
+        assertFalse(PartyClient.isArmedObservationFor(
+                barrier, observation(2_500, 3_800,
+                        PartyPlaybackAdapter.PlaybackState.PAUSED, true)));
+        assertFalse(PartyClient.isArmedObservationFor(
+                barrier, observation(2_500, 10_200,
+                        PartyPlaybackAdapter.PlaybackState.PLAYING, true)));
     }
 
     @Test
@@ -492,8 +520,14 @@ public class PartyClientTimingTest {
 
     private static PartyPlaybackAdapter.Observation observation(
             PartyPlaybackAdapter.PlaybackState state, boolean activated) {
+        return observation(1_000, 2_000, state, activated);
+    }
+
+    private static PartyPlaybackAdapter.Observation observation(
+            long sampleMonoMs, long positionMs,
+            PartyPlaybackAdapter.PlaybackState state, boolean activated) {
         return new PartyPlaybackAdapter.Observation(
-                1_000, 2_000, 3_000, 4_000,
+                sampleMonoMs, positionMs, 3_000, 4_000,
                 state, true, activated, 50);
     }
 

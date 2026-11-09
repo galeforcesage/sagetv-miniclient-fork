@@ -403,6 +403,11 @@ public class TrickplayController
         // mapping if a reset is actually observed.
         synchronized (this)
         {
+            if (shouldArmAuthoritativeResetOnFlush(
+                    authoritativeTimelineActive, authoritativeSamplePending))
+            {
+                authoritativeResetPending = true;
+            }
             if (invalidatesMappingOnFlush(authoritativeTimelineActive))
             {
                 mappingValid = false;
@@ -643,6 +648,13 @@ public class TrickplayController
         return !authoritativeResetPending;
     }
 
+    static boolean shouldArmAuthoritativeResetOnFlush(
+            boolean authoritativeTimelineActive,
+            boolean authoritativeSamplePending)
+    {
+        return authoritativeTimelineActive && authoritativeSamplePending;
+    }
+
     static long authoritativeBaseOffset(long targetPositionMs, long rawPlayerPositionMs)
     {
         return targetPositionMs - rawPlayerPositionMs;
@@ -687,28 +699,39 @@ public class TrickplayController
     public synchronized long getReportedTime()
     {
         // Frozen during in-flight seek so the OSD doesn't twitch.
-        if (seekArmed || seekCommitted)
-        {
-            return seekTargetMs;
-        }
-        if (authoritativeSamplePending)
-        {
-            return authoritativePositionMs;
-        }
+        return reportedTimeForPlayerPosition(
+                lastPlayerPosMs, seekArmed || seekCommitted, seekTargetMs,
+                authoritativeSamplePending, authoritativePositionMs,
+                mappingValid, baseOffsetMs, serverStartTimeMs);
+    }
 
-        if (mappingValid)
-        {
-            return lastPlayerPosMs + baseOffsetMs;
-        }
+    /**
+     * Maps a separately sampled player position without installing it as the
+     * controller's latest live clock sample.
+     */
+    public synchronized long getReportedTimeForPlayerPosition(long playerPositionMs)
+    {
+        return reportedTimeForPlayerPosition(
+                playerPositionMs, seekArmed || seekCommitted, seekTargetMs,
+                authoritativeSamplePending, authoritativePositionMs,
+                mappingValid, baseOffsetMs, serverStartTimeMs);
+    }
 
-        if (serverStartTimeMs >= 0)
-        {
-            return serverStartTimeMs + lastPlayerPosMs;
-        }
-
-        // Pre-mapping, no baseline set: pull-direct's playerPos IS already
-        // timeline time.
-        return lastPlayerPosMs;
+    static long reportedTimeForPlayerPosition(
+            long playerPositionMs,
+            boolean seekPending,
+            long seekTargetMs,
+            boolean authoritativeSamplePending,
+            long authoritativePositionMs,
+            boolean mappingValid,
+            long baseOffsetMs,
+            long serverStartTimeMs)
+    {
+        if (seekPending) return seekTargetMs;
+        if (authoritativeSamplePending) return authoritativePositionMs;
+        if (mappingValid) return playerPositionMs + baseOffsetMs;
+        if (serverStartTimeMs >= 0) return serverStartTimeMs + playerPositionMs;
+        return playerPositionMs;
     }
 
     private long mappedPosition(long playerPositionMs)

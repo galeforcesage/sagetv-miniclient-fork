@@ -290,6 +290,10 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
         {
             trickplayController.onPlayerPosition(time);
         }
+        if (time >= 0 && lastPartyPresentedMonoMs >= 0)
+        {
+            recordPartyPresentedSample(time);
+        }
 
         // Applies to push and to a server-conditioned pull-xcode reopen
         // alike (see class javadoc above); a direct-pull stream always has

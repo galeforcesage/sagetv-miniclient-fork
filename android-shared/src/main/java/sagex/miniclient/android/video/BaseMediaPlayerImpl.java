@@ -605,8 +605,8 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
         if (rendered >= 0 && trickplayController != null
                 && trickplayController.isNativeAvailable())
         {
-            trickplayController.onPlayerPosition(rendered);
-            long reported = trickplayController.getReportedTime();
+            long reported = trickplayController
+                    .getReportedTimeForPlayerPosition(rendered);
             canonical = reported >= 0
                     ? new CanonicalMediaSample(nowMonoMs, reported)
                     : lastCanonicalMediaSample;
