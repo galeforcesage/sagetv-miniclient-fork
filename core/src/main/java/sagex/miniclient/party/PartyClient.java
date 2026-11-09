@@ -761,6 +761,7 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         preparationId = null;
         setPlaybackHold(true);
         status = "PREPARING";
+        errorCode = null;
         enqueueRequest("PREPARE",
                 new JSONObject().put("partyId", partyId), true, null);
         publishState();
@@ -781,6 +782,7 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         preparationId = acceptedPreparationId;
         preparationPending = true;
         status = "PREPARING";
+        errorCode = null;
         publishState();
     }
 
@@ -800,7 +802,8 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
                 || preparationWatchCode != 0) {
             preparationLoaded = false;
             preparationId = null;
-            setPlaybackHold(false);
+            preparationPlaybackGeneration = -1;
+            setPlaybackHold(playbackHoldAfterPreparationFailure());
             errorCode = result.optString("code", "PREPARATION_FAILED");
             status = "PREPARATION_FAILED";
             publishState();
@@ -811,7 +814,8 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         if (preparationPlaybackGeneration < 0) {
             preparationLoaded = false;
             preparationId = null;
-            setPlaybackHold(false);
+            preparationPlaybackGeneration = -1;
+            setPlaybackHold(playbackHoldAfterPreparationFailure());
             errorCode = "INVALID_PREPARATION_GENERATION";
             status = "PREPARATION_FAILED";
             publishState();
@@ -823,6 +827,7 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         currentDelivery = result.optJSONObject("delivery");
         adapter.setPartyHold(true);
         status = "PREPARED";
+        errorCode = null;
         evaluateReadiness();
         publishState();
     }
@@ -1680,6 +1685,10 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
                 && (preparationPending || "PREPARING".equals(status));
     }
 
+    static boolean playbackHoldAfterPreparationFailure() {
+        return true;
+    }
+
     static boolean completesRequest(String pendingType, String pendingRequestId,
                                     String incomingType, String incomingRequestId) {
         if (pendingRequestId != null
@@ -1847,7 +1856,9 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
         } else if ("PREPARATION_FAILED".equals(errorCode)) {
             preparationPending = false;
             preparationLoaded = false;
-            setPlaybackHold(false);
+            preparationId = null;
+            preparationPlaybackGeneration = -1;
+            setPlaybackHold(playbackHoldAfterPreparationFailure());
             status = "PREPARATION_FAILED";
         } else {
             status = "ERROR";
@@ -2157,10 +2168,17 @@ public final class PartyClient implements PartyPlaybackAdapter.LifecycleListener
     }
 
     private void beginClockCalibration() {
+        boolean retryingPreparation =
+                "PREPARATION_FAILED".equals(status);
         if (clockModel != null || clockSamples >= CLOCK_CALIBRATION_SAMPLE_COUNT) {
             resetClock();
         }
-        if (!ready) status = "CLOCKING";
+        if (!ready) {
+            status = "CLOCKING";
+            if (retryingPreparation) {
+                errorCode = null;
+            }
+        }
         requestClock();
         publishState();
     }

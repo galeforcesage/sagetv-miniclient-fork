@@ -84,6 +84,11 @@ public class PartyClientTimingTest {
     }
 
     @Test
+    public void preparationFailureMustKeepPartyOutputSuppressed() {
+        assertTrue(PartyClient.playbackHoldAfterPreparationFailure());
+    }
+
+    @Test
     public void staleStateVersionsAreIgnored() {
         assertTrue(PartyClient.isStaleStateVersion(7, 6));
         assertFalse(PartyClient.isStaleStateVersion(7, 7));
