@@ -47,6 +47,7 @@ import java.util.concurrent.TimeUnit;
 import android.media.MediaCodecInfo;
 import android.media.MediaCodecList;
 
+import sagex.miniclient.MiniClientConnection;
 import sagex.miniclient.MiniPlayerPlugin;
 import sagex.miniclient.android.MiniclientApplication;
 import sagex.miniclient.android.media.CodecCapabilityDetector;
@@ -823,6 +824,22 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
             super.seek(timeInMS);
 
+            if (!MiniClientConnection.trickplayPositionV1Negotiated)
+            {
+                // OpenSageTV legacy behavior: seek the player immediately in
+                // both pull and push modes. NG sessions use the controller's
+                // coalesced commit path below.
+                if (playerReady && player != null)
+                {
+                    seekToImpl(timeInMS);
+                }
+                else
+                {
+                    playbackStartPosition = timeInMS;
+                }
+                return;
+            }
+
             if (playerReady)
             {
                 if (!pushMode)
@@ -1228,7 +1245,9 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
 
         if (pushMode)
         {
-            if (trickplayController != null && trickplayController.isNativeAvailable())
+            if (MiniClientConnection.trickplayPositionV1Negotiated
+                    && trickplayController != null
+                    && trickplayController.isNativeAvailable())
             {
                 log.logDebug("Creating TransportDataSource (native ring buffer)");
                 trickplayController.open(true);
@@ -1626,6 +1645,10 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
             {
                 if (playbackState == Player.STATE_BUFFERING)
                 {
+                    if (trickplayController != null)
+                    {
+                        trickplayController.setBuffering(true);
+                    }
                     partyHandler.removeCallbacks(partyBufferingStart);
                     partyBufferingStartedAtMs =
                             android.os.SystemClock.elapsedRealtime();
@@ -1662,6 +1685,15 @@ public class Exo2MediaPlayerImpl extends BaseMediaPlayerImpl<ExoPlayer, DataSour
                 }
                 if (playbackState == Player.STATE_READY)
                 {
+                    if (trickplayController != null)
+                    {
+                        trickplayController.setBuffering(false);
+                        if (player != null)
+                        {
+                            trickplayController.onPlayerPosition(
+                                    player.getCurrentPosition());
+                        }
+                    }
                     partyHandler.removeCallbacks(partyBufferingStart);
                     partyBufferingStartedAtMs = -1;
                     setPartyBuffering(false);

@@ -87,6 +87,13 @@ public class TrickplayController
     private static final long CONVERGENCE_TIMEOUT_MS = 1500;
 
     /**
+     * The first rendered sample after a reprime should be close to the server's
+     * seek origin when IJK exposes source-relative time. A zero-based player
+     * sample is instead much closer to zero and needs the origin added once.
+     */
+    private static final long PLAYER_TIMELINE_MATCH_WINDOW_MS = 30_000;
+
+    /**
      * A Party correction installs an authoritative mapping before the server
      * flush arrives. Keep accepting a player-position reset for the lifetime
      * of the correction observer, but do not let an unrelated later regression
@@ -169,6 +176,7 @@ public class TrickplayController
     // Two-clock mapping. Once set, reported = playerPos + baseOffsetMs.
     private boolean mappingValid = false;
     private long    baseOffsetMs = 0;
+    private long postFlushTimelineClassificationDeadlineMs;
     private boolean authoritativeResetPending;
     private boolean authoritativeSamplePending;
     private boolean authoritativeTimelineActive;
@@ -176,6 +184,8 @@ public class TrickplayController
 
     // Paused indicator (used only by isStable / getState).
     private boolean paused = false;
+    private boolean buffering;
+    private long bufferingReportedTimeMs = -1;
 
     // ---- Seek epoch (SEEK_EPOCH_V1) ----
     // Monotonically increasing id of the current contiguous run of stream
@@ -307,10 +317,13 @@ public class TrickplayController
         committedTargetMs = -1;
         mappingValid = false;
         baseOffsetMs = 0;
+        postFlushTimelineClassificationDeadlineMs = 0;
         authoritativeResetPending = false;
         authoritativeTimelineActive = false;
         authoritativePositionMs = 0;
         paused = false;
+        buffering = false;
+        bufferingReportedTimeMs = -1;
         pendingPreReadySeek = false;
         burstStartedAtMs = 0;
         lastCommitAtMs = 0;
@@ -377,7 +390,7 @@ public class TrickplayController
 
     public int bufferAvailable()
     {
-        if (nativeHandle == 0) return DEFAULT_BUFFER_CAPACITY;
+        if (nativeHandle == 0) return 0;
         return NativeTransport.nBufferAvailable(nativeHandle);
     }
 
@@ -412,11 +425,15 @@ public class TrickplayController
             {
                 mappingValid = false;
             }
+            postFlushTimelineClassificationDeadlineMs =
+                    SystemClock.elapsedRealtime() + 10_000;
             // A flush is a reposition boundary: start a new epoch so any
             // in-flight position sample tagged with the prior epoch is
             // discarded rather than applied to the new content.
             epoch++;
             lastPlayerSampleMonoMs = 0;
+            buffering = true;
+            bufferingReportedTimeMs = currentReportedTime();
             // Note: we do NOT clear seekTargetMs / seekArmed / seekCommitted.
             // A typical sequence is beginSeek() → flush() → push new data
             // → onPlayerPosition() converges → mapping established.
@@ -549,7 +566,31 @@ public class TrickplayController
         boolean wakeup = false;
         synchronized (this)
         {
+            if (buffering)
+            {
+                return;
+            }
             long now = SystemClock.elapsedRealtime();
+            if (postFlushTimelineClassificationDeadlineMs > 0
+                    && now > postFlushTimelineClassificationDeadlineMs)
+            {
+                postFlushTimelineClassificationDeadlineMs = 0;
+            }
+            if (pushMode && !authoritativeTimelineActive
+                    && postFlushTimelineClassificationDeadlineMs > 0
+                    && isSourceRelativePlayerTimeline(
+                    serverStartTimeMs, positionMs))
+            {
+                postFlushTimelineClassificationDeadlineMs = 0;
+                baseOffsetMs = 0;
+                mappingValid = true;
+                seekArmed = false;
+                seekCommitted = false;
+                committedTargetMs = -1;
+                seekTargetMs = -1;
+                log.warn("Player timeline is already source-relative after flush: serverStart={}, playerPos={}; baseline not added",
+                        serverStartTimeMs, positionMs);
+            }
             if (shouldAnchorAuthoritativePosition(authoritativeResetPending,
                     authoritativeSamplePending, positionMs, lastPlayerPosMs))
             {
@@ -698,6 +739,19 @@ public class TrickplayController
      */
     public synchronized long getReportedTime()
     {
+        return reportedTimeWhileBuffering(
+                buffering, bufferingReportedTimeMs, currentReportedTime());
+    }
+
+    static long reportedTimeWhileBuffering(
+            boolean buffering, long heldPositionMs, long livePositionMs)
+    {
+        return buffering && heldPositionMs >= 0
+                ? heldPositionMs : livePositionMs;
+    }
+
+    private long currentReportedTime()
+    {
         // Frozen during in-flight seek so the OSD doesn't twitch.
         return reportedTimeForPlayerPosition(
                 lastPlayerPosMs, seekArmed || seekCommitted, seekTargetMs,
@@ -730,14 +784,49 @@ public class TrickplayController
         if (seekPending) return seekTargetMs;
         if (authoritativeSamplePending) return authoritativePositionMs;
         if (mappingValid) return playerPositionMs + baseOffsetMs;
-        if (serverStartTimeMs >= 0) return serverStartTimeMs + playerPositionMs;
+        if (serverStartTimeMs >= 0)
+        {
+            return playerPositionMs + initialPlayerTimelineOffset(
+                    serverStartTimeMs, playerPositionMs);
+        }
         return playerPositionMs;
+    }
+
+    public static long initialPlayerTimelineOffset(
+            long serverStartTimeMs, long playerPositionMs)
+    {
+        if (serverStartTimeMs < 500 || playerPositionMs < 0) return 0;
+        long distanceFromServerTimeline =
+                absoluteDifference(playerPositionMs, serverStartTimeMs);
+        long distanceFromZeroTimeline = playerPositionMs;
+        return distanceFromServerTimeline <= PLAYER_TIMELINE_MATCH_WINDOW_MS
+                && distanceFromServerTimeline < distanceFromZeroTimeline
+                ? 0
+                : serverStartTimeMs;
+    }
+
+    static boolean isSourceRelativePlayerTimeline(
+            long serverStartTimeMs, long playerPositionMs)
+    {
+        return serverStartTimeMs >= 500
+                && initialPlayerTimelineOffset(
+                serverStartTimeMs, playerPositionMs) == 0;
+    }
+
+
+    private static long absoluteDifference(long left, long right)
+    {
+        return left >= right ? left - right : right - left;
     }
 
     private long mappedPosition(long playerPositionMs)
     {
         if (mappingValid) return playerPositionMs + baseOffsetMs;
-        if (serverStartTimeMs >= 0) return serverStartTimeMs + playerPositionMs;
+        if (serverStartTimeMs >= 0)
+        {
+            return playerPositionMs + initialPlayerTimelineOffset(
+                    serverStartTimeMs, playerPositionMs);
+        }
         return playerPositionMs;
     }
 
@@ -764,6 +853,19 @@ public class TrickplayController
     public synchronized void setPaused(boolean paused)
     {
         this.paused = paused;
+    }
+
+    public synchronized void setBuffering(boolean buffering)
+    {
+        if (buffering && !this.buffering)
+        {
+            bufferingReportedTimeMs = currentReportedTime();
+        }
+        this.buffering = buffering;
+        if (!buffering)
+        {
+            bufferingReportedTimeMs = -1;
+        }
     }
 
     public void setPlaying()

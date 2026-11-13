@@ -125,7 +125,7 @@ public interface MiniPlayerPlugin extends Runnable
 
     void seek(long timeMS);
 
-    default void prepareTransportSeek(boolean preserveMediaTimeline) {
+    default void prepareTransportSeek(long timeMS, boolean preserveMediaTimeline) {
     }
 
     default void seekTransport(long timeMS, boolean preserveMediaTimeline) {

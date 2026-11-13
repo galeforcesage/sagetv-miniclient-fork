@@ -4,6 +4,7 @@ import org.junit.Test;
 
 import tv.danmaku.ijk.media.player.IMediaPlayer;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -100,10 +101,41 @@ public class IjkPartyTrackActivationTest
     }
 
     @Test
+    public void resumedPresentationAcceptsPositionOrDecodedFrameAdvance()
+    {
+        assertTrue(IjkPartyTrackActivation.hasPresentedAfterResume(
+                1_000, 1_020, 100, 100));
+        assertTrue(IjkPartyTrackActivation.hasPresentedAfterResume(
+                1_000, 1_000, 100, 101));
+        assertFalse(IjkPartyTrackActivation.hasPresentedAfterResume(
+                1_000, 1_000, 100, 100));
+    }
+
+    @Test
+    public void activePresentationSampleAdvancesWithMonotonicTime()
+    {
+        assertEquals(1_100,
+                IjkPartyTrackActivation.advancePresentedPosition(
+                        1_000, 1_000, 1_100, 1_300));
+        assertEquals(1_050,
+                IjkPartyTrackActivation.advancePresentedPosition(
+                        1_000, 1_000, 1_100, 1_050));
+        assertEquals(1_100,
+                IjkPartyTrackActivation.advancePresentedPosition(
+                        1_000, 1_000, 1_100, 1_000));
+    }
+
+    @Test
     public void pausedPresentationRequiresPostRepositionFrameStep()
     {
         assertFalse(IjkPartyTrackActivation.canAcceptPresentation(true, false));
         assertTrue(IjkPartyTrackActivation.canAcceptPresentation(true, true));
+        assertTrue(IjkPartyTrackActivation.canAcceptPresentation(false, false));
+    }
+
+    @Test
+    public void playingBarrierAcceptsRenderedFrameWithoutPausedPrime()
+    {
         assertTrue(IjkPartyTrackActivation.canAcceptPresentation(false, false));
     }
 
@@ -118,5 +150,50 @@ public class IjkPartyTrackActivationTest
                 false, true, false));
         assertFalse(IjkPartyTrackActivation.shouldRetryPausedPrime(
                 true, false, false));
+    }
+
+    @Test
+    public void uncorrectedPushResumePreservesRenderedTracks()
+    {
+        assertTrue(IjkPartyTrackActivation.shouldPreserveRenderedTracksForResume(
+                true, false, true, true, true));
+    }
+
+    @Test
+    public void generationChangingCommandsResetRenderedTracks()
+    {
+        assertFalse(IjkPartyTrackActivation.shouldPreserveRenderedTracksForResume(
+                false, false, true, true, true));
+        assertFalse(IjkPartyTrackActivation.shouldPreserveRenderedTracksForResume(
+                true, true, true, true, true));
+        assertFalse(IjkPartyTrackActivation.shouldPreserveRenderedTracksForResume(
+                true, false, false, true, true));
+        assertFalse(IjkPartyTrackActivation.shouldPreserveRenderedTracksForResume(
+                true, false, true, false, true));
+        assertFalse(IjkPartyTrackActivation.shouldPreserveRenderedTracksForResume(
+                true, false, true, true, false));
+    }
+
+    @Test
+    public void uncorrectedPushPausePreservesPresentedFrame()
+    {
+        assertTrue(IjkPartyTrackActivation
+                .shouldPreservePresentedFrameForPause(
+                        true, false, true, true, true));
+        assertFalse(IjkPartyTrackActivation
+                .shouldPreservePresentedFrameForPause(
+                        false, false, true, true, true));
+        assertFalse(IjkPartyTrackActivation
+                .shouldPreservePresentedFrameForPause(
+                        true, true, true, true, true));
+        assertFalse(IjkPartyTrackActivation
+                .shouldPreservePresentedFrameForPause(
+                        true, false, false, true, true));
+        assertFalse(IjkPartyTrackActivation
+                .shouldPreservePresentedFrameForPause(
+                        true, false, true, false, true));
+        assertFalse(IjkPartyTrackActivation
+                .shouldPreservePresentedFrameForPause(
+                        true, false, true, true, false));
     }
 }

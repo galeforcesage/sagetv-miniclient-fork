@@ -716,9 +716,17 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
     public void executePartyCommand(final PartyPlaybackAdapter.ScheduledCommand command,
             PartyPlaybackAdapter.ExecutionCallback callback)
     {
-        if (command != null)
+        final boolean reusePresentedTarget = command != null
+                && PartyCommandExecutor.shouldReusePresentedTarget(
+                        command, getPartyObservation());
+        if (command != null && !reusePresentedTarget)
         {
-            beginPartyPresentationGeneration();
+            beginPartyPresentationGeneration(command);
+        }
+        if (reusePresentedTarget)
+        {
+            log.info("Reusing already presented Party target at {}ms",
+                    command.targetPositionMs);
         }
         final PartyPlaybackAdapter.ExecutionCallback commandCallback = callback;
         PartyCommandExecutor.execute(new PartyCommandExecutor.Steps()
@@ -733,7 +741,8 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
                 }
                 return playerReady && player != null && command != null
                         && isPartyTargetState(command.targetState)
-                        && (command.targetPositionMs < 0
+                        && (reusePresentedTarget
+                        || command.targetPositionMs < 0
                         || seekForParty(command.targetPositionMs));
             }
 
@@ -828,6 +837,12 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
     protected void beginPartyPresentationGeneration()
     {
         resetPartyReadiness();
+    }
+
+    protected void beginPartyPresentationGeneration(
+            PartyPlaybackAdapter.ScheduledCommand command)
+    {
+        beginPartyPresentationGeneration();
     }
 
     public static long softCorrectionDurationMs(long targetPositionMs,
@@ -973,7 +988,9 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
         // source of truth: lastServerTime, the `flushed` flag, and IJK's
         // resume-offset bookkeeping are all redundant and ignored here.
         // See MiniPlayerPlugin.getMediaTimeMillis() Javadoc for the contract.
-        if (trickplayController != null && trickplayController.isNativeAvailable())
+        if (MiniClientConnection.trickplayPositionV1Negotiated
+                && trickplayController != null
+                && trickplayController.isNativeAvailable())
         {
             // lastServerTime carries the correct pre-mapping baseline for
             // BOTH modes: push's established mux-time convention, and (via
@@ -1099,7 +1116,9 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
         partyPlaybackCommandGeneration++;
         state = PAUSE_STATE;
         notifyPartyPlaybackStateChanged();
-        if (trickplayController != null && trickplayController.isNativeAvailable())
+        if (MiniClientConnection.trickplayPositionV1Negotiated
+                && trickplayController != null
+                && trickplayController.isNativeAvailable())
         {
             trickplayController.setPaused(true);
         }
@@ -1117,7 +1136,9 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
         AudioUtil.requestAudioFocus(context.getContext());
         state = PLAY_STATE;
         notifyPartyPlaybackStateChanged();
-        if (trickplayController != null && trickplayController.isNativeAvailable())
+        if (MiniClientConnection.trickplayPositionV1Negotiated
+                && trickplayController != null
+                && trickplayController.isNativeAvailable())
         {
             trickplayController.setPlaying();
         }
@@ -1141,7 +1162,9 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
         // and the server expects getMediaTimeMillis() to return a real time after seeking.
         flushed = false;
 
-        if (trickplayController != null && trickplayController.isNativeAvailable())
+        if (MiniClientConnection.trickplayPositionV1Negotiated
+                && trickplayController != null
+                && trickplayController.isNativeAvailable())
         {
             trickplayController.beginSeek(timeInMS);
         }
@@ -1149,7 +1172,8 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
     }
 
     @Override
-    public void prepareTransportSeek(boolean preserveMediaTimeline)
+    public void prepareTransportSeek(
+            long timeInMS, boolean preserveMediaTimeline)
     {
         if (preserveMediaTimeline && trickplayController != null
                 && trickplayController.isNativeAvailable())
@@ -1349,6 +1373,12 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
     {
         partyPlaybackCommandGeneration++;
         resetPartyReadiness();
+        eos = false;
+        eosServerLogged = false;
+        if (state == EOS_STATE)
+        {
+            state = playerReady ? LOADED_STATE : NO_STATE;
+        }
         log.debug("JVL - flush called!");
         if (VerboseLogging.DETAILED_PLAYER_LOGGING)
         {
@@ -1358,6 +1388,7 @@ public abstract class BaseMediaPlayerImpl<TPlayer, TDataSource>
         if (trickplayController != null && trickplayController.isNativeAvailable())
         {
             trickplayController.flush();
+            trickplayController.setBuffering(true);
         }
         else if (dataSource instanceof HasPushBuffer)
         {

@@ -146,6 +146,8 @@ public class PartyClientTimingTest {
 
     @Test
     public void correctionKindIsStrict() {
+        assertEquals(PartyPlaybackAdapter.CorrectionKind.NONE,
+                PartyClient.correctionKind(new JSONObject().put("kind", "NONE"), true));
         assertEquals(PartyPlaybackAdapter.CorrectionKind.SOFT,
                 PartyClient.correctionKind(new JSONObject().put("kind", "SOFT"), true));
         assertEquals(PartyPlaybackAdapter.CorrectionKind.HARD,
@@ -237,6 +239,18 @@ public class PartyClientTimingTest {
     }
 
     @Test
+    public void playbackRecoveryRetriesPresentedDuringRevealSettlement() {
+        assertTrue(PartyClient.shouldRetryPresentedAfterPlaybackStateChange(
+                true, true, true));
+        assertFalse(PartyClient.shouldRetryPresentedAfterPlaybackStateChange(
+                false, true, true));
+        assertFalse(PartyClient.shouldRetryPresentedAfterPlaybackStateChange(
+                true, false, true));
+        assertFalse(PartyClient.shouldRetryPresentedAfterPlaybackStateChange(
+                true, true, false));
+    }
+
+    @Test
     public void directiveCannotReplaceOneStillSettling() {
         assertTrue(PartyClient.canAcceptDirective(false));
         assertFalse(PartyClient.canAcceptDirective(true));
@@ -254,6 +268,39 @@ public class PartyClientTimingTest {
         assertFalse(PartyClient.shouldCancelOnReadinessLoss(false, true));
         assertFalse(PartyClient.shouldCancelOnReadinessLoss(true, false));
         assertTrue(PartyClient.shouldCancelOnReadinessLoss(false, false));
+    }
+
+    @Test
+    public void revealWaitsForArmedAckReply() {
+        assertTrue(PartyClient.shouldDeferReveal(true, true));
+        assertFalse(PartyClient.shouldDeferReveal(true, false));
+        assertFalse(PartyClient.shouldDeferReveal(false, true));
+    }
+
+    @Test
+    public void preparationResultWaitsForPrepareAcceptance() {
+        assertTrue(PartyClient.shouldDeferPreparationResult(
+                true, null, "prepare-1"));
+        assertFalse(PartyClient.shouldDeferPreparationResult(
+                false, null, "prepare-1"));
+        assertFalse(PartyClient.shouldDeferPreparationResult(
+                true, "prepare-1", "prepare-1"));
+        assertFalse(PartyClient.shouldDeferPreparationResult(
+                true, null, null));
+    }
+
+    @Test
+    public void availabilityRefreshPreservesJoinedState() {
+        assertTrue(PartyClient.shouldReplaceStatusOnAvailable(false));
+        assertFalse(PartyClient.shouldReplaceStatusOnAvailable(true));
+    }
+
+    @Test
+    public void partyEventsRequireCurrentMembership() {
+        assertTrue(PartyClient.partyEventMatches("party-1", "party-1"));
+        assertFalse(PartyClient.partyEventMatches("party-1", "party-2"));
+        assertFalse(PartyClient.partyEventMatches(null, "party-1"));
+        assertFalse(PartyClient.partyEventMatches("party-1", null));
     }
 
     @Test
@@ -425,6 +472,15 @@ public class PartyClientTimingTest {
                 new JSONObject(reveal.toString())
                         .put("directiveId", "stale-barrier"),
                 command));
+        PartyClockModel clock = new PartyClockModel(
+                100, 5, 10, true, 5, 500_000);
+        assertNull(PartyClient.revealRejectionReason(
+                reveal, "party-1", command, clock, 500_001));
+        assertEquals("DIRECTIVE_MISMATCH",
+                PartyClient.revealRejectionReason(
+                        new JSONObject(reveal.toString())
+                                .put("directiveId", "stale-barrier"),
+                        "party-1", command, clock, 500_001));
     }
 
     @Test
@@ -508,6 +564,35 @@ public class PartyClientTimingTest {
                 "ACTION", "action-1", "COMMAND", null));
         assertFalse(PartyClient.completesRequest(
                 "PREPARE", "prepare-1", "PREPARATION_RESULT", null));
+    }
+
+    @Test
+    public void correlatedRepliesRequireTheCurrentRequest() {
+        assertTrue(PartyClient.isCorrelatedReply(
+                "PREPARE_ACCEPTED", "prepare-1"));
+        assertTrue(PartyClient.isCorrelatedReply(
+                "ERROR", "action-1"));
+        assertFalse(PartyClient.isCorrelatedReply(
+                "PREPARATION_RESULT", null));
+        assertFalse(PartyClient.isCorrelatedReply(
+                "PARTICIPANT_STATE", null));
+        assertTrue(PartyClient.matchesInFlightRequest(
+                "prepare-1", "prepare-1"));
+        assertFalse(PartyClient.matchesInFlightRequest(
+                "prepare-1", "prepare-2"));
+        assertFalse(PartyClient.matchesInFlightRequest(
+                null, "prepare-1"));
+    }
+
+    @Test
+    public void terminalMembershipKeepsIndependentSessionRequests() {
+        assertFalse(PartyClient.isMembershipScopedRequest("HELLO"));
+        assertFalse(PartyClient.isMembershipScopedRequest("LIST_CLIENTS"));
+        assertFalse(PartyClient.isMembershipScopedRequest("CREATE"));
+        assertFalse(PartyClient.isMembershipScopedRequest("JOIN"));
+        assertTrue(PartyClient.isMembershipScopedRequest("HEARTBEAT"));
+        assertTrue(PartyClient.isMembershipScopedRequest("ACK"));
+        assertTrue(PartyClient.isMembershipScopedRequest("PREPARE"));
     }
 
     private static PartyPlaybackAdapter.ScheduledCommand command(

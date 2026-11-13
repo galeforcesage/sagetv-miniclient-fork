@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
+import sagex.miniclient.MiniClientConnection;
 import sagex.miniclient.android.MiniclientApplication;
 import sagex.miniclient.android.ui.AndroidUIController;
 import sagex.miniclient.android.util.AudioUtil;
@@ -63,19 +64,26 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     private volatile long partyActivationProbeDecodedFrames = -1;
     private volatile long lastPartyPresentedMonoMs = -1;
     private volatile long lastPartyPresentedPositionMs = -1;
+    private volatile boolean partyResumePresentationPending;
+    private final IjkPositionEpoch positionEpoch = new IjkPositionEpoch();
+    private volatile boolean positionEpochRenderObserved;
     private volatile boolean partyPausedFrameStepArmed;
     private volatile boolean partyPausedFramePrimeRequested;
+    private volatile boolean partyPausedPresentationPending;
     private final Runnable partyActivationPoll = new Runnable()
     {
         @Override public void run()
         {
             IMediaPlayer current = player;
-            if (current == null || audioRenderingStarted || videoRenderingStarted)
+            if (current == null)
             {
                 return;
             }
-            if (!IjkPartyTrackActivation.canAcceptPresentation(
-                    isPartyHold() && lastPartyPresentedMonoMs < 0,
+
+            if (!partyResumePresentationPending
+                    && !IjkPartyTrackActivation.canAcceptPresentation(
+                    partyPausedPresentationPending
+                            && lastPartyPresentedMonoMs < 0,
                     partyPausedFrameStepArmed))
             {
                 return;
@@ -92,6 +100,35 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
             if (current instanceof IjkMediaPlayer)
             {
                 IjkMediaPlayer ijk = (IjkMediaPlayer) current;
+                boolean audioActive = isActiveTrack(
+                        ijk, IjkTrackInfo.MEDIA_TRACK_TYPE_AUDIO);
+                boolean videoActive = isActiveTrack(
+                        ijk, IjkTrackInfo.MEDIA_TRACK_TYPE_VIDEO);
+                boolean rendered = IjkPartyTrackActivation.hasRendered(
+                        audioActive, videoActive,
+                        audioRenderingStarted, videoRenderingStarted);
+                if (partyResumePresentationPending)
+                {
+                    if (!rendered
+                            || !IjkPartyTrackActivation.hasPresentedAfterResume(
+                                    partyActivationProbePositionMs, positionMs,
+                                    partyActivationProbeDecodedFrames,
+                                    ijk.getVideoDecodedFrames()))
+                    {
+                        partyHandler.postDelayed(this, 50);
+                        return;
+                    }
+                    partyResumePresentationPending = false;
+                    recordPartyPresentedSample(positionMs);
+                    partyActivationProbePositionMs = -1;
+                    partyActivationProbeDecodedFrames = -1;
+                    notifyPartyReadinessChanged();
+                    return;
+                }
+                if (rendered)
+                {
+                    return;
+                }
                 boolean postResetFrame = firstFrameRendered
                         || IjkPartyTrackActivation.hasDecodedFrameAfterReset(
                                 partyActivationProbeDecodedFrames,
@@ -103,10 +140,8 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                     partyHandler.postDelayed(this, 50);
                     return;
                 }
-                audioRenderingStarted = isActiveTrack(
-                        ijk, IjkTrackInfo.MEDIA_TRACK_TYPE_AUDIO);
-                videoRenderingStarted = isActiveTrack(
-                        ijk, IjkTrackInfo.MEDIA_TRACK_TYPE_VIDEO);
+                audioRenderingStarted = audioActive;
+                videoRenderingStarted = videoActive;
                 recordPartyPresentedSample(positionMs);
                 partyActivationProbePositionMs = -1;
                 partyActivationProbeDecodedFrames = -1;
@@ -284,13 +319,24 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     public long getPlayerMediaTimeMillis(long serverStartTime)
     {
         long time = player.getCurrentPosition();
+        boolean ngPosition = MiniClientConnection.trickplayPositionV1Negotiated;
+        if (ngPosition && pushMode && !positionEpoch.isReady()
+                && positionEpochRenderObserved)
+        {
+            positionEpoch.markRendered(time);
+        }
+        if (ngPosition && pushMode && !positionEpoch.isReady())
+        {
+            return positionEpoch.getHeldPosition();
+        }
 
         // Feed position to native trickplay controller for state machine transitions
-        if (trickplayController != null && trickplayController.isNativeAvailable() && time > 0)
+        if (ngPosition && trickplayController != null
+                && trickplayController.isNativeAvailable() && time > 0)
         {
             trickplayController.onPlayerPosition(time);
         }
-        if (time >= 0 && lastPartyPresentedMonoMs >= 0)
+        if (ngPosition && time >= 0 && lastPartyPresentedMonoMs >= 0)
         {
             recordPartyPresentedSample(time);
         }
@@ -301,23 +347,25 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
         // (falls straight to the resumeMode==false branch below).
         //
         // we haven't determined the "resume" time yet
-        if (resumeTimeOffset < 0)
+        if (resumeTimeOffset < 0 && (ngPosition || pushMode))
         {
-            if (serverStartTime < 500)
+            // The upgraded IJK may expose either the legacy zero-based clock or
+            // an already source-relative clock after a reprime. Normalize both
+            // to the position the legacy client/server contract expects.
+            resumeTimeOffset = TrickplayController.initialPlayerTimelineOffset(
+                    serverStartTime, time);
+            if (resumeTimeOffset == 0)
             {
-                // this is start from beginning
                 resumeMode = false;
-                resumeTimeOffset = 0;
+                if (serverStartTime >= 500)
+                {
+                    log.debug("IJK timeline is already source-relative: player={}, serverStart={}",
+                            time, serverStartTime);
+                }
             }
             else
             {
-                // IJK's getMediaTime() is a little quirky for PS/TS streams.  Basically, when you start
-                // from 0, then seeking works fine.  But, when you resume from some other time, the
-                // players internal clock is reset to 0.  So, the stream plays at the right position, but
-                // the timescale is reset to 0.  For that reason, when pushMode is enabled, you can follow
-                // the logic to see what has to happen to ensure the correct media time.
                 resumeMode = true;
-                resumeTimeOffset = serverStartTime;
                 log.debug("IJK: getMediaTime(): RESUME from {}", resumeTimeOffset);
             }
         }
@@ -368,6 +416,10 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
         }
 
 
+        if (ngPosition)
+        {
+            positionEpoch.recordReportedPosition(time);
+        }
         return time;
     }
 
@@ -389,9 +441,22 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     @Override
     public long getDetailedBufferMediaTimeMillis(long lastServerTime)
     {
+        if (!MiniClientConnection.trickplayPositionV1Negotiated)
+        {
+            return getMediaTimeMillis(lastServerTime);
+        }
         try
         {
             long position = (player != null) ? player.getCurrentPosition() : -1;
+            if (pushMode && !positionEpoch.isReady()
+                    && positionEpochRenderObserved)
+            {
+                positionEpoch.markRendered(position);
+            }
+            if (pushMode && !positionEpoch.isReady())
+            {
+                return positionEpoch.getHeldPosition();
+            }
             if (position >= 0)
             {
                 if (trickplayController != null
@@ -399,9 +464,15 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                 {
                     trickplayController.setServerStartTime(lastServerTime);
                     trickplayController.onPlayerPosition(position);
-                    return trickplayController.getReportedTime();
+                    long reported = trickplayController.getReportedTime();
+                    positionEpoch.recordReportedPosition(reported);
+                    return reported;
                 }
-                return lastServerTime > 0 ? lastServerTime + position : position;
+                long reported = position
+                        + TrickplayController.initialPlayerTimelineOffset(
+                                lastServerTime, position);
+                positionEpoch.recordReportedPosition(reported);
+                return reported;
             }
         }
         catch (Throwable t)
@@ -440,8 +511,27 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
         boolean videoActive = isActiveTrack(ijk, IjkTrackInfo.MEDIA_TRACK_TYPE_VIDEO);
         boolean activated = IjkPartyTrackActivation.hasRendered(
                 audioActive, videoActive,
-                audioRenderingStarted, videoRenderingStarted);
+                audioRenderingStarted, videoRenderingStarted)
+                && !partyResumePresentationPending;
+        if (!activated && partyResumePresentationPending
+                && IjkPartyTrackActivation.hasRendered(
+                        audioActive, videoActive,
+                        audioRenderingStarted, videoRenderingStarted)
+                && IjkPartyTrackActivation.hasPresentedAfterResume(
+                        partyActivationProbePositionMs,
+                        base.renderedPositionMs,
+                        partyActivationProbeDecodedFrames,
+                        ijk.getVideoDecodedFrames()))
+        {
+            partyResumePresentationPending = false;
+            recordPartyPresentedSample(base.renderedPositionMs);
+            partyActivationProbePositionMs = -1;
+            partyActivationProbeDecodedFrames = -1;
+            activated = true;
+            notifyPartyReadinessChanged();
+        }
         if (!activated && firstFrameRendered
+                && !partyResumePresentationPending
                 && IjkPartyTrackActivation.hasPresentedAfterReset(
                         partyActivationProbePositionMs,
                         base.renderedPositionMs))
@@ -491,6 +581,23 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
         long sampleMonoMs = lastPartyPresentedMonoMs;
         if (positionMs >= 0 && sampleMonoMs >= 0)
         {
+            IMediaPlayer current = player;
+            if (state == PLAY_STATE && !isPartyBuffering() && !isPartyHold()
+                    && current != null)
+            {
+                long nowMonoMs = android.os.SystemClock.elapsedRealtime();
+                try
+                {
+                    positionMs = IjkPartyTrackActivation
+                            .advancePresentedPosition(
+                                    sampleMonoMs, positionMs, nowMonoMs,
+                                    current.getCurrentPosition());
+                    sampleMonoMs = nowMonoMs;
+                }
+                catch (Throwable ignored)
+                {
+                }
+            }
             return new PresentedMediaSample(sampleMonoMs, positionMs);
         }
         return super.getPresentedMediaSample();
@@ -551,6 +658,8 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
         }
         audioRenderingStarted = false;
         videoRenderingStarted = false;
+        partyResumePresentationPending = false;
+        partyPausedPresentationPending = false;
         lastPartyPresentedMonoMs = -1;
         lastPartyPresentedPositionMs = -1;
         partyPausedFrameStepArmed = false;
@@ -563,6 +672,90 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     protected void beginPartyPresentationGeneration()
     {
         resetPartyActivation();
+    }
+
+    @Override
+    protected void beginPartyPresentationGeneration(
+            PartyPlaybackAdapter.ScheduledCommand command)
+    {
+        boolean pausedPresentationPending = command != null
+                && command.targetState
+                == PartyPlaybackAdapter.PlaybackState.PAUSED;
+        IMediaPlayer current = player;
+        boolean alreadyRendered = false;
+        long decodedFrames = -1;
+        if (current instanceof IjkMediaPlayer)
+        {
+            IjkMediaPlayer ijk = (IjkMediaPlayer) current;
+            alreadyRendered = IjkPartyTrackActivation.hasRendered(
+                    isActiveTrack(ijk, IjkTrackInfo.MEDIA_TRACK_TYPE_AUDIO),
+                    isActiveTrack(ijk, IjkTrackInfo.MEDIA_TRACK_TYPE_VIDEO),
+                    audioRenderingStarted, videoRenderingStarted);
+            decodedFrames = ijk.getVideoDecodedFrames();
+        }
+        boolean preserveRenderedTracks =
+                command != null
+                        && IjkPartyTrackActivation
+                        .shouldPreserveRenderedTracksForResume(
+                                pushMode,
+                                command.barrier,
+                                command.targetState
+                                        == PartyPlaybackAdapter.PlaybackState.PLAYING,
+                                command.correctionKind
+                                        == PartyPlaybackAdapter.CorrectionKind.NONE,
+                                alreadyRendered);
+        boolean preservePausedFrame =
+                command != null
+                        && IjkPartyTrackActivation
+                        .shouldPreservePresentedFrameForPause(
+                                pushMode,
+                                command.barrier,
+                                command.targetState
+                                        == PartyPlaybackAdapter.PlaybackState.PAUSED,
+                                command.correctionKind
+                                        == PartyPlaybackAdapter.CorrectionKind.NONE,
+                                alreadyRendered);
+        if (preservePausedFrame)
+        {
+            try
+            {
+                recordPartyPresentedSample(current.getCurrentPosition());
+                partyActivationProbePositionMs = -1;
+                partyActivationProbeDecodedFrames = -1;
+                partyResumePresentationPending = false;
+                partyPausedPresentationPending = false;
+                partyPausedFrameStepArmed = false;
+                resetPartyReadiness();
+                partyHandler.removeCallbacks(partyActivationPoll);
+                return;
+            }
+            catch (Throwable ignored)
+            {
+            }
+        }
+        if (!preserveRenderedTracks)
+        {
+            resetPartyActivation();
+            partyPausedPresentationPending = pausedPresentationPending;
+            return;
+        }
+        partyPausedPresentationPending = false;
+        try
+        {
+            partyActivationProbePositionMs = current.getCurrentPosition();
+        }
+        catch (Throwable ignored)
+        {
+            partyActivationProbePositionMs = -1;
+        }
+        partyActivationProbeDecodedFrames = decodedFrames;
+        partyResumePresentationPending = true;
+        lastPartyPresentedMonoMs = -1;
+        lastPartyPresentedPositionMs = -1;
+        partyPausedFrameStepArmed = false;
+        resetPartyReadiness();
+        partyHandler.removeCallbacks(partyActivationPoll);
+        partyHandler.post(partyActivationPoll);
     }
 
     @Override
@@ -819,7 +1012,9 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
         final IMediaPlayer current = player;
         if (current == null
                 || !PartyCommandExecutor.shouldPrimePausedFrame(
-                        lastPartyPresentedMonoMs < 0, isPartyHold(), amount))
+                        partyPausedPresentationPending
+                                && lastPartyPresentedMonoMs < 0,
+                        isPartyHold(), amount))
         {
             return;
         }
@@ -917,6 +1112,11 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
     public void flush()
     {
         resetPartyActivation();
+        boolean ngPosition = MiniClientConnection.trickplayPositionV1Negotiated;
+        if (ngPosition)
+        {
+            resetPositionEpoch();
+        }
         if (pushMode && isMatroskaContainer())
         {
             rebuildPushMatroskaGeneration();
@@ -934,6 +1134,10 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
         // Reset resume tracking so time reporting starts fresh after seek.
         // The server will push new data from the new position and
         // getPlayerMediaTimeMillis will recalculate based on the new serverStartTime.
+        // Reclassify the upgraded IJK clock after every reprime. This is also
+        // required for legacy servers: it preserves the position values the
+        // original zero-based IJK implementation produced without exposing
+        // the upgraded player's source-relative clock.
         resumeTimeOffset = -1;
         resumeMode = false;
         logTime = -1;
@@ -956,6 +1160,13 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
             }
             seekToImpl(Long.MAX_VALUE);
         }
+    }
+
+    private void resetPositionEpoch()
+    {
+        firstFrameRendered = false;
+        positionEpochRenderObserved = false;
+        positionEpoch.reset(lastMediaTime);
     }
 
     @Override
@@ -999,6 +1210,9 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
         resumeTimeOffset = -1;
         resumeMode = false;
         firstFrameRendered = false;
+        positionEpochRenderObserved = false;
+        positionEpoch.resetForOpen(
+                rebuildingMatroskaGeneration ? lastMediaTime : 0);
         initialAudioStreamPos = -1;
         initialTextStreamPos = -1;
         logTime = -1;
@@ -1056,6 +1270,11 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                 ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", probeSize);
                 ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", analyzeDuration);
                 ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "packet-buffering", 1);
+                ((IjkMediaPlayer) player).setOption(
+                        IjkMediaPlayer.OPT_CATEGORY_PLAYER, "min-frames", 1);
+                ((IjkMediaPlayer) player).setOption(
+                        IjkMediaPlayer.OPT_CATEGORY_PLAYER,
+                        "start-on-prepared", 1);
                 ((IjkMediaPlayer) player).setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-buffer-size", 2 * 1024 * 1024); // 2 MB (vs 15 MB) — limits stale data after seek
                 if (widenAudioProbe)
                     log.debug("Push MPEG2-TS with AC3/E-AC3 audio: widening probe window to {} bytes / {} us so audio params resolve", probeSize, analyzeDuration);
@@ -1221,6 +1440,10 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                 {
                     if (what == IMediaPlayer.MEDIA_INFO_BUFFERING_START)
                     {
+                        if (trickplayController != null)
+                        {
+                            trickplayController.setBuffering(true);
+                        }
                         partyHandler.removeCallbacks(partyBufferingStart);
                         partyBufferingProbePositionMs = mp.getCurrentPosition();
                         partyBufferingProbeGeneration =
@@ -1237,6 +1460,10 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                     }
                     else if (what == IMediaPlayer.MEDIA_INFO_BUFFERING_END)
                     {
+                        if (trickplayController != null)
+                        {
+                            trickplayController.setBuffering(false);
+                        }
                         partyHandler.removeCallbacks(partyBufferingStart);
                         partyBufferingProbePositionMs = -1;
                         partyBufferingProbeGeneration = -1;
@@ -1260,7 +1487,7 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                             stallStartedAtMs = -1;
                         }
                         if (IjkPartyTrackActivation.shouldRetryPausedPrime(
-                                isPartyHold()
+                                partyPausedPresentationPending
                                         && lastPartyPresentedMonoMs < 0,
                                 partyPausedFrameStepArmed,
                                 mp.isPlaying()))
@@ -1288,10 +1515,28 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                             {
                             }
                         }
+                        boolean videoActive = player instanceof IjkMediaPlayer
+                                && isActiveTrack(
+                                        (IjkMediaPlayer) player,
+                                        IjkTrackInfo.MEDIA_TRACK_TYPE_VIDEO);
+                        boolean epochRenderingEvent = videoRenderingEvent
+                                || (audioRenderingEvent && !videoActive);
+                        if (epochRenderingEvent)
+                        {
+                            long renderedPositionMs = player != null
+                                    ? player.getCurrentPosition() : -1;
+                            positionEpochRenderObserved = true;
+                            if (!positionEpoch.markRendered(renderedPositionMs))
+                            {
+                                log.debug("Ignoring stale IJK render callback "
+                                                + "at playerPositionMs={}",
+                                        renderedPositionMs);
+                            }
+                        }
                         firstFrameRendered = true;
                         boolean acceptPresentation =
                                 IjkPartyTrackActivation.canAcceptPresentation(
-                                        isPartyHold()
+                                        partyPausedPresentationPending
                                                 && lastPartyPresentedMonoMs < 0,
                                         partyPausedFrameStepArmed);
                         if (acceptPresentation)
@@ -1310,7 +1555,8 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
                                 audioRenderingStarted = true;
                                 readinessChanged = true;
                             }
-                            if (trickplayController != null
+                            if (MiniClientConnection.trickplayPositionV1Negotiated
+                                    && trickplayController != null
                                     && trickplayController.isNativeAvailable()
                                     && player != null)
                             {
@@ -1606,13 +1852,26 @@ public class IJKMediaPlayerImpl extends BaseMediaPlayerImpl<IMediaPlayer, IMedia
         {
             // In push mode, don't call player.seekTo() — the data source is a pipe
             // that can't seek. The server handles seeking by flushing the old data
-            // and pushing new data from the seek position. Reset resume tracking
-            // so getPlayerMediaTimeMillis() picks up the new serverStartTime correctly.
-            log.debug("Push mode seek to {}: reset resume state, server will push new data", timeInMS);
+            // and pushing new data from the seek position. Reclassify the
+            // upgraded IJK clock so legacy servers still receive the same
+            // recording-relative position produced by the original client.
+            log.debug("Push mode seek to {}: reset IJK timeline classification", timeInMS);
             resumeTimeOffset = -1;
             resumeMode = false;
             logTime = -1;
         }
+    }
+
+    @Override
+    public void prepareTransportSeek(
+            long timeInMS, boolean preserveMediaTimeline)
+    {
+        super.prepareTransportSeek(timeInMS, preserveMediaTimeline);
+        if (!MiniClientConnection.trickplayPositionV1Negotiated || !pushMode)
+        {
+            return;
+        }
+        positionEpoch.prepareSeek(timeInMS);
     }
 
     @Override

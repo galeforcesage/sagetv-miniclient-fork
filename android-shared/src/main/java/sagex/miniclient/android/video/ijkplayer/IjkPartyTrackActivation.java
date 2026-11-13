@@ -46,6 +46,30 @@ final class IjkPartyTrackActivation
         return beforeFrames >= 0 && currentFrames > beforeFrames;
     }
 
+    static boolean hasPresentedAfterResume(long beforePositionMs,
+                                           long currentPositionMs,
+                                           long beforeFrames,
+                                           long currentFrames)
+    {
+        return hasPresentedAfterReset(beforePositionMs, currentPositionMs)
+                || hasDecodedFrameAfterReset(beforeFrames, currentFrames);
+    }
+
+    static long advancePresentedPosition(long sampleMonoMs,
+                                         long samplePositionMs,
+                                         long nowMonoMs,
+                                         long currentPositionMs)
+    {
+        long projectedPositionMs = samplePositionMs
+                + Math.max(0, nowMonoMs - sampleMonoMs);
+        if (currentPositionMs <= samplePositionMs)
+        {
+            return projectedPositionMs;
+        }
+        return Math.max(samplePositionMs,
+                Math.min(projectedPositionMs, currentPositionMs));
+    }
+
     static boolean canAcceptPresentation(boolean pausedPresentationPending,
                                          boolean frameStepArmed)
     {
@@ -57,5 +81,21 @@ final class IjkPartyTrackActivation
                                           boolean playing)
     {
         return pausedPresentationPending && frameStepArmed && !playing;
+    }
+
+    static boolean shouldPreserveRenderedTracksForResume(
+            boolean pushMode, boolean barrier, boolean playingTarget,
+            boolean uncorrected, boolean alreadyRendered)
+    {
+        return pushMode && !barrier && playingTarget
+                && uncorrected && alreadyRendered;
+    }
+
+    static boolean shouldPreservePresentedFrameForPause(
+            boolean pushMode, boolean barrier, boolean pausedTarget,
+            boolean uncorrected, boolean alreadyRendered)
+    {
+        return pushMode && !barrier && pausedTarget
+                && uncorrected && alreadyRendered;
     }
 }

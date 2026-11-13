@@ -84,4 +84,53 @@ public class PartyCommandExecutorTest
         assertFalse(PartyCommandExecutor.shouldAcceptUnprimedFrame(
                 false, false));
     }
+
+    @Test
+    public void hardPausedCorrectionReusesExactPresentedTarget()
+    {
+        PartyPlaybackAdapter.ScheduledCommand command =
+                new PartyPlaybackAdapter.ScheduledCommand(
+                        "directive", 1, 1, "CORRECTION",
+                        PartyPlaybackAdapter.CorrectionKind.HARD,
+                        67_811,
+                        PartyPlaybackAdapter.PlaybackState.PAUSED,
+                        1.0, 1_000);
+        PartyPlaybackAdapter.Observation observation =
+                new PartyPlaybackAdapter.Observation(
+                        900, 67_811, 0, 120_000,
+                        PartyPlaybackAdapter.PlaybackState.PAUSED,
+                        true, true, 50);
+
+        assertTrue(PartyCommandExecutor.shouldReusePresentedTarget(
+                command, observation));
+    }
+
+    @Test
+    public void presentedTargetReuseDoesNotApplyToBarrierOrPlayingMedia()
+    {
+        PartyPlaybackAdapter.Observation paused =
+                new PartyPlaybackAdapter.Observation(
+                        900, 67_811, 0, 120_000,
+                        PartyPlaybackAdapter.PlaybackState.PAUSED,
+                        true, true, 50);
+        PartyPlaybackAdapter.ScheduledCommand barrier =
+                new PartyPlaybackAdapter.ScheduledCommand(
+                        "directive", 1, 1, "CORRECTION",
+                        PartyPlaybackAdapter.CorrectionKind.HARD,
+                        67_811,
+                        PartyPlaybackAdapter.PlaybackState.PAUSED,
+                        1.0, 1_000, true, "PREPARE", 1_200, 0, 0);
+        PartyPlaybackAdapter.ScheduledCommand playing =
+                new PartyPlaybackAdapter.ScheduledCommand(
+                        "directive", 1, 1, "CORRECTION",
+                        PartyPlaybackAdapter.CorrectionKind.HARD,
+                        67_811,
+                        PartyPlaybackAdapter.PlaybackState.PLAYING,
+                        1.0, 1_000);
+
+        assertFalse(PartyCommandExecutor.shouldReusePresentedTarget(
+                barrier, paused));
+        assertFalse(PartyCommandExecutor.shouldReusePresentedTarget(
+                playing, paused));
+    }
 }

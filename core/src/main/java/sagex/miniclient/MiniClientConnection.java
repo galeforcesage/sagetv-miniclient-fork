@@ -308,6 +308,13 @@ public class MiniClientConnection implements SageTVInputCallback
     public static boolean isDisplaySinkV1Negotiated() { return displaySinkV1Negotiated; }
     public static boolean isPlaybackSurfacesV1Negotiated() { return playbackSurfacesV1Negotiated; }
 
+    static void markAggregateCapabilitiesNegotiated(
+            boolean trickplayPositionV1, boolean dvrWindowV1)
+    {
+        if (trickplayPositionV1) trickplayPositionV1Negotiated = true;
+        if (dvrWindowV1) dvrWindowV1Negotiated = true;
+    }
+
     // pathlen, path
     // 64-bit return value
     public static String CONNECT_FAILURE_GENERAL_INTERNET = "The SageTV Placeshifter is having trouble connecting to the Internet. "
@@ -2359,6 +2366,11 @@ public class MiniClientConnection implements SageTVInputCallback
                         if (client.properties().getBoolean(PrefStore.Keys.cap_trickplay_position_v1, true))
                         {
                             caps.append(",TRICKPLAY_POSITION_V1");
+                            // Reading the aggregate capability property is itself
+                            // the NG negotiation round. Some servers consume only
+                            // this token list and do not query the individual
+                            // TRICKPLAY_POSITION_V1 property afterward.
+                            markAggregateCapabilitiesNegotiated(true, false);
                         }
                         // SEEK_EPOCH_V1 default FALSE: the current GETMEDIATIME
                         // wire response cannot carry an epoch tag. See PrefStore.
@@ -2369,6 +2381,7 @@ public class MiniClientConnection implements SageTVInputCallback
                         if (client.properties().getBoolean(PrefStore.Keys.cap_dvr_window_v1, true))
                         {
                             caps.append(",DVR_WINDOW_V1");
+                            markAggregateCapabilitiesNegotiated(false, true);
                         }
                         // NG Server Video Enhancement (4K upscale) contract.
                         // Advertised in the summary (flag-free, pref-gated) so an
@@ -2431,7 +2444,8 @@ public class MiniClientConnection implements SageTVInputCallback
                         // Promise: clientReportedMediaTime is the media-time of the
                         // frame currently ON SCREEN (not the buffered/read-ahead head),
                         // advancing only during PLAY, frozen while paused/buffering,
-                        // reset near 0 after a flush, with an accurate play-state byte.
+                        // and reset onto the new post-flush mux timeline exactly once,
+                        // with an accurate play-state byte.
                         // This is the root-cause fix for backward-skip-goes-forward.
                         if (client.properties().getBoolean(PrefStore.Keys.cap_trickplay_position_v1, true))
                         {

@@ -33,6 +33,31 @@ public final class PartyCommandExecutor
         return presentationPending && !partyHold;
     }
 
+    public static boolean shouldReusePresentedTarget(
+            PartyPlaybackAdapter.ScheduledCommand command,
+            PartyPlaybackAdapter.Observation observation)
+    {
+        if (command == null || observation == null
+                || !"CORRECTION".equals(command.action)
+                || command.correctionKind
+                != PartyPlaybackAdapter.CorrectionKind.HARD
+                || command.barrier
+                || command.targetState
+                != PartyPlaybackAdapter.PlaybackState.PAUSED
+                || observation.state
+                != PartyPlaybackAdapter.PlaybackState.PAUSED
+                || !observation.prepared
+                || !observation.activated)
+        {
+            return false;
+        }
+        long toleranceMs = Math.max(250L,
+                observation.precisionMs
+                        + command.presentationUncertaintyMs);
+        return Math.abs(observation.positionMs - command.targetPositionMs)
+                <= toleranceMs;
+    }
+
     public static void execute(Steps steps,
             PartyPlaybackAdapter.ExecutionCallback callback,
             FailureHandler failureHandler)

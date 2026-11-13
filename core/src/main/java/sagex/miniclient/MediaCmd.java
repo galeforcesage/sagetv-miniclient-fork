@@ -538,8 +538,6 @@ public class MediaCmd
                 writeInt(1, retbuf, 0);
                 return 4;
             case MEDIACMD_FLUSH:
-                writeInt(1, retbuf, 0);
-
                 if (playa != null && pushMode)
                 {
                     if (pendingSeekTargetMs >= 0)
@@ -562,6 +560,7 @@ public class MediaCmd
                     }
                 }
 
+                writeInt(1, retbuf, 0);
                 return 4;
 
             case MEDIACMD_PUSHBUFFER:
@@ -640,8 +639,20 @@ public class MediaCmd
 
                     if (flags == 0x80)
                     {
-                        log.debug("------------------------- setServerEOS Called --------------------------------");
-                        playa.setServerEOS();
+                        NgPlaybackContextStore liveContextStore =
+                                myConn.getPlaybackContextStore();
+                        sagex.miniclient.ngcontext.NgPlaybackContext context =
+                                liveContextStore == null ? null
+                                        : liveContextStore.getCurrent();
+                        if (shouldTreatServerEosAsBuffering(context))
+                        {
+                            log.debug("Ignoring transient push EOS for live/growing recording");
+                        }
+                        else
+                        {
+                            log.debug("------------------------- setServerEOS Called --------------------------------");
+                            playa.setServerEOS();
+                        }
                     }
                 }
                 else if (buffSize > 0 && bufDataOffset + buffSize <= len)
@@ -696,7 +707,8 @@ public class MediaCmd
                 */
                 if (playa == null)
                 {
-                    rv = maxPrebufferSize;
+                    rv = boundedFreeSpace(
+                            MAX_PENDING_PUSH, pendingPushSize);
                 }
                 else
                 {
@@ -776,6 +788,15 @@ public class MediaCmd
                 {
                     log.debug("MEDIACMD_SEEK called: {}", seekTime);
 
+                    if (!MiniClientConnection.trickplayPositionV1Negotiated)
+                    {
+                        // OpenSageTV legacy contract: pass the server target directly
+                        // to the player. Do not pre-flush, rewrite the baseline, or
+                        // introduce NG seek coalescing on an unnegotiated connection.
+                        playa.seek(seekTime);
+                        return 0;
+                    }
+
                     // --- NG Seek Policy: clamp/ignore/coalesce (no-op for legacy servers) ---
                     NgPlaybackContextStore ctxStore = myConn.getPlaybackContextStore();
                     if (ctxStore != null && ctxStore.getCurrent() != null)
@@ -813,7 +834,8 @@ public class MediaCmd
                         boolean preservePartyTimeline =
                                 myConn.getPartyClient() != null
                                 && myConn.getPartyClient().getState().joined;
-                        playa.prepareTransportSeek(preservePartyTimeline);
+                        playa.prepareTransportSeek(
+                                seekTime, preservePartyTimeline);
 
                         // Stash the authoritative target so the post-flush
                         // PUSHBUFFER handler can use it as the baseline (see
@@ -912,6 +934,21 @@ public class MediaCmd
         }
 
         return lastServerStartTime;
+    }
+
+    static int boundedFreeSpace(int capacity, int used)
+    {
+        if (capacity <= 0) return 0;
+        if (used <= 0) return capacity;
+        if (used >= capacity) return 0;
+        return capacity - used;
+    }
+
+    static boolean shouldTreatServerEosAsBuffering(
+            sagex.miniclient.ngcontext.NgPlaybackContext context)
+    {
+        return context != null && context.live() != null
+                && context.live().isLive();
     }
 
     /**

@@ -66,6 +66,56 @@ public class TrickplayControllerClockTest
     }
 
     @Test
+    public void sourceRelativeIjkPositionDoesNotAddSeekTargetTwice()
+    {
+        long seekTargetMs = 726_589L;
+        long sourceRelativePlayerPositionMs = 726_328L;
+
+        assertEquals(0L, TrickplayController.initialPlayerTimelineOffset(
+                seekTargetMs, sourceRelativePlayerPositionMs));
+        assertEquals(sourceRelativePlayerPositionMs,
+                TrickplayController.reportedTimeForPlayerPosition(
+                        sourceRelativePlayerPositionMs, false, -1L,
+                        false, 0L, false, 0L, seekTargetMs));
+    }
+
+    @Test
+    public void zeroBasedIjkPositionAddsSeekTargetOnce()
+    {
+        long seekTargetMs = 726_589L;
+        long zeroBasedPlayerPositionMs = 328L;
+
+        assertEquals(seekTargetMs,
+                TrickplayController.initialPlayerTimelineOffset(
+                        seekTargetMs, zeroBasedPlayerPositionMs));
+        assertEquals(726_917L,
+                TrickplayController.reportedTimeForPlayerPosition(
+                        zeroBasedPlayerPositionMs, false, -1L,
+                        false, 0L, false, 0L, seekTargetMs));
+    }
+
+    @Test
+    public void sourceRelativeExoPositionDoesNotAddPostFlushMuxBaseline()
+    {
+        long serverMuxTimeMs = 1_645_299L;
+        long renderedPositionMs = 1_645_297L;
+
+        assertTrue(TrickplayController.isSourceRelativePlayerTimeline(
+                        serverMuxTimeMs, renderedPositionMs));
+        assertEquals(renderedPositionMs,
+                        TrickplayController.reportedTimeForPlayerPosition(
+                                renderedPositionMs, false, -1L,
+                                false, 0L, true, 0L, serverMuxTimeMs));
+    }
+
+    @Test
+    public void zeroBasedExoPositionStillUsesPostFlushMuxBaseline()
+    {
+        assertFalse(TrickplayController.isSourceRelativePlayerTimeline(
+                        878_240L, 297L));
+    }
+
+    @Test
     public void pushTransportSeekDoesNotReplaceExplicitlyPreservedPartyTarget()
     {
         assertTrue(TrickplayController.preservesAuthoritativePositionOnPushSeek(
@@ -74,6 +124,17 @@ public class TrickplayControllerClockTest
                 true, false));
         assertFalse(TrickplayController.preservesAuthoritativePositionOnPushSeek(
                 false, true));
+    }
+
+    @Test
+    public void bufferingFreezesReportedSourceTimeline()
+    {
+        assertEquals(10_500L,
+                TrickplayController.reportedTimeWhileBuffering(
+                        true, 10_500L, 15_000L));
+        assertEquals(15_000L,
+                TrickplayController.reportedTimeWhileBuffering(
+                        false, 10_500L, 15_000L));
     }
 
     @Test

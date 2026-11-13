@@ -334,6 +334,12 @@ The server:
    the standard `MediaPlayer OSD`, matching ordinary Watch Now presentation;
 6. emits `PREPARATION_RESULT`.
 
+`PREPARATION_RESULT` is correlated by `preparationId`. Because watch completion
+is asynchronous, a client may receive the result concurrently with the
+`PREPARE_ACCEPTED` reply; it retains a matching early result until acceptance
+is processed. A mismatched result is stale and must not affect the current
+preparation.
+
 `PREPARATION_RESULT.status` is `LOADED` or `FAILED`. A loaded result includes
 `playbackGeneration` and diagnostic `delivery` metadata. The metadata describes
 the normal playback route; it is not a second source API.
@@ -504,6 +510,11 @@ lifecycle. Their initial directive has `phase=PREPARE`, `barrier=true`,
 
 `PRESENTED` before accepted `ARMED` is invalid. A stale REVEAL with different
 `stateVersion`, `commandSeq`, or `directiveId` must not affect playback.
+The matching `REVEAL` may arrive concurrently with the server reply accepting
+`ACK/ARMED`; the client retains it until that exact ARMED acknowledgement is
+locally committed, then applies its original deadline. This ordering tolerance
+does not serialize unrelated clock, membership, invitation, or telemetry
+events.
 
 A client accepts only one settling directive at a time. A later directive does
 not cancel or replace the scheduled/executed directive; it is negatively
