@@ -26,7 +26,6 @@ If isntalling from releases then you'll need to know how to side load apps.
 ## Limitations
 * No support for DVD/Bluray Discs
 * No Audio Pass-through for IJKPlayer
-* No Embedded Subtitle/CC support
 * No PIP
 
 ## Screenshots
