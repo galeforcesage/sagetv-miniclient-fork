@@ -1,11 +1,6 @@
 # SageTV MiniClient
 
 > **This is the active working branch (`java-upgrade`).** All development, updates, and modifications should be made here. This branch contains the latest fixes including ExoPlayer pull-mode seeking, two-clock transport synchronization, and Java 17 / Gradle 8.x modernization.
-
-<a href="https://play.google.com/store/apps/details?id=jvl.sage.miniclient.android.tv.debug">
-  <img alt="Get it on Google Play"
-       src="https://developer.android.com/images/brand/en_generic_rgb_wo_45.png" />
-</a>
  
 SageTV MiniClient is an HD Extender (ie, HD300) for Android devices. Using this app, you can connect to your SageTV server like you can with an HD200 or HD300 device. Once connected you will get your familiar SageTV UI as this App basically identifies itself as an HD300 extender.
 This client supports the playback of many different Media Formats, and, if hardware decoding is available on the device, then it will be used.
